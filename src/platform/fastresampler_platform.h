@@ -55,6 +55,7 @@ void plat_thread_join(PlatThread* t);      // waits, then releases the handle
 
 bool plat_path_exists(const char* path);
 bool plat_path_is_dir(const char* path);
+bool plat_dir_create(const char* path);      // one level; true when it exists after
 
 // Directory of the running executable, with a trailing separator.
 void plat_module_dir(char* out_dir, size_t max_len);

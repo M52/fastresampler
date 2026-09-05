@@ -95,6 +95,13 @@ bool plat_path_is_dir(const char* path) {
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
+bool plat_dir_create(const char* path) {
+    wchar_t wpath[FR_MAX_PATH];
+    if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) return false;
+    if (CreateDirectoryW(wpath, NULL)) return true;
+    return GetLastError() == ERROR_ALREADY_EXISTS && plat_path_is_dir(path);
+}
+
 void plat_module_dir(char* out_dir, size_t max_len) {
     wchar_t wpath[FR_MAX_PATH];
     DWORD n = GetModuleFileNameW(NULL, wpath, FR_MAX_PATH);

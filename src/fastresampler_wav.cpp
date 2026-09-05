@@ -81,6 +81,66 @@ bool wav_writer_write(WavWriter* w, float* const* planar, int channels, int fram
     return true;
 }
 
+bool wav_writer_write_interleaved(WavWriter* w, const float* interleaved, int frames) {
+    if (!w->file || frames <= 0) return false;
+    size_t count = (size_t)frames * (size_t)w->channels;
+    if (fwrite(interleaved, sizeof(float), count, w->file) != count) return false;
+    w->frames_written += (uint64_t)frames;
+    return true;
+}
+
+static uint32_t wav_get_u32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint16_t wav_get_u16(const uint8_t* p) {
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+bool wav_copy_segment(const char* src_path, int64_t start_frame, int64_t frame_count, const char* dst_path) {
+    if (start_frame < 0 || frame_count <= 0) return false;
+    FILE* src = fopen(src_path, "rb");
+    if (!src) return false;
+
+    // Our own layout: the fmt chunk at 20, the data at WAV_HEADER_SIZE.
+    uint8_t h[WAV_HEADER_SIZE];
+    if (fread(h, 1, WAV_HEADER_SIZE, src) != WAV_HEADER_SIZE || memcmp(h, "RIFF", 4) != 0 ||
+        wav_get_u16(h + 20) != WAV_FORMAT_IEEE_FLOAT || wav_get_u16(h + 34) != WAV_BITS_PER_SAMPLE) {
+        fclose(src);
+        return false;
+    }
+    int channels = wav_get_u16(h + 22);
+    int sample_rate = (int)wav_get_u32(h + 24);
+    uint64_t data_bytes = wav_get_u32(h + WAV_DATA_SIZE_OFFSET);
+    uint64_t src_frames = data_bytes / ((uint64_t)channels * (WAV_BITS_PER_SAMPLE / 8));
+    if (channels < 1 || channels > FR_OUTPUT_CHANNELS || (uint64_t)start_frame >= src_frames) {
+        fclose(src);
+        return false;
+    }
+    if ((uint64_t)(start_frame + frame_count) > src_frames) frame_count = (int64_t)(src_frames - (uint64_t)start_frame);
+
+    WavWriter dst;
+    if (!wav_writer_open(&dst, dst_path, channels, sample_rate)) {
+        fclose(src);
+        return false;
+    }
+    int64_t frame_bytes = (int64_t)channels * (WAV_BITS_PER_SAMPLE / 8);
+    bool ok = _fseeki64(src, (int64_t)WAV_HEADER_SIZE + start_frame * frame_bytes, SEEK_SET) == 0;
+    float buf[FR_MAX_BLOCK_SIZE * FR_OUTPUT_CHANNELS];
+    int64_t done = 0;
+    while (ok && done < frame_count) {
+        int64_t n = frame_count - done;
+        if (n > FR_MAX_BLOCK_SIZE) n = FR_MAX_BLOCK_SIZE;
+        size_t count = (size_t)n * (size_t)channels;
+        ok = fread(buf, sizeof(float), count, src) == count;
+        ok = ok && wav_writer_write_interleaved(&dst, buf, (int)n);
+        done += n;
+    }
+    ok = wav_writer_close(&dst) && ok;
+    fclose(src);
+    return ok;
+}
+
 bool wav_writer_close(WavWriter* w) {
     if (!w->file) return false;
     uint64_t data_bytes = w->frames_written * (uint64_t)w->channels * (WAV_BITS_PER_SAMPLE / 8);

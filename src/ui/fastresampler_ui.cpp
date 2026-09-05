@@ -164,28 +164,57 @@ static void ui_tab_midi(App* app, float scale) {
 static void ui_tab_resample(App* app, float scale) {
     ResampleConfig* cfg = &app->settings.resample;
     bool running = app_resample_running(app);
+    float label_w = 90.0f * scale;
 
-    ImGui::Text("Note range");
+    ImGui::Text("Naming");
+    ImGui::PushItemWidth(-label_w);
+    ImGui::InputText("Instrument", cfg->instrument, sizeof(cfg->instrument));
+    ImGui::InputText("Articulation", cfg->articulation, sizeof(cfg->articulation));
+    ImGui::InputText("Microphone", cfg->microphone, sizeof(cfg->microphone));
+    ImGui::PopItemWidth();
+    ui_hint("Files are named Microphone_Instrument_Articulation_Note_Velocity_RRn.wav.");
+    ImGui::Separator();
+
+    ImGui::Text("Notes");
     ImGui::SetNextItemWidth(60.0f * scale);
     ImGui::InputText("Low", cfg->low_note, sizeof(cfg->low_note));
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0f * scale);
     ImGui::InputText("High", cfg->high_note, sizeof(cfg->high_note));
     ui_hint("Note names: C3 is middle C, C-2 is note 0.");
-    ImGui::Checkbox("White keys only", &cfg->white_keys_only);
-
-    ImGui::SetNextItemWidth(-90.0f * scale);
+    ImGui::SetNextItemWidth(-label_w);
+    if (ImGui::BeginCombo("Sample every", resample_step_label(cfg->step))) {
+        for (int step = 1; step <= RESAMPLE_MAX_STEP; ++step) {
+            if (ImGui::Selectable(resample_step_label(step), step == cfg->step)) cfg->step = step;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SetNextItemWidth(-label_w);
     ImGui::InputText("Velocities", cfg->velocities, sizeof(cfg->velocities));
+    ImGui::SetNextItemWidth(70.0f * scale);
+    if (ImGui::InputInt("Round robins", &cfg->round_robins)) {
+        cfg->round_robins = fr_clampi(cfg->round_robins, 1, RESAMPLE_MAX_ROUND_ROBINS);
+    }
+    ImGui::Checkbox("Pre-roll", &cfg->preroll);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(60.0f * scale);
+    ImGui::BeginDisabled(!cfg->preroll);
+    ImGui::InputFloat("Pre-roll gap (s)", &cfg->preroll_gap_seconds, 0.0f, 0.0f, "%.2f");
+    ImGui::EndDisabled();
+    ui_hint("Pre-roll plays n-1 short notes before round robin n, one per gap, so a sampler that resets its counter after silence lands on variation n. The split discards them.");
+    ImGui::Separator();
+
+    ImGui::Text("Timing");
     ImGui::SetNextItemWidth(70.0f * scale);
     ImGui::InputFloat("Hold (s)", &cfg->hold_seconds, 0.0f, 0.0f, "%.2f");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(70.0f * scale);
     ImGui::InputFloat("Gap (s)", &cfg->gap_seconds, 0.0f, 0.0f, "%.2f");
-    ui_hint("Each note is held, then left to ring out for the gap.");
+    ui_hint("Each note is held, then left to ring out for the gap; the sample file spans both.");
 
-    ImGui::Text("Output file");
+    ImGui::Text("Output folder");
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##output", cfg->output_path, sizeof(cfg->output_path));
+    ImGui::InputText("##output", cfg->output_dir, sizeof(cfg->output_dir));
     ImGui::Separator();
 
     ImGui::BeginDisabled(running);
@@ -200,9 +229,16 @@ static void ui_tab_resample(App* app, float scale) {
 
     if (running) {
         const ResampleScript* s = &app->resample_script;
-        float fraction = s->total_frames > 0 ? (float)app->resample_job.progress_frames.load() / (float)s->total_frames : 0.0f;
-        char overlay[32];
-        snprintf(overlay, sizeof(overlay), "%.0f%%", fraction * 100.0f);
+        char overlay[64];
+        float fraction;
+        if (app->resample_job.phase.load() == RESAMPLE_PHASE_SPLIT) {
+            int done = app->resample_job.split_done.load();
+            fraction = s->segment_count > 0 ? (float)done / (float)s->segment_count : 0.0f;
+            snprintf(overlay, sizeof(overlay), "Splitting %d / %d", done, s->segment_count);
+        } else {
+            fraction = s->total_frames > 0 ? (float)app->resample_job.progress_frames.load() / (float)s->total_frames : 0.0f;
+            snprintf(overlay, sizeof(overlay), "Rendering %.0f%%", fraction * 100.0f);
+        }
         ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
         if (ui_red_button("Cancel", ImVec2(-1.0f, 0.0f))) resample_cancel(&app->resample_job);
     } else {
@@ -215,7 +251,7 @@ static void ui_tab_resample(App* app, float scale) {
         } else if (!app->resample_script.built) {
             ui_hint("Build the MIDI to render.");
         } else {
-            ui_hint("Renders faster than realtime; the speakers stay silent.");
+            ui_hint("Renders faster than realtime with the speakers silent, then splits the file into one WAV per sample.");
         }
     }
     if (app->resample_result_text[0]) {

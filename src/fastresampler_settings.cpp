@@ -124,16 +124,28 @@ bool settings_load(Settings* s, const char* path) {
             fr_strcpy(s->resample.low_note, sizeof(s->resample.low_note), value);
         } else if (strcmp(key, "resample_high") == 0) {
             fr_strcpy(s->resample.high_note, sizeof(s->resample.high_note), value);
-        } else if (strcmp(key, "resample_white_only") == 0) {
-            s->resample.white_keys_only = atoi(value) != 0;
+        } else if (strcmp(key, "resample_step") == 0) {
+            s->resample.step = fr_clampi(atoi(value), 1, RESAMPLE_MAX_STEP);
         } else if (strcmp(key, "resample_velocities") == 0) {
             fr_strcpy(s->resample.velocities, sizeof(s->resample.velocities), value);
+        } else if (strcmp(key, "resample_round_robins") == 0) {
+            s->resample.round_robins = fr_clampi(atoi(value), 1, RESAMPLE_MAX_ROUND_ROBINS);
+        } else if (strcmp(key, "resample_preroll") == 0) {
+            s->resample.preroll = atoi(value) != 0;
+        } else if (strcmp(key, "resample_preroll_gap_ms") == 0) {
+            s->resample.preroll_gap_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
         } else if (strcmp(key, "resample_hold_ms") == 0) {
             s->resample.hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
         } else if (strcmp(key, "resample_gap_ms") == 0) {
             s->resample.gap_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
-        } else if (strcmp(key, "resample_output") == 0) {
-            if (value[0]) fr_strcpy(s->resample.output_path, sizeof(s->resample.output_path), value);
+        } else if (strcmp(key, "resample_instrument") == 0) {
+            fr_strcpy(s->resample.instrument, sizeof(s->resample.instrument), value);
+        } else if (strcmp(key, "resample_articulation") == 0) {
+            fr_strcpy(s->resample.articulation, sizeof(s->resample.articulation), value);
+        } else if (strcmp(key, "resample_microphone") == 0) {
+            fr_strcpy(s->resample.microphone, sizeof(s->resample.microphone), value);
+        } else if (strcmp(key, "resample_output_dir") == 0) {
+            if (value[0]) fr_strcpy(s->resample.output_dir, sizeof(s->resample.output_dir), value);
         }
         line = next;
     }
@@ -157,11 +169,17 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "window_height %d\n", s->window_height);
     fprintf(f, "resample_low \"%s\"\n", s->resample.low_note);
     fprintf(f, "resample_high \"%s\"\n", s->resample.high_note);
-    fprintf(f, "resample_white_only %d\n", s->resample.white_keys_only ? 1 : 0);
+    fprintf(f, "resample_step %d\n", s->resample.step);
     fprintf(f, "resample_velocities \"%s\"\n", s->resample.velocities);
+    fprintf(f, "resample_round_robins %d\n", s->resample.round_robins);
+    fprintf(f, "resample_preroll %d\n", s->resample.preroll ? 1 : 0);
+    fprintf(f, "resample_preroll_gap_ms %d\n", (int)(s->resample.preroll_gap_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_hold_ms %d\n", (int)(s->resample.hold_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_gap_ms %d\n", (int)(s->resample.gap_seconds * 1000.0f + 0.5f));
-    fprintf(f, "resample_output \"%s\"\n", s->resample.output_path);
+    fprintf(f, "resample_instrument \"%s\"\n", s->resample.instrument);
+    fprintf(f, "resample_articulation \"%s\"\n", s->resample.articulation);
+    fprintf(f, "resample_microphone \"%s\"\n", s->resample.microphone);
+    fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
     fclose(f);
     return true;
 }

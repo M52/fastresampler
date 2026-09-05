@@ -233,9 +233,12 @@ void app_resample_build(App* app) {
     }
     const ResampleScript* s = &app->resample_script;
     double seconds = (double)s->total_frames / s->sample_rate;
+    char example[RESAMPLE_FILE_NAME_LEN];
+    resample_segment_file_name(&app->settings.resample, &s->segments[0], example, sizeof(example));
     snprintf(app->resample_build_text, sizeof(app->resample_build_text),
-             "%d notes x %d velocities: %d events, %d:%02d of audio at %.0f Hz.",
-             s->note_count, s->velocity_count, s->count, (int)seconds / 60, (int)seconds % 60, s->sample_rate);
+             "%d samples: %d notes x %d velocities x %d round robins, %d events, %d:%02d of audio at %.0f Hz. First file: %s",
+             s->segment_count, s->note_count, s->velocity_count, s->round_robin_count, s->count,
+             (int)seconds / 60, (int)seconds % 60, s->sample_rate, example);
     app->resample_build_is_error = false;
     settings_save(&app->settings, app->settings_path);
 }
@@ -257,10 +260,16 @@ static void app_resample_start(App* app) {
         app->resample_result_is_error = true;
         return;
     }
+    if (!plat_dir_create(app->settings.resample.output_dir)) {
+        snprintf(app->resample_result_text, sizeof(app->resample_result_text),
+                 "Could not create the output folder %s", app->settings.resample.output_dir);
+        app->resample_result_is_error = true;
+        return;
+    }
     // The worker owns the plugin until it is done; the device plays silence.
     app_pause_plugin(app);
     int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
-    if (!resample_start(&app->resample_job, app->plugin, &app->resample_script, block_size, app->settings.resample.output_path)) {
+    if (!resample_start(&app->resample_job, app->plugin, &app->resample_script, block_size, &app->settings.resample)) {
         fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "The render could not start.");
         app->resample_result_is_error = true;
         app_resume_plugin(app);

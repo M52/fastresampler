@@ -30,10 +30,13 @@ Layout of the window:
 - Left: the side panel with four tabs. **Plugin** shows what is loaded, its
   output meters and a close button. **MIDI** has the channel, CC sliders,
   sustain, pitch bend and all-notes-off. **Resample** builds a MIDI script
-  (a note range, optionally white keys only, at a list of velocities, each
-  note held then left to ring out) and renders it through the plugin to a
-  32 bit float WAV faster than realtime. **Settings** has the folders to scan,
-  the audio device and block size, and the ASIO control panel.
+  (a note range sampled every n semitones, a list of velocities, a number of
+  round robins per note with optional pre-roll notes, each note held then left
+  to ring out), renders it through the plugin to one 32 bit float WAV faster
+  than realtime, then splits that file into one WAV per sample named
+  `Microphone_Instrument_Articulation_Note_Velocity_RRn.wav`. **Settings**
+  has the folders to scan, the audio device and block size, and the ASIO
+  control panel.
 - Right: the plugin list when nothing is loaded (double-click to load), or the
   plugin's editor under a header with its name and a close button.
 - Bottom: the 88-key GUI keyboard. Click to play; lower on the key is louder.
