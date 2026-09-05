@@ -27,9 +27,12 @@ Details about the project:
 - UI strings capitalise only the first letter.
 
 Layout of the window:
-- Left: the side panel with three tabs. **Plugin** shows what is loaded, its
+- Left: the side panel with four tabs. **Plugin** shows what is loaded, its
   output meters and a close button. **MIDI** has the channel, CC sliders,
-  sustain, pitch bend and all-notes-off. **Settings** has the folders to scan,
+  sustain, pitch bend and all-notes-off. **Resample** builds a MIDI script
+  (a note range, optionally white keys only, at a list of velocities, each
+  note held then left to ring out) and renders it through the plugin to a
+  32 bit float WAV faster than realtime. **Settings** has the folders to scan,
   the audio device and block size, and the ASIO control panel.
 - Right: the plugin list when nothing is loaded (double-click to load), or the
   plugin's editor under a header with its name and a close button.
@@ -41,7 +44,9 @@ Files:
 - `src/fastresampler_audio.*` — the audio device API; backends under `src/platform/`.
 - `src/fastresampler_scan.*` — finds `.vst3` bundles and files under the configured folders.
 - `src/fastresampler_settings.*` — `fastresampler_settings.txt` next to the exe.
-- `src/fastresampler_midi.h` — the lock-free MIDI queue from the UI thread to the audio thread.
+- `src/fastresampler_midi.h` — the lock-free MIDI queue from the UI thread to the audio thread, note names.
+- `src/fastresampler_resample.*` — the resampling script and the offline render worker.
+- `src/fastresampler_wav.*` — the float32 WAV writer.
 - `src/ui/` — the ImGui side panel, plugin list and keyboard.
 
 Threading: the UI thread owns the plugin. The audio thread only calls

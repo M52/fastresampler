@@ -2,8 +2,11 @@
 // User settings, kept in a plain "key value" text file next to the exe.
 
 #include "fastresampler_constants.h"
+#include "fastresampler_resample.h"
 
 struct Settings {
+    ResampleConfig resample;
+
     char scan_paths[FR_MAX_SCAN_PATHS][FR_MAX_PATH];
     int  scan_path_count;
 

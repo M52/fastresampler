@@ -46,6 +46,12 @@ bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_s
 void host_plugin_process(HostPlugin* p, MidiQueue* midi, float* const* outputs,
                          int channel_count, int frames);
 
+// The offline variant: the events for this block, each at its sample offset
+// inside the block. Same thread rules as host_plugin_process(); only one of
+// the two may be running.
+void host_plugin_process_events(HostPlugin* p, const MidiEvent* events, const int* sample_offsets,
+                                int count, float* const* outputs, int channel_count, int frames);
+
 const HostPluginInfo* host_plugin_info(const HostPlugin* p);
 
 // --- Editor -----------------------------------------------------------------

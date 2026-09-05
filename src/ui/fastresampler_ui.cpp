@@ -69,6 +69,13 @@ static bool ui_green_button(const char* label, ImVec2 size = ImVec2(0, 0)) {
     return pressed;
 }
 
+// A hint in the dimmed text colour that wraps to the panel width.
+static void ui_hint(const char* text) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
 // A CC slider: shows the last value sent, sends on change.
 static void ui_cc_slider(App* app, const char* label, int controller) {
     int value = app->cc_value[controller];
@@ -122,7 +129,7 @@ static void ui_tab_midi(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ImGui::TextDisabled("Click a key to play it. Lower on the key is louder.");
+    ui_hint("Click a key to play it. Lower on the key is louder.");
     ImGui::Separator();
 
     ImGui::Text("Controllers");
@@ -152,6 +159,70 @@ static void ui_tab_midi(App* app, float scale) {
     }
 
     if (ui_red_button("All notes off", ImVec2(-1.0f, 0.0f))) app_all_notes_off(app);
+}
+
+static void ui_tab_resample(App* app, float scale) {
+    ResampleConfig* cfg = &app->settings.resample;
+    bool running = app_resample_running(app);
+
+    ImGui::Text("Note range");
+    ImGui::SetNextItemWidth(60.0f * scale);
+    ImGui::InputText("Low", cfg->low_note, sizeof(cfg->low_note));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(60.0f * scale);
+    ImGui::InputText("High", cfg->high_note, sizeof(cfg->high_note));
+    ui_hint("Note names: C3 is middle C, C-2 is note 0.");
+    ImGui::Checkbox("White keys only", &cfg->white_keys_only);
+
+    ImGui::SetNextItemWidth(-90.0f * scale);
+    ImGui::InputText("Velocities", cfg->velocities, sizeof(cfg->velocities));
+    ImGui::SetNextItemWidth(70.0f * scale);
+    ImGui::InputFloat("Hold (s)", &cfg->hold_seconds, 0.0f, 0.0f, "%.2f");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70.0f * scale);
+    ImGui::InputFloat("Gap (s)", &cfg->gap_seconds, 0.0f, 0.0f, "%.2f");
+    ui_hint("Each note is held, then left to ring out for the gap.");
+
+    ImGui::Text("Output file");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##output", cfg->output_path, sizeof(cfg->output_path));
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(running);
+    if (ImGui::Button("Build MIDI", ImVec2(-1.0f, 0.0f))) app_resample_build(app);
+    ImGui::EndDisabled();
+    if (app->resample_build_text[0]) {
+        ImGui::PushStyleColor(ImGuiCol_Text, app->resample_build_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_SLOT_LABEL_TEXT);
+        ImGui::TextWrapped("%s", app->resample_build_text);
+        ImGui::PopStyleColor();
+    }
+    ImGui::Separator();
+
+    if (running) {
+        const ResampleScript* s = &app->resample_script;
+        float fraction = s->total_frames > 0 ? (float)app->resample_job.progress_frames.load() / (float)s->total_frames : 0.0f;
+        char overlay[32];
+        snprintf(overlay, sizeof(overlay), "%.0f%%", fraction * 100.0f);
+        ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
+        if (ui_red_button("Cancel", ImVec2(-1.0f, 0.0f))) resample_cancel(&app->resample_job);
+    } else {
+        bool can_render = app->plugin != nullptr && app->resample_script.built;
+        ImGui::BeginDisabled(!can_render);
+        if (ui_green_button("Render to WAV", ImVec2(-1.0f, 0.0f))) app->resample_start_request = true;
+        ImGui::EndDisabled();
+        if (!app->plugin) {
+            ui_hint("Load a plugin to render.");
+        } else if (!app->resample_script.built) {
+            ui_hint("Build the MIDI to render.");
+        } else {
+            ui_hint("Renders faster than realtime; the speakers stay silent.");
+        }
+    }
+    if (app->resample_result_text[0]) {
+        ImGui::PushStyleColor(ImGuiCol_Text, app->resample_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
+        ImGui::TextWrapped("%s", app->resample_result_text);
+        ImGui::PopStyleColor();
+    }
 }
 
 static void ui_tab_settings(App* app, float scale) {
@@ -215,7 +286,7 @@ static void ui_tab_settings(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ImGui::TextDisabled("ASIO drivers may round the block to what they support.");
+    ui_hint("ASIO drivers may round the block to what they support.");
 
     if (ui_green_button("Apply", ImVec2(-1.0f, 0.0f))) app->audio_apply_request = true;
     if (ImGui::Button("Refresh devices", ImVec2(-1.0f, 0.0f))) app->audio_refresh_request = true;
@@ -249,6 +320,10 @@ static void ui_draw_side_panel(App* app, ImVec2 size, float scale) {
         }
         if (ImGui::BeginTabItem("MIDI")) {
             ui_tab_midi(app, scale);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Resample")) {
+            ui_tab_resample(app, scale);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Settings")) {

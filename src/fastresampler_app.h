@@ -10,6 +10,7 @@
 #include "fastresampler_audio.h"
 #include "fastresampler_host.h"
 #include "fastresampler_midi.h"
+#include "fastresampler_resample.h"
 
 struct PlatView;
 
@@ -63,8 +64,23 @@ struct App {
     int        editor_width;
     int        editor_height;
 
+    // Resampling: the script the tab built, the render in flight, and what
+    // the tab shows about the last build and the last render.
+    ResampleScript resample_script;
+    ResampleJob    resample_job;
+    bool           resample_start_request;
+    char           resample_build_text[FR_STATUS_LEN];
+    bool           resample_build_is_error;
+    char           resample_result_text[FR_STATUS_LEN];
+    bool           resample_result_is_error;
+
     PlatView*  view;
 };
+
+// The Resample tab's two buttons. Build parses the tab's settings into the
+// script; the render request is served by app_process_requests().
+void app_resample_build(App* app);
+bool app_resample_running(const App* app);
 
 void app_init(App* app);
 void app_shutdown(App* app);

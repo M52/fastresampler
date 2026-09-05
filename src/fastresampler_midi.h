@@ -4,6 +4,7 @@
 // block. Capacity is a power of two so the indices wrap with a mask.
 
 #include <stdint.h>
+#include <stdio.h>
 #include <atomic>
 #include "fastresampler_constants.h"
 
@@ -55,4 +56,48 @@ inline MidiEvent midi_make(uint8_t status, int channel, int data0, int data1) {
     e.data0 = (uint8_t)(data0 & 0x7F);
     e.data1 = (uint8_t)(data1 & 0x7F);
     return e;
+}
+
+// --- Note names -------------------------------------------------------------
+// FastSampler's convention: middle C (60) is C3, so note 0 is C-2 and
+// note 127 is G8. Accidentals are '#' or 'b'.
+
+// "C#3" or "Db-1" to a MIDI note; -1 when the text is not a note.
+inline int midi_note_parse(const char* text) {
+    static const int letter_pc[7] = { 9, 11, 0, 2, 4, 5, 7 };   // A B C D E F G
+    const char* s = text;
+    while (*s == ' ') ++s;
+    char letter = *s;
+    if (letter >= 'a' && letter <= 'g') letter = (char)(letter - 'a' + 'A');
+    if (letter < 'A' || letter > 'G') return -1;
+    int pc = letter_pc[letter - 'A'];
+    ++s;
+    if (*s == '#') { pc += 1; ++s; }
+    else if (*s == 'b') { pc -= 1; ++s; }
+    bool negative = false;
+    if (*s == '-') { negative = true; ++s; }
+    if (*s < '0' || *s > '9') return -1;
+    int octave = 0;
+    while (*s >= '0' && *s <= '9') octave = octave * 10 + (*s++ - '0');
+    while (*s == ' ') ++s;
+    if (*s != '\0') return -1;
+    if (negative) octave = -octave;
+    int note = (octave + 2) * SEMITONES_PER_OCTAVE + pc;
+    return (note >= 0 && note < MIDI_NOTE_COUNT) ? note : -1;
+}
+
+inline const char* midi_note_name(int note, char* buf, size_t buf_size) {
+    static const char* names[SEMITONES_PER_OCTAVE] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    if (note < 0 || note >= MIDI_NOTE_COUNT) {
+        snprintf(buf, buf_size, "?");
+        return buf;
+    }
+    snprintf(buf, buf_size, "%s%d", names[note % SEMITONES_PER_OCTAVE], note / SEMITONES_PER_OCTAVE - 2);
+    return buf;
+}
+
+// A white key: no sharp in its name.
+inline bool midi_note_is_white(int note) {
+    int pc = note % SEMITONES_PER_OCTAVE;
+    return pc == 0 || pc == 2 || pc == 4 || pc == 5 || pc == 7 || pc == 9 || pc == 11;
 }

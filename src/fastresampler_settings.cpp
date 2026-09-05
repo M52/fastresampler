@@ -20,6 +20,7 @@ void settings_defaults(Settings* s) {
     s->midi_channel = 0;
     s->window_width = WINDOW_DEFAULT_WIDTH;
     s->window_height = WINDOW_DEFAULT_HEIGHT;
+    resample_config_defaults(&s->resample);
 }
 
 bool settings_has_scan_path(const Settings* s, const char* path) {
@@ -119,6 +120,20 @@ bool settings_load(Settings* s, const char* path) {
             s->window_width = fr_clampi(atoi(value), WINDOW_MIN_WIDTH, 8192);
         } else if (strcmp(key, "window_height") == 0) {
             s->window_height = fr_clampi(atoi(value), WINDOW_MIN_HEIGHT, 8192);
+        } else if (strcmp(key, "resample_low") == 0) {
+            fr_strcpy(s->resample.low_note, sizeof(s->resample.low_note), value);
+        } else if (strcmp(key, "resample_high") == 0) {
+            fr_strcpy(s->resample.high_note, sizeof(s->resample.high_note), value);
+        } else if (strcmp(key, "resample_white_only") == 0) {
+            s->resample.white_keys_only = atoi(value) != 0;
+        } else if (strcmp(key, "resample_velocities") == 0) {
+            fr_strcpy(s->resample.velocities, sizeof(s->resample.velocities), value);
+        } else if (strcmp(key, "resample_hold_ms") == 0) {
+            s->resample.hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+        } else if (strcmp(key, "resample_gap_ms") == 0) {
+            s->resample.gap_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
+        } else if (strcmp(key, "resample_output") == 0) {
+            if (value[0]) fr_strcpy(s->resample.output_path, sizeof(s->resample.output_path), value);
         }
         line = next;
     }
@@ -140,6 +155,13 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "midi_channel %d\n", s->midi_channel);
     fprintf(f, "window_width %d\n", s->window_width);
     fprintf(f, "window_height %d\n", s->window_height);
+    fprintf(f, "resample_low \"%s\"\n", s->resample.low_note);
+    fprintf(f, "resample_high \"%s\"\n", s->resample.high_note);
+    fprintf(f, "resample_white_only %d\n", s->resample.white_keys_only ? 1 : 0);
+    fprintf(f, "resample_velocities \"%s\"\n", s->resample.velocities);
+    fprintf(f, "resample_hold_ms %d\n", (int)(s->resample.hold_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_gap_ms %d\n", (int)(s->resample.gap_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_output \"%s\"\n", s->resample.output_path);
     fclose(f);
     return true;
 }

@@ -3,6 +3,7 @@
 // already included <windows.h>.
 
 #include <stdio.h>
+#include <stdlib.h>
 #include "platform/fastresampler_platform.h"
 
 // ----------------------------------------------------------------- process ----
@@ -30,6 +31,42 @@ uint64_t plat_ms_now(void) {
 
 void plat_sleep_ms(uint32_t ms) {
     Sleep(ms);
+}
+
+// ------------------------------------------------------------- threading ----
+
+struct PlatThreadStart {
+    PlatThreadFn fn;
+    void* user;
+};
+
+static DWORD WINAPI plat_thread_trampoline(LPVOID param) {
+    PlatThreadStart start = *(PlatThreadStart*)param;
+    free(param);
+    start.fn(start.user);
+    return 0;
+}
+
+bool plat_thread_create(PlatThread* t, PlatThreadFn fn, void* user) {
+    t->handle = NULL;
+    PlatThreadStart* start = (PlatThreadStart*)malloc(sizeof(PlatThreadStart));
+    if (!start) return false;
+    start->fn = fn;
+    start->user = user;
+    HANDLE h = CreateThread(NULL, 0, plat_thread_trampoline, start, 0, NULL);
+    if (!h) {
+        free(start);
+        return false;
+    }
+    t->handle = h;
+    return true;
+}
+
+void plat_thread_join(PlatThread* t) {
+    if (!t->handle) return;
+    WaitForSingleObject((HANDLE)t->handle, INFINITE);
+    CloseHandle((HANDLE)t->handle);
+    t->handle = NULL;
 }
 
 // ----------------------------------------------------------- file system ----

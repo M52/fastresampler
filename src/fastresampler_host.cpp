@@ -442,7 +442,7 @@ const HostPluginInfo* host_plugin_info(const HostPlugin* p) {
 
 // --- Processing (audio thread) -------------------------------------------------
 
-static void host_queue_param(HostPlugin* p, int channel, int ctrl, double value) {
+static void host_queue_param(HostPlugin* p, int channel, int ctrl, double value, int sample_offset) {
     if (ctrl < 0 || ctrl >= SV::kCountCtrlNumber) return;
     SV::ParamID pid = p->cc_param[channel & 0x0F][ctrl];
     if (pid == SV::kNoParamId) return;
@@ -450,13 +450,13 @@ static void host_queue_param(HostPlugin* p, int channel, int ctrl, double value)
     SV::IParamValueQueue* queue = p->param_changes.addParameterData(pid, queue_index);
     if (!queue) return;
     Steinberg::int32 point_index = 0;
-    queue->addPoint(0, value, point_index);
+    queue->addPoint(sample_offset, value, point_index);
 }
 
-static void host_translate_midi(HostPlugin* p, const MidiEvent& m) {
+static void host_translate_midi(HostPlugin* p, const MidiEvent& m, int sample_offset) {
     SV::Event e = {};
     e.busIndex = 0;
-    e.sampleOffset = 0;
+    e.sampleOffset = sample_offset;
     e.flags = SV::Event::kIsLive;
     switch (m.status) {
         case MIDI_STATUS_NOTE_ON:
@@ -492,27 +492,45 @@ static void host_translate_midi(HostPlugin* p, const MidiEvent& m) {
             p->events.addEvent(e);
             break;
         case MIDI_STATUS_CONTROL_CHANGE:
-            host_queue_param(p, m.channel, m.data0, (double)m.data1 / (double)MIDI_VALUE_MAX);
+            host_queue_param(p, m.channel, m.data0, (double)m.data1 / (double)MIDI_VALUE_MAX, sample_offset);
             break;
         case MIDI_STATUS_PITCH_BEND: {
             int value = (m.data0 & 0x7F) | ((m.data1 & 0x7F) << 7);
-            host_queue_param(p, m.channel, SV::kPitchBend, (double)value / (double)MIDI_PITCH_BEND_MAX);
+            host_queue_param(p, m.channel, SV::kPitchBend, (double)value / (double)MIDI_PITCH_BEND_MAX, sample_offset);
             break;
         }
         case MIDI_STATUS_CHANNEL_PRESSURE:
-            host_queue_param(p, m.channel, SV::kAfterTouch, (double)m.data0 / (double)MIDI_VALUE_MAX);
+            host_queue_param(p, m.channel, SV::kAfterTouch, (double)m.data0 / (double)MIDI_VALUE_MAX, sample_offset);
             break;
         default:
             break;
     }
 }
 
+// Runs one block once this block's events and parameter points are queued.
+static void host_run_block(HostPlugin* p, float* const* outputs, int channel_count, int frames);
+
 void host_plugin_process(HostPlugin* p, MidiQueue* midi, float* const* outputs,
                          int channel_count, int frames) {
     if (frames > p->block_size) frames = p->block_size;
-
     MidiEvent m;
-    while (midi_queue_pop(midi, &m)) host_translate_midi(p, m);
+    while (midi_queue_pop(midi, &m)) host_translate_midi(p, m, 0);
+    host_run_block(p, outputs, channel_count, frames);
+}
+
+void host_plugin_process_events(HostPlugin* p, const MidiEvent* events, const int* sample_offsets,
+                                int count, float* const* outputs, int channel_count, int frames) {
+    if (frames > p->block_size) frames = p->block_size;
+    for (int i = 0; i < count; ++i) {
+        int offset = sample_offsets[i];
+        if (offset < 0) offset = 0;
+        if (offset >= frames) offset = frames - 1;
+        host_translate_midi(p, events[i], offset);
+    }
+    host_run_block(p, outputs, channel_count, frames);
+}
+
+static void host_run_block(HostPlugin* p, float* const* outputs, int channel_count, int frames) {
     p->param_transfer.transferChangesTo(p->param_changes);
 
     // The plugin's buffers start silent: a plugin with no voice may not write.

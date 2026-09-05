@@ -66,6 +66,16 @@ void app_init(App* app) {
     app->editor_width = 0;
     app->editor_height = 0;
     app->new_scan_path[0] = '\0';
+    app->resample_script.built = false;
+    app->resample_job.running.store(false);
+    app->resample_job.cancel.store(false);
+    app->resample_job.finished.store(false);
+    app->resample_job.progress_frames.store(0);
+    app->resample_start_request = false;
+    app->resample_build_text[0] = '\0';
+    app->resample_build_is_error = false;
+    app->resample_result_text[0] = '\0';
+    app->resample_result_is_error = false;
 
     app->host = host_create();
     app->plugin = nullptr;
@@ -203,7 +213,90 @@ void app_start_audio(App* app) {
     app_apply_audio(app);
 }
 
+// --- Resampling -------------------------------------------------------------------
+
+bool app_resample_running(const App* app) {
+    return app->resample_job.running.load();
+}
+
+// The rate the plugin runs at right now, which is the rate the script must use.
+static double app_plugin_sample_rate(const App* app) {
+    return app->audio.open ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
+}
+
+void app_resample_build(App* app) {
+    char err[FR_STATUS_LEN];
+    if (!resample_build(&app->resample_script, &app->settings.resample, app_plugin_sample_rate(app), err, sizeof(err))) {
+        fr_strcpy(app->resample_build_text, sizeof(app->resample_build_text), err);
+        app->resample_build_is_error = true;
+        return;
+    }
+    const ResampleScript* s = &app->resample_script;
+    double seconds = (double)s->total_frames / s->sample_rate;
+    snprintf(app->resample_build_text, sizeof(app->resample_build_text),
+             "%d notes x %d velocities: %d events, %d:%02d of audio at %.0f Hz.",
+             s->note_count, s->velocity_count, s->count, (int)seconds / 60, (int)seconds % 60, s->sample_rate);
+    app->resample_build_is_error = false;
+    settings_save(&app->settings, app->settings_path);
+}
+
+static void app_resample_start(App* app) {
+    if (!app->plugin) {
+        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "Load a plugin first.");
+        app->resample_result_is_error = true;
+        return;
+    }
+    if (!app->resample_script.built) {
+        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "Build the MIDI first.");
+        app->resample_result_is_error = true;
+        return;
+    }
+    if (app->resample_script.sample_rate != app_plugin_sample_rate(app)) {
+        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text),
+                  "The sample rate changed since the build. Build the MIDI again.");
+        app->resample_result_is_error = true;
+        return;
+    }
+    // The worker owns the plugin until it is done; the device plays silence.
+    app_pause_plugin(app);
+    int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
+    if (!resample_start(&app->resample_job, app->plugin, &app->resample_script, block_size, app->settings.resample.output_path)) {
+        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "The render could not start.");
+        app->resample_result_is_error = true;
+        app_resume_plugin(app);
+        return;
+    }
+    app->resample_result_text[0] = '\0';
+    app->resample_result_is_error = false;
+    app_set_status(app, false, "Rendering...");
+}
+
+static void app_resample_finish(App* app) {
+    if (!resample_collect(&app->resample_job)) return;
+    fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), app->resample_job.result);
+    app->resample_result_is_error = app->resample_job.result_is_error;
+    app_set_status(app, app->resample_job.result_is_error, "%s", app->resample_job.result);
+    app_resume_plugin(app);
+}
+
 void app_process_requests(App* app) {
+    if (app->resample_start_request) {
+        app->resample_start_request = false;
+        if (!app_resample_running(app)) app_resample_start(app);
+    }
+    if (app_resample_running(app)) {
+        // The worker has the plugin: nothing below may touch it until it is done.
+        app_resample_finish(app);
+        if (app_resample_running(app)) {
+            if (app->load_request >= 0 || app->unload_request || app->audio_apply_request) {
+                app_set_status(app, true, "Wait for the render to finish, or cancel it.");
+            }
+            app->load_request = -1;
+            app->unload_request = false;
+            app->audio_apply_request = false;
+            return;
+        }
+    }
     if (app->audio_refresh_request) {
         app->audio_refresh_request = false;
         audio_enumerate(&app->drivers);
@@ -328,6 +421,11 @@ void app_all_notes_off(App* app) {
 }
 
 void app_shutdown(App* app) {
+    if (app_resample_running(app)) {
+        resample_cancel(&app->resample_job);
+        while (!app->resample_job.finished.load()) plat_sleep_ms(1);
+        resample_collect(&app->resample_job);
+    }
     app_pause_plugin(app);
     audio_close(&app->audio);
     if (app->plugin) {

@@ -42,6 +42,15 @@ void plat_debug_output(const char* text);
 uint64_t plat_ms_now(void);
 void     plat_sleep_ms(uint32_t ms);
 
+// ------------------------------------------------------------- threading ----
+
+struct PlatThread {
+    void* handle;
+};
+typedef void (*PlatThreadFn)(void* user);
+bool plat_thread_create(PlatThread* t, PlatThreadFn fn, void* user);
+void plat_thread_join(PlatThread* t);      // waits, then releases the handle
+
 // ----------------------------------------------------------- file system ----
 
 bool plat_path_exists(const char* path);
