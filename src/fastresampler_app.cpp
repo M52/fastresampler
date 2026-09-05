@@ -1,0 +1,342 @@
+// #pragma once (removed for unity build)
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include "fastresampler_app.h"
+#include "fastresampler_view.h"
+#include "fastresampler_helpers.h"
+#include "fastresampler_log.h"
+#include "platform/fastresampler_platform.h"
+
+void app_set_status(App* app, bool is_error, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(app->status, sizeof(app->status), fmt, args);
+    va_end(args);
+    app->status_is_error = is_error;
+    fr_log("%s%s", is_error ? "error: " : "", app->status);
+}
+
+// The driver the settings name, else the first one (the default WASAPI device).
+static int app_find_saved_driver(const App* app) {
+    for (int i = 0; i < app->drivers.count; ++i) {
+        const AudioDriverInfo* d = &app->drivers.drivers[i];
+        if (d->api == app->settings.audio_api && fr_stricmp(d->name, app->settings.audio_driver_name) == 0) return i;
+    }
+    return app->drivers.count > 0 ? 0 : -1;
+}
+
+static int app_block_size_index(int block_size) {
+    for (int i = 0; i < FR_BLOCK_SIZE_OPTION_COUNT; ++i) {
+        if (g_block_size_options[i] == block_size) return i;
+    }
+    return 3;   // 256
+}
+
+void app_init(App* app) {
+    char dir[FR_MAX_PATH];
+    plat_module_dir(dir, sizeof(dir));
+    plat_path_join(app->settings_path, sizeof(app->settings_path), dir, FR_SETTINGS_FILE);
+
+    settings_defaults(&app->settings);
+    settings_load(&app->settings, app->settings_path);
+
+    midi_queue_init(&app->midi);
+    memset(app->note_held, 0, sizeof(app->note_held));
+    app->keyboard_active_note = -1;
+    for (int i = 0; i < MIDI_NOTE_COUNT; ++i) app->cc_value[i] = 0;
+    app->cc_value[MIDI_CC_VOLUME] = 100;
+    app->cc_value[MIDI_CC_EXPRESSION] = MIDI_VALUE_MAX;
+    app->cc_value[MIDI_CC_PAN] = 64;
+    app->pitch_bend = MIDI_PITCH_BEND_CENTER;
+    for (int c = 0; c < FR_OUTPUT_CHANNELS; ++c) {
+        app->peak[c].store(0.0f);
+        app->meter[c] = 0.0f;
+    }
+    app->plugin_active.store(false);
+    app->audio_busy.store(0);
+
+    app->selected_plugin = -1;
+    app->load_request = -1;
+    app->unload_request = false;
+    app->rescan_request = false;
+    app->audio_apply_request = false;
+    app->audio_refresh_request = false;
+    app->editor_open = false;
+    app->editor_width = 0;
+    app->editor_height = 0;
+    app->new_scan_path[0] = '\0';
+
+    app->host = host_create();
+    app->plugin = nullptr;
+
+    audio_enumerate(&app->drivers);
+    app->selected_driver = app_find_saved_driver(app);
+    app->pending_driver = app->selected_driver;
+    app->pending_block_index = app_block_size_index(app->settings.block_size);
+
+    scan_plugins(&app->plugins, &app->settings);
+    app_set_status(app, false, "%d plugins found. Double-click one to load it.", app->plugins.count);
+}
+
+// Stops the audio thread from touching the plugin and waits until it is out.
+static void app_pause_plugin(App* app) {
+    app->plugin_active.store(false, std::memory_order_seq_cst);
+    while (app->audio_busy.load(std::memory_order_seq_cst) != 0) plat_sleep_ms(1);
+}
+
+static void app_resume_plugin(App* app) {
+    if (app->plugin) app->plugin_active.store(true, std::memory_order_seq_cst);
+}
+
+// IPlugFrame::resizeView lands here: the editor wants a new size.
+static void app_on_editor_resize(void* user, int width, int height) {
+    App* app = (App*)user;
+    app->editor_width = width;
+    app->editor_height = height;
+    view_editor_place(app->view, width, height);
+}
+
+static void app_open_editor(App* app) {
+    int w = 0, h = 0;
+    if (!host_plugin_editor_create(app->plugin, view_dpi_scale(app->view), &w, &h)) return;
+    if (w <= 0 || h <= 0) {
+        w = 400;
+        h = 300;
+    }
+    void* parent = view_editor_create(app->view, w, h);
+    if (!parent) {
+        host_plugin_editor_close(app->plugin);
+        return;
+    }
+    if (!host_plugin_editor_attach(app->plugin, parent, app_on_editor_resize, app)) {
+        view_editor_destroy(app->view);
+        return;
+    }
+    app->editor_open = true;
+    app->editor_width = w;
+    app->editor_height = h;
+}
+
+static void app_unload_plugin(App* app) {
+    if (!app->plugin) return;
+    app_pause_plugin(app);
+    host_plugin_editor_close(app->plugin);
+    view_editor_destroy(app->view);
+    app->editor_open = false;
+    char name[FR_PLUGIN_NAME_LEN];
+    fr_strcpy(name, sizeof(name), host_plugin_info(app->plugin)->name);
+    host_plugin_unload(app->plugin);
+    app->plugin = nullptr;
+    memset(app->note_held, 0, sizeof(app->note_held));
+    app->keyboard_active_note = -1;
+    app_set_status(app, false, "Closed %s.", name);
+}
+
+static void app_load_plugin(App* app, int index) {
+    if (index < 0 || index >= app->plugins.count) return;
+    const PluginEntry* entry = &app->plugins.entries[index];
+    app_set_status(app, false, "Loading %s...", entry->name);
+
+    double sample_rate = app->audio.open ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
+    int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
+
+    char err[FR_ERROR_LEN];
+    HostPlugin* p = host_plugin_load(app->host, entry->path, sample_rate, block_size, err, sizeof(err));
+    if (!p) {
+        app_set_status(app, true, "%s: %s", entry->name, err);
+        return;
+    }
+    app->plugin = p;
+    app_open_editor(app);
+    app_resume_plugin(app);
+
+    const HostPluginInfo* info = host_plugin_info(p);
+    if (app->editor_open) {
+        app_set_status(app, false, "Loaded %s by %s.", info->name, info->vendor);
+    } else {
+        app_set_status(app, false, "Loaded %s by %s (no editor).", info->name, info->vendor);
+    }
+}
+
+// Closes and reopens the audio device from the pending settings, then puts
+// the plugin back on the new rate and block.
+static void app_apply_audio(App* app) {
+    app_pause_plugin(app);
+    audio_close(&app->audio);
+
+    if (app->pending_driver >= 0 && app->pending_driver < app->drivers.count) {
+        const AudioDriverInfo* d = &app->drivers.drivers[app->pending_driver];
+        app->settings.audio_api = d->api;
+        fr_strcpy(app->settings.audio_driver_name, FR_DRIVER_NAME_LEN, d->name);
+        app->selected_driver = app->pending_driver;
+    }
+    app->pending_block_index = fr_clampi(app->pending_block_index, 0, FR_BLOCK_SIZE_OPTION_COUNT - 1);
+    app->settings.block_size = g_block_size_options[app->pending_block_index];
+    settings_save(&app->settings, app->settings_path);
+
+    bool ok = false;
+    if (app->selected_driver >= 0) {
+        const AudioDriverInfo* d = &app->drivers.drivers[app->selected_driver];
+        ok = audio_open(&app->audio, d, app->settings.block_size, app_audio_render, app, view_native_window(app->view));
+        if (ok) {
+            app_set_status(app, false, "%s: %s at %.0f Hz, %d frames.", audio_api_name(d->api), d->name,
+                           app->audio.sample_rate, app->audio.block_size);
+        } else {
+            app_set_status(app, true, "%s: %s", d->name, app->audio.error);
+        }
+    } else {
+        app_set_status(app, true, "No audio device available.");
+    }
+
+    if (app->plugin) {
+        double sample_rate = ok ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
+        int block_size = ok ? app->audio.block_size : app->settings.block_size;
+        if (!host_plugin_setup_processing(app->plugin, sample_rate, block_size)) {
+            app_set_status(app, true, "The plugin refused %.0f Hz with %d frames.", sample_rate, block_size);
+        }
+    }
+    app_resume_plugin(app);
+}
+
+void app_start_audio(App* app) {
+    app_apply_audio(app);
+}
+
+void app_process_requests(App* app) {
+    if (app->audio_refresh_request) {
+        app->audio_refresh_request = false;
+        audio_enumerate(&app->drivers);
+        app->selected_driver = app_find_saved_driver(app);
+        app->pending_driver = app->selected_driver;
+    }
+    if (app->rescan_request) {
+        app->rescan_request = false;
+        settings_save(&app->settings, app->settings_path);
+        scan_plugins(&app->plugins, &app->settings);
+        app->selected_plugin = -1;
+        app_set_status(app, false, "%d plugins found.", app->plugins.count);
+    }
+    if (app->unload_request || app->load_request >= 0) {
+        app->unload_request = false;
+        app_unload_plugin(app);
+    }
+    if (app->load_request >= 0) {
+        int index = app->load_request;
+        app->load_request = -1;
+        app_load_plugin(app, index);
+    }
+    if (app->audio_apply_request) {
+        app->audio_apply_request = false;
+        app_apply_audio(app);
+    }
+    if (app->audio.reset_requested.exchange(false)) {
+        fr_log("audio: the driver asked for a reset");
+        app_apply_audio(app);
+    }
+
+    // The meters: take the peaks the audio thread left, decay towards them.
+    for (int c = 0; c < FR_OUTPUT_CHANNELS; ++c) {
+        float peak = app->peak[c].exchange(0.0f);
+        float decayed = app->meter[c] * UI_METER_DECAY;
+        app->meter[c] = peak > decayed ? peak : decayed;
+    }
+}
+
+void app_request_load_path(App* app, const char* path) {
+    if (!path || !path[0]) return;
+    for (int i = 0; i < app->plugins.count; ++i) {
+        if (fr_stricmp(app->plugins.entries[i].path, path) == 0) {
+            app->selected_plugin = i;
+            app->load_request = i;
+            return;
+        }
+    }
+    if (!plat_path_exists(path)) {
+        app_set_status(app, true, "Not found: %s", path);
+        return;
+    }
+    if (app->plugins.count >= FR_MAX_PLUGINS) return;
+    PluginEntry* e = &app->plugins.entries[app->plugins.count];
+    fr_strcpy(e->path, FR_MAX_PATH, path);
+    fr_strcpy(e->name, FR_PLUGIN_NAME_LEN, plat_path_basename(path));
+    fr_strip_vst3_ext(e->name);
+    app->selected_plugin = app->plugins.count;
+    app->load_request = app->plugins.count;
+    app->plugins.count++;
+}
+
+void app_audio_render(void* user, float* const* outputs, int channel_count, int frames) {
+    App* app = (App*)user;
+    app->audio_busy.fetch_add(1, std::memory_order_seq_cst);
+    if (app->plugin_active.load(std::memory_order_seq_cst)) {
+        host_plugin_process(app->plugin, &app->midi, outputs, channel_count, frames);
+    } else {
+        // Nobody listens: events must not pile up for the next plugin.
+        MidiEvent m;
+        while (midi_queue_pop(&app->midi, &m)) {}
+    }
+    for (int c = 0; c < channel_count && c < FR_OUTPUT_CHANNELS; ++c) {
+        float peak = 0.0f;
+        for (int i = 0; i < frames; ++i) {
+            float a = outputs[c][i] < 0.0f ? -outputs[c][i] : outputs[c][i];
+            if (a > peak) peak = a;
+        }
+        if (peak > app->peak[c].load(std::memory_order_relaxed)) app->peak[c].store(peak, std::memory_order_relaxed);
+    }
+    app->audio_busy.fetch_sub(1, std::memory_order_seq_cst);
+}
+
+// --- MIDI from the UI -----------------------------------------------------------
+
+void app_note_on(App* app, int note, float velocity) {
+    if (note < 0 || note >= MIDI_NOTE_COUNT) return;
+    int v = (int)(fr_clampf(velocity, 0.0f, 1.0f) * MIDI_VALUE_MAX + 0.5f);
+    if (v < 1) v = 1;
+    midi_queue_push(&app->midi, midi_make(MIDI_STATUS_NOTE_ON, app->settings.midi_channel, note, v));
+    app->note_held[note] = true;
+}
+
+void app_note_off(App* app, int note) {
+    if (note < 0 || note >= MIDI_NOTE_COUNT) return;
+    midi_queue_push(&app->midi, midi_make(MIDI_STATUS_NOTE_OFF, app->settings.midi_channel, note, 0));
+    app->note_held[note] = false;
+}
+
+void app_control_change(App* app, int controller, int value) {
+    if (controller < 0 || controller >= MIDI_NOTE_COUNT) return;
+    value = fr_clampi(value, 0, MIDI_VALUE_MAX);
+    app->cc_value[controller] = value;
+    midi_queue_push(&app->midi, midi_make(MIDI_STATUS_CONTROL_CHANGE, app->settings.midi_channel, controller, value));
+}
+
+void app_pitch_bend(App* app, int value) {
+    value = fr_clampi(value, 0, MIDI_PITCH_BEND_MAX);
+    app->pitch_bend = value;
+    midi_queue_push(&app->midi, midi_make(MIDI_STATUS_PITCH_BEND, app->settings.midi_channel, value & 0x7F, (value >> 7) & 0x7F));
+}
+
+void app_all_notes_off(App* app) {
+    for (int n = 0; n < MIDI_NOTE_COUNT; ++n) {
+        if (app->note_held[n]) app_note_off(app, n);
+    }
+    app->keyboard_active_note = -1;
+    // Both messages: a plugin without a CC mapping still saw the note-offs.
+    midi_queue_push(&app->midi, midi_make(MIDI_STATUS_CONTROL_CHANGE, app->settings.midi_channel, MIDI_CC_ALL_NOTES_OFF, 0));
+    midi_queue_push(&app->midi, midi_make(MIDI_STATUS_CONTROL_CHANGE, app->settings.midi_channel, MIDI_CC_ALL_SOUND_OFF, 0));
+    if (app->cc_value[MIDI_CC_SUSTAIN] != 0) app_control_change(app, MIDI_CC_SUSTAIN, 0);
+}
+
+void app_shutdown(App* app) {
+    app_pause_plugin(app);
+    audio_close(&app->audio);
+    if (app->plugin) {
+        host_plugin_editor_close(app->plugin);
+        view_editor_destroy(app->view);
+        host_plugin_unload(app->plugin);
+        app->plugin = nullptr;
+    }
+    host_destroy(app->host);
+    app->host = nullptr;
+    settings_save(&app->settings, app->settings_path);
+}

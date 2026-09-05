@@ -1,0 +1,641 @@
+// #pragma once (removed for unity build)
+// See fastresampler_host.h. The VST3 SDK headers and hosting sources are
+// included by the unity root before this file.
+
+#include <string.h>
+#include <stdio.h>
+#include <string>
+#include "fastresampler_host.h"
+#include "fastresampler_helpers.h"
+#include "fastresampler_log.h"
+
+namespace SV = Steinberg::Vst;
+
+// The largest number of parameters that can change in one block, for the two
+// parameter queues (MIDI CC and GUI edits).
+#define HOST_MAX_PARAM_CHANGES 1024
+
+#if SMTG_OS_WINDOWS
+    #define HOST_PLATFORM_VIEW_TYPE Steinberg::kPlatformTypeHWND
+#elif SMTG_OS_MACOS
+    #define HOST_PLATFORM_VIEW_TYPE Steinberg::kPlatformTypeNSView
+#else
+    #define HOST_PLATFORM_VIEW_TYPE Steinberg::kPlatformTypeX11EmbedWindowID
+#endif
+
+struct HostContext {
+    SV::HostApplication* app;
+};
+
+// The two interfaces the plugin calls back into: IComponentHandler for edits
+// made in its own GUI, IPlugFrame for editor resizes. One object, a fixed
+// reference count, owned by the HostPlugin.
+struct HostCallbacks : public SV::IComponentHandler, public Steinberg::IPlugFrame {
+    HostPlugin*  plugin;
+    HostResizeFn resize_fn;
+    void*        resize_user;
+    bool         in_resize;
+
+    Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID _iid, void** obj) override {
+        if (Steinberg::FUnknownPrivate::iidEqual(_iid, SV::IComponentHandler::iid)) {
+            *obj = static_cast<SV::IComponentHandler*>(this);
+            return Steinberg::kResultOk;
+        }
+        if (Steinberg::FUnknownPrivate::iidEqual(_iid, Steinberg::IPlugFrame::iid)) {
+            *obj = static_cast<Steinberg::IPlugFrame*>(this);
+            return Steinberg::kResultOk;
+        }
+        if (Steinberg::FUnknownPrivate::iidEqual(_iid, Steinberg::FUnknown::iid)) {
+            *obj = static_cast<SV::IComponentHandler*>(this);
+            return Steinberg::kResultOk;
+        }
+        *obj = nullptr;
+        return Steinberg::kNoInterface;
+    }
+    Steinberg::uint32 PLUGIN_API addRef() override { return 1000; }
+    Steinberg::uint32 PLUGIN_API release() override { return 1000; }
+
+    Steinberg::tresult PLUGIN_API beginEdit(SV::ParamID id) override;
+    Steinberg::tresult PLUGIN_API performEdit(SV::ParamID id, SV::ParamValue value) override;
+    Steinberg::tresult PLUGIN_API endEdit(SV::ParamID id) override;
+    Steinberg::tresult PLUGIN_API restartComponent(Steinberg::int32 flags) override;
+    Steinberg::tresult PLUGIN_API resizeView(Steinberg::IPlugView* view, Steinberg::ViewRect* new_size) override;
+};
+
+struct HostPlugin {
+    VST3::Hosting::Module::Ptr module;
+    SV::IComponent*       component;
+    SV::IAudioProcessor*  processor;
+    SV::IEditController*  controller;
+    bool                  component_initialized;
+    bool                  controller_initialized;
+    bool                  controller_is_component;
+    SV::ConnectionProxy*  component_cp;
+    SV::ConnectionProxy*  controller_cp;
+
+    Steinberg::IPlugView* view;
+    bool                  view_attached;
+    HostCallbacks         callbacks;
+
+    SV::HostProcessData         process_data;
+    SV::EventList               events;
+    SV::ParameterChanges        param_changes;
+    SV::ParameterChangeTransfer param_transfer;   // GUI edits, UI thread to audio thread
+    SV::ProcessContext          context;
+
+    // MIDI controller number to parameter, per channel, from IMidiMapping.
+    SV::ParamID cc_param[MIDI_CHANNEL_COUNT][SV::kCountCtrlNumber];
+
+    int    main_out_bus;
+    double sample_rate;
+    int    block_size;
+    bool   active;
+    bool   processing;
+
+    HostPluginInfo info;
+};
+
+// --- HostCallbacks -------------------------------------------------------------
+
+Steinberg::tresult PLUGIN_API HostCallbacks::beginEdit(SV::ParamID) {
+    return Steinberg::kResultOk;
+}
+
+Steinberg::tresult PLUGIN_API HostCallbacks::performEdit(SV::ParamID id, SV::ParamValue value) {
+    // The plugin GUI moved a control: the processor hears about it in the next block.
+    if (plugin) plugin->param_transfer.addChange(id, value, 0);
+    return Steinberg::kResultOk;
+}
+
+Steinberg::tresult PLUGIN_API HostCallbacks::endEdit(SV::ParamID) {
+    return Steinberg::kResultOk;
+}
+
+Steinberg::tresult PLUGIN_API HostCallbacks::restartComponent(Steinberg::int32 flags) {
+    fr_log("host: restartComponent(0x%x)", (unsigned)flags);
+    if (plugin && (flags & SV::kLatencyChanged) && plugin->processor) {
+        plugin->info.latency_frames = (int)plugin->processor->getLatencySamples();
+    }
+    return Steinberg::kResultOk;
+}
+
+Steinberg::tresult PLUGIN_API HostCallbacks::resizeView(Steinberg::IPlugView* view, Steinberg::ViewRect* new_size) {
+    if (!view || !new_size || !plugin || view != plugin->view) return Steinberg::kInvalidArgument;
+    if (in_resize) return Steinberg::kResultFalse;
+    in_resize = true;
+    if (resize_fn) resize_fn(resize_user, new_size->getWidth(), new_size->getHeight());
+    Steinberg::ViewRect current;
+    if (view->getSize(&current) == Steinberg::kResultTrue &&
+        (current.getWidth() != new_size->getWidth() || current.getHeight() != new_size->getHeight())) {
+        view->onSize(new_size);
+    }
+    in_resize = false;
+    return Steinberg::kResultTrue;
+}
+
+// --- Context -------------------------------------------------------------------
+
+HostContext* host_create(void) {
+    HostContext* ctx = new HostContext();
+    ctx->app = new SV::HostApplication();
+    return ctx;
+}
+
+void host_destroy(HostContext* ctx) {
+    if (!ctx) return;
+    if (ctx->app) ctx->app->release();
+    delete ctx;
+}
+
+// --- Loading -------------------------------------------------------------------
+
+static void host_fail(char* err, size_t err_len, const char* msg) {
+    fr_strcpy(err, err_len, msg);
+    fr_log("host: %s", msg);
+}
+
+// Deactivates every bus, then activates the main audio output and the first
+// event input. Runs before setActive(true), as the spec asks.
+static void host_setup_busses(HostPlugin* p) {
+    SV::IComponent* c = p->component;
+    Steinberg::int32 out_count = c->getBusCount(SV::kAudio, SV::kOutput);
+    p->main_out_bus = 0;
+    for (Steinberg::int32 i = 0; i < out_count; ++i) {
+        SV::BusInfo info = {};
+        if (c->getBusInfo(SV::kAudio, SV::kOutput, i, info) == Steinberg::kResultOk && info.busType == SV::kMain) {
+            p->main_out_bus = i;
+            break;
+        }
+    }
+    for (Steinberg::int32 i = 0; i < out_count; ++i) {
+        c->activateBus(SV::kAudio, SV::kOutput, i, i == p->main_out_bus);
+    }
+    Steinberg::int32 in_count = c->getBusCount(SV::kAudio, SV::kInput);
+    for (Steinberg::int32 i = 0; i < in_count; ++i) {
+        c->activateBus(SV::kAudio, SV::kInput, i, false);
+    }
+    Steinberg::int32 ev_in = c->getBusCount(SV::kEvent, SV::kInput);
+    for (Steinberg::int32 i = 0; i < ev_in; ++i) {
+        c->activateBus(SV::kEvent, SV::kInput, i, i == 0);
+    }
+    Steinberg::int32 ev_out = c->getBusCount(SV::kEvent, SV::kOutput);
+    for (Steinberg::int32 i = 0; i < ev_out; ++i) {
+        c->activateBus(SV::kEvent, SV::kOutput, i, false);
+    }
+
+    SV::BusInfo main_info = {};
+    p->info.output_channels = 0;
+    if (out_count > 0 && c->getBusInfo(SV::kAudio, SV::kOutput, p->main_out_bus, main_info) == Steinberg::kResultOk) {
+        p->info.output_channels = (int)main_info.channelCount;
+    }
+}
+
+static void host_read_midi_mapping(HostPlugin* p) {
+    for (int ch = 0; ch < MIDI_CHANNEL_COUNT; ++ch) {
+        for (int ctrl = 0; ctrl < SV::kCountCtrlNumber; ++ctrl) p->cc_param[ch][ctrl] = SV::kNoParamId;
+    }
+    p->info.has_midi_mapping = false;
+    if (!p->controller) return;
+    Steinberg::FUnknownPtr<SV::IMidiMapping> mapping(p->controller);
+    if (!mapping) return;
+    int mapped = 0;
+    for (int ch = 0; ch < MIDI_CHANNEL_COUNT; ++ch) {
+        for (int ctrl = 0; ctrl < SV::kCountCtrlNumber; ++ctrl) {
+            SV::ParamID pid = SV::kNoParamId;
+            if (mapping->getMidiControllerAssignment(0, (Steinberg::int16)ch, (SV::CtrlNumber)ctrl, pid) == Steinberg::kResultOk) {
+                p->cc_param[ch][ctrl] = pid;
+                mapped++;
+            }
+        }
+    }
+    p->info.has_midi_mapping = mapped > 0;
+    fr_log("host: %d MIDI controller assignments", mapped);
+}
+
+// Hands the component's state to the controller so the editor shows the
+// processor's values.
+static void host_sync_controller_state(HostPlugin* p) {
+    if (!p->controller || p->controller_is_component) return;
+    Steinberg::MemoryStream stream;
+    if (p->component->getState(&stream) != Steinberg::kResultOk) return;
+    Steinberg::int64 pos = 0;
+    stream.seek(0, Steinberg::IBStream::kIBSeekSet, &pos);
+    p->controller->setComponentState(&stream);
+}
+
+// Which class of a module to host: the first instrument, else the first
+// audio module class.
+static bool host_pick_class(const VST3::Hosting::PluginFactory& factory, VST3::Hosting::ClassInfo* out) {
+    bool found = false;
+    bool found_instrument = false;
+    for (const VST3::Hosting::ClassInfo& ci : factory.classInfos()) {
+        if (ci.category() != kVstAudioEffectClass) continue;
+        bool instrument = ci.subCategoriesString().find(SV::PlugType::kInstrument) != std::string::npos;
+        if (!found || (instrument && !found_instrument)) {
+            *out = ci;
+            found = true;
+            found_instrument = instrument;
+        }
+    }
+    return found;
+}
+
+HostPlugin* host_plugin_load(HostContext* ctx, const char* path, double sample_rate,
+                             int block_size, char* err, size_t err_len) {
+    err[0] = '\0';
+    std::string module_error;
+    VST3::Hosting::Module::Ptr module = VST3::Hosting::Module::create(path, module_error);
+    if (!module) {
+        snprintf(err, err_len, "Could not load the module: %s", module_error.c_str());
+        fr_log("host: %s (%s)", err, path);
+        return nullptr;
+    }
+
+    HostPlugin* p = new HostPlugin();
+    p->module = module;
+    p->callbacks.plugin = p;
+    p->main_out_bus = 0;
+
+    const VST3::Hosting::PluginFactory& factory = module->getFactory();
+    factory.setHostContext(ctx->app);
+
+    VST3::Hosting::ClassInfo chosen;
+    if (!host_pick_class(factory, &chosen)) {
+        host_fail(err, err_len, "The module has no audio module class");
+        host_plugin_unload(p);
+        return nullptr;
+    }
+    fr_strcpy(p->info.name, sizeof(p->info.name), chosen.name().c_str());
+    fr_strcpy(p->info.vendor, sizeof(p->info.vendor), chosen.vendor().c_str());
+    fr_strcpy(p->info.version, sizeof(p->info.version), chosen.version().c_str());
+    fr_strcpy(p->info.category, sizeof(p->info.category), chosen.subCategoriesString().c_str());
+
+    p->component = factory.createInstance<SV::IComponent>(chosen.ID()).take();
+    if (!p->component) {
+        host_fail(err, err_len, "Could not create the component");
+        host_plugin_unload(p);
+        return nullptr;
+    }
+    if (p->component->initialize(ctx->app) != Steinberg::kResultOk) {
+        host_fail(err, err_len, "The component did not initialize");
+        host_plugin_unload(p);
+        return nullptr;
+    }
+    p->component_initialized = true;
+
+    // The controller: part of the component, or a second class of the module.
+    if (p->component->queryInterface(SV::IEditController::iid, (void**)&p->controller) == Steinberg::kResultOk && p->controller) {
+        p->controller_is_component = true;
+    } else {
+        p->controller = nullptr;
+        Steinberg::TUID controller_cid = {};
+        if (p->component->getControllerClassId(controller_cid) == Steinberg::kResultOk) {
+            p->controller = factory.createInstance<SV::IEditController>(VST3::UID(controller_cid)).take();
+            if (p->controller && p->controller->initialize(ctx->app) != Steinberg::kResultOk) {
+                fr_log("host: the controller did not initialize, running without one");
+                p->controller->release();
+                p->controller = nullptr;
+            }
+            if (p->controller) p->controller_initialized = true;
+        }
+    }
+    if (p->controller && !p->controller_is_component) {
+        Steinberg::FUnknownPtr<SV::IConnectionPoint> comp_cp(p->component);
+        Steinberg::FUnknownPtr<SV::IConnectionPoint> ctrl_cp(p->controller);
+        if (comp_cp && ctrl_cp) {
+            p->component_cp = new SV::ConnectionProxy(comp_cp);
+            p->controller_cp = new SV::ConnectionProxy(ctrl_cp);
+            if (p->component_cp->connect(ctrl_cp) != Steinberg::kResultTrue ||
+                p->controller_cp->connect(comp_cp) != Steinberg::kResultTrue) {
+                fr_log("host: component and controller did not connect");
+            }
+        }
+    }
+    p->info.has_controller = p->controller != nullptr;
+    if (p->controller) {
+        p->controller->setComponentHandler(&p->callbacks);
+        host_sync_controller_state(p);
+    }
+
+    if (p->component->queryInterface(SV::IAudioProcessor::iid, (void**)&p->processor) != Steinberg::kResultOk || !p->processor) {
+        p->processor = nullptr;
+        host_fail(err, err_len, "The component has no audio processor");
+        host_plugin_unload(p);
+        return nullptr;
+    }
+    if (p->processor->canProcessSampleSize(SV::kSample32) != Steinberg::kResultOk) {
+        host_fail(err, err_len, "The plugin does not process 32 bit float");
+        host_plugin_unload(p);
+        return nullptr;
+    }
+
+    host_setup_busses(p);
+    if (p->component->getBusCount(SV::kAudio, SV::kOutput) == 0) {
+        host_fail(err, err_len, "The plugin has no audio output");
+        host_plugin_unload(p);
+        return nullptr;
+    }
+    host_read_midi_mapping(p);
+
+    p->events.setMaxSize(FR_MIDI_QUEUE_CAPACITY);
+    p->param_changes.setMaxParameters(HOST_MAX_PARAM_CHANGES);
+    p->param_transfer.setMaxParameters(HOST_MAX_PARAM_CHANGES);
+    memset(&p->context, 0, sizeof(p->context));
+    p->context.state = SV::ProcessContext::kPlaying | SV::ProcessContext::kTempoValid |
+                       SV::ProcessContext::kTimeSigValid | SV::ProcessContext::kContTimeValid |
+                       SV::ProcessContext::kProjectTimeMusicValid;
+    p->context.tempo = FR_DEFAULT_TEMPO;
+    p->context.timeSigNumerator = 4;
+    p->context.timeSigDenominator = 4;
+    p->process_data.inputEvents = &p->events;
+    p->process_data.inputParameterChanges = &p->param_changes;
+    p->process_data.processContext = &p->context;
+    p->process_data.outputParameterChanges = nullptr;
+    p->process_data.outputEvents = nullptr;
+
+    if (!host_plugin_setup_processing(p, sample_rate, block_size)) {
+        host_fail(err, err_len, "The plugin refused the processing setup");
+        host_plugin_unload(p);
+        return nullptr;
+    }
+
+    fr_log("host: loaded '%s' by %s (%s), %d output channels, latency %d",
+           p->info.name, p->info.vendor, p->info.category, p->info.output_channels, p->info.latency_frames);
+    return p;
+}
+
+void host_plugin_unload(HostPlugin* p) {
+    if (!p) return;
+    host_plugin_editor_close(p);
+
+    if (p->processor && p->processing) p->processor->setProcessing(false);
+    p->processing = false;
+    if (p->component && p->active) p->component->setActive(false);
+    p->active = false;
+
+    if (p->component_cp) {
+        p->component_cp->disconnect();
+        p->component_cp->release();
+        p->component_cp = nullptr;
+    }
+    if (p->controller_cp) {
+        p->controller_cp->disconnect();
+        p->controller_cp->release();
+        p->controller_cp = nullptr;
+    }
+    if (p->controller && p->controller_initialized) p->controller->terminate();
+    if (p->component && p->component_initialized) p->component->terminate();
+
+    if (p->processor) p->processor->release();
+    if (p->controller) p->controller->release();
+    if (p->component) p->component->release();
+    p->processor = nullptr;
+    p->controller = nullptr;
+    p->component = nullptr;
+
+    p->process_data.unprepare();
+    p->module.reset();
+    delete p;
+}
+
+bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_size) {
+    if (!p->processor || !p->component) return false;
+    if (p->processing) {
+        p->processor->setProcessing(false);
+        p->processing = false;
+    }
+    if (p->active) {
+        p->component->setActive(false);
+        p->active = false;
+    }
+    p->sample_rate = sample_rate;
+    p->block_size = block_size;
+    p->context.sampleRate = sample_rate;
+
+    if (!p->process_data.prepare(*p->component, block_size, SV::kSample32)) {
+        fr_log("host: HostProcessData::prepare failed");
+        return false;
+    }
+    SV::ProcessSetup setup = {};
+    setup.processMode = SV::kRealtime;
+    setup.symbolicSampleSize = SV::kSample32;
+    setup.maxSamplesPerBlock = block_size;
+    setup.sampleRate = sample_rate;
+    if (p->processor->setupProcessing(setup) != Steinberg::kResultOk) {
+        fr_log("host: setupProcessing(%.0f Hz, %d) refused", sample_rate, block_size);
+        return false;
+    }
+    if (p->component->setActive(true) != Steinberg::kResultOk) {
+        fr_log("host: setActive(true) refused");
+        return false;
+    }
+    p->active = true;
+    p->processor->setProcessing(true);
+    p->processing = true;
+    p->info.latency_frames = (int)p->processor->getLatencySamples();
+    return true;
+}
+
+const HostPluginInfo* host_plugin_info(const HostPlugin* p) {
+    return &p->info;
+}
+
+// --- Processing (audio thread) -------------------------------------------------
+
+static void host_queue_param(HostPlugin* p, int channel, int ctrl, double value) {
+    if (ctrl < 0 || ctrl >= SV::kCountCtrlNumber) return;
+    SV::ParamID pid = p->cc_param[channel & 0x0F][ctrl];
+    if (pid == SV::kNoParamId) return;
+    Steinberg::int32 queue_index = 0;
+    SV::IParamValueQueue* queue = p->param_changes.addParameterData(pid, queue_index);
+    if (!queue) return;
+    Steinberg::int32 point_index = 0;
+    queue->addPoint(0, value, point_index);
+}
+
+static void host_translate_midi(HostPlugin* p, const MidiEvent& m) {
+    SV::Event e = {};
+    e.busIndex = 0;
+    e.sampleOffset = 0;
+    e.flags = SV::Event::kIsLive;
+    switch (m.status) {
+        case MIDI_STATUS_NOTE_ON:
+            if (m.data1 == 0) {
+                e.type = SV::Event::kNoteOffEvent;
+                e.noteOff.channel = m.channel;
+                e.noteOff.pitch = m.data0;
+                e.noteOff.velocity = 0.0f;
+                e.noteOff.noteId = -1;
+            } else {
+                e.type = SV::Event::kNoteOnEvent;
+                e.noteOn.channel = m.channel;
+                e.noteOn.pitch = m.data0;
+                e.noteOn.velocity = (float)m.data1 / (float)MIDI_VALUE_MAX;
+                e.noteOn.noteId = -1;
+            }
+            p->events.addEvent(e);
+            break;
+        case MIDI_STATUS_NOTE_OFF:
+            e.type = SV::Event::kNoteOffEvent;
+            e.noteOff.channel = m.channel;
+            e.noteOff.pitch = m.data0;
+            e.noteOff.velocity = (float)m.data1 / (float)MIDI_VALUE_MAX;
+            e.noteOff.noteId = -1;
+            p->events.addEvent(e);
+            break;
+        case MIDI_STATUS_POLY_PRESSURE:
+            e.type = SV::Event::kPolyPressureEvent;
+            e.polyPressure.channel = m.channel;
+            e.polyPressure.pitch = m.data0;
+            e.polyPressure.pressure = (float)m.data1 / (float)MIDI_VALUE_MAX;
+            e.polyPressure.noteId = -1;
+            p->events.addEvent(e);
+            break;
+        case MIDI_STATUS_CONTROL_CHANGE:
+            host_queue_param(p, m.channel, m.data0, (double)m.data1 / (double)MIDI_VALUE_MAX);
+            break;
+        case MIDI_STATUS_PITCH_BEND: {
+            int value = (m.data0 & 0x7F) | ((m.data1 & 0x7F) << 7);
+            host_queue_param(p, m.channel, SV::kPitchBend, (double)value / (double)MIDI_PITCH_BEND_MAX);
+            break;
+        }
+        case MIDI_STATUS_CHANNEL_PRESSURE:
+            host_queue_param(p, m.channel, SV::kAfterTouch, (double)m.data0 / (double)MIDI_VALUE_MAX);
+            break;
+        default:
+            break;
+    }
+}
+
+void host_plugin_process(HostPlugin* p, MidiQueue* midi, float* const* outputs,
+                         int channel_count, int frames) {
+    if (frames > p->block_size) frames = p->block_size;
+
+    MidiEvent m;
+    while (midi_queue_pop(midi, &m)) host_translate_midi(p, m);
+    p->param_transfer.transferChangesTo(p->param_changes);
+
+    // The plugin's buffers start silent: a plugin with no voice may not write.
+    for (Steinberg::int32 b = 0; b < p->process_data.numOutputs; ++b) {
+        SV::AudioBusBuffers& bus = p->process_data.outputs[b];
+        bus.silenceFlags = 0;
+        for (Steinberg::int32 c = 0; c < bus.numChannels; ++c) {
+            if (bus.channelBuffers32[c]) memset(bus.channelBuffers32[c], 0, (size_t)frames * sizeof(float));
+        }
+    }
+    for (Steinberg::int32 b = 0; b < p->process_data.numInputs; ++b) {
+        SV::AudioBusBuffers& bus = p->process_data.inputs[b];
+        bus.silenceFlags = SV::HostProcessData::kAllChannelsSilent;
+        for (Steinberg::int32 c = 0; c < bus.numChannels; ++c) {
+            if (bus.channelBuffers32[c]) memset(bus.channelBuffers32[c], 0, (size_t)frames * sizeof(float));
+        }
+    }
+
+    p->process_data.numSamples = frames;
+    Steinberg::tresult result = p->processor->process(p->process_data);
+
+    if (result == Steinberg::kResultOk && p->main_out_bus < p->process_data.numOutputs) {
+        SV::AudioBusBuffers& bus = p->process_data.outputs[p->main_out_bus];
+        for (int c = 0; c < channel_count; ++c) {
+            // A mono plugin feeds both device channels.
+            Steinberg::int32 src = c < bus.numChannels ? c : bus.numChannels - 1;
+            if (src < 0 || !bus.channelBuffers32[src]) continue;
+            memcpy(outputs[c], bus.channelBuffers32[src], (size_t)frames * sizeof(float));
+        }
+    }
+
+    p->context.projectTimeSamples += frames;
+    p->context.continousTimeSamples += frames;
+    p->context.projectTimeMusic = (double)p->context.projectTimeSamples / p->sample_rate * (p->context.tempo / 60.0);
+
+    p->events.clear();
+    p->param_changes.clearQueue();
+}
+
+// --- Editor --------------------------------------------------------------------
+
+bool host_plugin_editor_create(HostPlugin* p, float content_scale, int* width, int* height) {
+    *width = 0;
+    *height = 0;
+    if (!p->controller) return false;
+    host_plugin_editor_close(p);
+
+    p->view = p->controller->createView(SV::ViewType::kEditor);
+    if (!p->view) {
+        fr_log("host: the controller has no editor view");
+        return false;
+    }
+    if (p->view->isPlatformTypeSupported(HOST_PLATFORM_VIEW_TYPE) != Steinberg::kResultTrue) {
+        fr_log("host: the editor does not support this platform's window type");
+        p->view->release();
+        p->view = nullptr;
+        return false;
+    }
+    host_plugin_editor_set_scale(p, content_scale);
+
+    Steinberg::ViewRect rect;
+    if (p->view->getSize(&rect) == Steinberg::kResultTrue) {
+        *width = rect.getWidth();
+        *height = rect.getHeight();
+    }
+    return true;
+}
+
+bool host_plugin_editor_attach(HostPlugin* p, void* parent_window, HostResizeFn resize_fn, void* user) {
+    if (!p->view) return false;
+    p->callbacks.resize_fn = resize_fn;
+    p->callbacks.resize_user = user;
+    p->view->setFrame(&p->callbacks);
+    if (p->view->attached(parent_window, HOST_PLATFORM_VIEW_TYPE) != Steinberg::kResultTrue) {
+        fr_log("host: IPlugView::attached failed");
+        p->view->setFrame(nullptr);
+        p->view->release();
+        p->view = nullptr;
+        return false;
+    }
+    p->view_attached = true;
+    return true;
+}
+
+void host_plugin_editor_close(HostPlugin* p) {
+    if (!p->view) return;
+    p->view->setFrame(nullptr);
+    if (p->view_attached) p->view->removed();
+    p->view_attached = false;
+    p->view->release();
+    p->view = nullptr;
+    p->callbacks.resize_fn = nullptr;
+    p->callbacks.resize_user = nullptr;
+}
+
+bool host_plugin_editor_is_open(const HostPlugin* p) {
+    return p->view != nullptr && p->view_attached;
+}
+
+void host_plugin_editor_set_scale(HostPlugin* p, float content_scale) {
+    if (!p->view) return;
+    Steinberg::FUnknownPtr<Steinberg::IPlugViewContentScaleSupport> css(p->view);
+    if (css) css->setContentScaleFactor(content_scale);
+}
+
+void host_plugin_editor_fit(HostPlugin* p, int avail_width, int avail_height, int* width, int* height) {
+    Steinberg::ViewRect current;
+    if (!p->view || p->view->getSize(&current) != Steinberg::kResultTrue) return;
+    *width = current.getWidth();
+    *height = current.getHeight();
+    if (p->view->canResize() != Steinberg::kResultTrue) return;
+    if (avail_width <= 0 || avail_height <= 0) return;
+
+    Steinberg::ViewRect want(0, 0, avail_width, avail_height);
+    p->view->checkSizeConstraint(&want);   // the plugin adjusts want to what it accepts
+    if (want.getWidth() <= 0 || want.getHeight() <= 0) return;
+    if (want.getWidth() == current.getWidth() && want.getHeight() == current.getHeight()) return;
+
+    p->callbacks.in_resize = true;
+    p->view->onSize(&want);
+    p->callbacks.in_resize = false;
+    if (p->view->getSize(&current) == Steinberg::kResultTrue) {
+        *width = current.getWidth();
+        *height = current.getHeight();
+    }
+}
