@@ -51,8 +51,13 @@ struct ResampleConfig {
 
     float hold_seconds;                             // note on to note off
     float gap_seconds;                              // note off to the segment's end
+    int   sample_rate;                              // the render's rate; 0 = the audio device's
     char  output_dir[FR_MAX_PATH];
 };
+
+// The export rates the tab offers, besides the device's own.
+#define RESAMPLE_RATE_OPTION_COUNT 6
+static const int g_resample_rate_options[RESAMPLE_RATE_OPTION_COUNT] = { 44100, 48000, 88200, 96000, 176400, 192000 };
 
 struct ResampleEvent {
     int64_t   frame;

@@ -6,8 +6,10 @@
 // build.bat): fastsampler.pb.h for the .fsi message, fastsampler_fsb.h for
 // the bank header and rows. Nothing about their layout is repeated here.
 //
-// The mapping: one zone collection per round robin, named RR1, RR2, ...
-// Inside a collection the zones cover the sampled range without holes. Every
+// The mapping: one zone collection per round robin, named RR1, RR2, ..., each
+// carrying FastSampler's round robin effect on a shared counter so the
+// collections take turns. Inside a collection the zones cover the sampled
+// range without holes. Every
 // key between two sampled notes goes to the nearer one, a key exactly in the
 // middle to the upper one, so it plays pitched down. Velocities split the
 // same way: each sampled velocity takes the range from the one below it up to

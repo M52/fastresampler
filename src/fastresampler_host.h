@@ -39,7 +39,9 @@ HostPlugin* host_plugin_load(HostContext* ctx, const char* path, double sample_r
 void        host_plugin_unload(HostPlugin* p);
 
 // Stops, reconfigures, and restarts processing. Not while process() can run.
-bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_size);
+// Offline tells the plugin it is being rendered, not played: it may take its
+// time and render at its best quality.
+bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_size, bool offline);
 
 // Audio thread. Drains the MIDI queue into this block's events, runs the
 // plugin, and copies its main output into outputs[0..channel_count).

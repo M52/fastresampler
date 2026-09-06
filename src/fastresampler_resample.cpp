@@ -13,6 +13,8 @@
 #define RESAMPLE_DEFAULT_GAP_SECONDS         2.0f
 #define RESAMPLE_DEFAULT_PREROLL_GAP_SECONDS 1.0f
 #define RESAMPLE_DEFAULT_STEP                2
+// The highest rate common plugins render without complaint; 192 kHz is on the list.
+#define RESAMPLE_DEFAULT_SAMPLE_RATE         96000
 #define RESAMPLE_DEFAULT_OUTPUT_DIR_NAME     "samples"
 #define RESAMPLE_FULL_FILE_SUFFIX            "_full.wav"
 
@@ -27,6 +29,7 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->preroll_gap_seconds = RESAMPLE_DEFAULT_PREROLL_GAP_SECONDS;
     cfg->hold_seconds = RESAMPLE_DEFAULT_HOLD_SECONDS;
     cfg->gap_seconds = RESAMPLE_DEFAULT_GAP_SECONDS;
+    cfg->sample_rate = RESAMPLE_DEFAULT_SAMPLE_RATE;
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));
     plat_path_join(cfg->output_dir, sizeof(cfg->output_dir), dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);

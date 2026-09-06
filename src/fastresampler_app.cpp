@@ -217,7 +217,7 @@ static void app_apply_audio(App* app) {
     if (app->plugin) {
         double sample_rate = ok ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
         int block_size = ok ? app->audio.block_size : app->settings.block_size;
-        if (!host_plugin_setup_processing(app->plugin, sample_rate, block_size)) {
+        if (!host_plugin_setup_processing(app->plugin, sample_rate, block_size, false)) {
             app_set_status(app, true, "The plugin refused %.0f Hz with %d frames.", sample_rate, block_size);
         }
     }
@@ -238,9 +238,15 @@ bool app_instrument_running(const App* app) {
     return app->instrument_job.running.load();
 }
 
-// The rate the plugin runs at right now, which is the rate the script must use.
-static double app_plugin_sample_rate(const App* app) {
+// The rate the plugin plays at: the device's, or the default with no device.
+static double app_device_sample_rate(const App* app) {
     return app->audio.open ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
+}
+
+// The rate a render runs at: the tab's choice, or the device's.
+static double app_resample_rate(const App* app) {
+    int chosen = app->settings.resample.sample_rate;
+    return chosen > 0 ? (double)chosen : app_device_sample_rate(app);
 }
 
 void app_resample_build(App* app) {
@@ -249,7 +255,7 @@ void app_resample_build(App* app) {
     app->resample_fsi_ready = false;
     app->instrument_result_text[0] = '\0';
     char err[FR_STATUS_LEN];
-    if (!resample_build(&app->resample_script, &app->settings.resample, app_plugin_sample_rate(app), err, sizeof(err))) {
+    if (!resample_build(&app->resample_script, &app->settings.resample, app_resample_rate(app), err, sizeof(err))) {
         fr_strcpy(app->resample_build_text, sizeof(app->resample_build_text), err);
         app->resample_build_is_error = true;
         return;
@@ -277,7 +283,7 @@ static void app_resample_start(App* app) {
         app->resample_result_is_error = true;
         return;
     }
-    if (app->resample_script.sample_rate != app_plugin_sample_rate(app)) {
+    if (app->resample_script.sample_rate != app_resample_rate(app)) {
         fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text),
                   "The sample rate changed since the build. Build the MIDI again.");
         app->resample_result_is_error = true;
@@ -290,11 +296,23 @@ static void app_resample_start(App* app) {
         return;
     }
     // The worker owns the plugin until it is done; the device plays silence.
+    // The plugin is switched to the export rate, in offline mode, for the
+    // duration; app_resample_finish() puts it back on the device.
     app_pause_plugin(app);
     int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
+    double export_rate = app->resample_script.sample_rate;
+    if (!host_plugin_setup_processing(app->plugin, export_rate, block_size, true)) {
+        snprintf(app->resample_result_text, sizeof(app->resample_result_text),
+                 "The plugin refused %.0f Hz. Pick another export rate.", export_rate);
+        app->resample_result_is_error = true;
+        host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false);
+        app_resume_plugin(app);
+        return;
+    }
     if (!resample_start(&app->resample_job, app->plugin, &app->resample_script, block_size, &app->settings.resample)) {
         fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "The render could not start.");
         app->resample_result_is_error = true;
+        host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false);
         app_resume_plugin(app);
         return;
     }
@@ -313,6 +331,13 @@ static void app_resample_finish(App* app) {
     app_set_status(app, job->result_is_error, "%s", job->result);
     app->resample_fsi_ready = !job->result_is_error && !job->cancel.load() &&
                               job->files_written == app->resample_script.segment_count;
+    // Back to the device's rate and realtime mode.
+    if (app->plugin) {
+        int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
+        if (!host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false)) {
+            app_set_status(app, true, "The plugin refused to return to %.0f Hz.", app_device_sample_rate(app));
+        }
+    }
     app_resume_plugin(app);
 }
 

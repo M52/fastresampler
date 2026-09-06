@@ -281,6 +281,27 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
         col->has_output_bus = true; col->output_bus = 0;
     }
 
+    // With more than one round robin, every collection gets FastSampler's
+    // round robin effect on one shared instrument counter: each note advances
+    // the counter, and collection k sounds when it stands at k. That is how
+    // FastSampler links round robin collections; no link rows are involved.
+    msg->collection_fx_count = 0;
+    if (msg->collections_count > 1) {
+        for (pb_size_t ci = 0; ci < msg->collections_count; ++ci) {
+            FSICollectionFX* fx = &msg->collection_fx[msg->collection_fx_count++];
+            memset(fx, 0, sizeof(*fx));
+            fx->type = (uint32_t)COLLECTION_FX_ROUND_ROBIN;
+            fx->collection_index = (uint32_t)ci;
+            fx->params_count = CFX_RR_MODE + 1;
+            fx->params[CFX_STRENGTH] = 1.0f;
+            fx->params[CFX_RR_START] = 1.0f;
+            fx->params[CFX_RR_END] = (float)msg->collections_count;
+            fx->params[CFX_RR_ACTIVATE_STEP] = (float)(ci + 1);
+            fx->params[CFX_RR_GLOBAL_COUNTER] = 1.0f;
+            fx->params[CFX_RR_MODE] = 0.0f;   // sequence
+        }
+    }
+
     msg->zones_count = (pb_size_t)zone_count;
     for (int z = 0; z < zone_count; ++z) {
         const ResampleSegment* seg = &job->script->segments[map[z].segment];
@@ -350,9 +371,9 @@ static void instrument_thread_main(void* user) {
         fr_strcpy(job->result, sizeof(job->result), "Cancelled; the instrument files are incomplete.");
         job->result_is_error = true;
     } else if (ok) {
-        snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s.",
+        snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s%s.",
                  plat_path_basename(job->fsi_path), plat_path_basename(job->fsb_path), zone_count,
-                 rr_count, rr_count == 1 ? "" : "s");
+                 rr_count, rr_count == 1 ? "" : "s", rr_count > 1 ? " linked by a round robin effect" : "");
         job->result_is_error = false;
     } else {
         job->result_is_error = true;

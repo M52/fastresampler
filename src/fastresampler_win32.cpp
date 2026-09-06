@@ -100,6 +100,9 @@
 #include "fastsampler.pb.c"
 #include "fileformats/fastsampler_fsb.h"
 #include "fileformats/fastsampler_pb.h"
+// The collection effect ids and parameter slots, for the round robin effect
+// the instrument builder writes.
+#include "fx/collection/fastsampler_cfx.h"
 
 #pragma warning(pop)
 

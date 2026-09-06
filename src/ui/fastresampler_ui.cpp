@@ -297,6 +297,27 @@ static void ui_tab_resample(App* app, float scale) {
     ImGui::InputFloat("##gap", &cfg->gap_seconds, 0.0f, 0.0f, "%.2f");
     ui_hint("Each note is held, then left to ring out for the gap; the sample file spans both.");
 
+    ui_label("Sample rate", scale);
+    char rate_label[48];
+    if (cfg->sample_rate > 0) {
+        snprintf(rate_label, sizeof(rate_label), "%d Hz", cfg->sample_rate);
+    } else if (app->audio.open) {
+        snprintf(rate_label, sizeof(rate_label), "Same as device (%.0f Hz)", app->audio.sample_rate);
+    } else {
+        fr_strcpy(rate_label, sizeof(rate_label), "Same as device");
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##rate", rate_label)) {
+        if (ImGui::Selectable("Same as device", cfg->sample_rate == 0)) cfg->sample_rate = 0;
+        for (int i = 0; i < RESAMPLE_RATE_OPTION_COUNT; ++i) {
+            char item[32];
+            snprintf(item, sizeof(item), "%d Hz", g_resample_rate_options[i]);
+            if (ImGui::Selectable(item, cfg->sample_rate == g_resample_rate_options[i])) cfg->sample_rate = g_resample_rate_options[i];
+        }
+        ImGui::EndCombo();
+    }
+    ui_hint("The plugin renders at this rate, offline, and returns to the device's rate afterwards. The samples and the bank keep it.");
+
     ui_label("Output folder", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##output", cfg->output_dir, sizeof(cfg->output_dir));

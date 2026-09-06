@@ -353,7 +353,7 @@ HostPlugin* host_plugin_load(HostContext* ctx, const char* path, double sample_r
     p->process_data.outputParameterChanges = nullptr;
     p->process_data.outputEvents = nullptr;
 
-    if (!host_plugin_setup_processing(p, sample_rate, block_size)) {
+    if (!host_plugin_setup_processing(p, sample_rate, block_size, false)) {
         host_fail(err, err_len, "The plugin refused the processing setup");
         host_plugin_unload(p);
         return nullptr;
@@ -398,7 +398,7 @@ void host_plugin_unload(HostPlugin* p) {
     delete p;
 }
 
-bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_size) {
+bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_size, bool offline) {
     if (!p->processor || !p->component) return false;
     if (p->processing) {
         p->processor->setProcessing(false);
@@ -417,7 +417,7 @@ bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_s
         return false;
     }
     SV::ProcessSetup setup = {};
-    setup.processMode = SV::kRealtime;
+    setup.processMode = offline ? SV::kOffline : SV::kRealtime;
     setup.symbolicSampleSize = SV::kSample32;
     setup.maxSamplesPerBlock = block_size;
     setup.sampleRate = sample_rate;
