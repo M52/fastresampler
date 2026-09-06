@@ -87,12 +87,16 @@ Layout of the window:
   sample, its pre-roll, hold and gap, in a bezier or freehand editor after
   FastSampler's, and sent along with every note: a CC1 held at 127, say, so a
   sustain patch plays its loudest dynamic layer. The tab is laid out in
-  sections under capitalised orange headings: the samples' folder and the
-  numbered Build MIDI and Render to WAV buttons make up Output, and the
-  preload size, the instrument's own folder, Remove full WAV and the FSI + FSB
-  build make up Export to FastSampler. Remove full WAV deletes the one long
-  WAV the samples and the bank are both cut from, once the bank has been built
-  from it, so the folder keeps only the samples and the instrument. Both folders are picked with the system's dialog.
+  sections under capitalised orange headings: the samples' folder, Generate
+  split samples and the numbered Build MIDI and Render to WAV buttons make up
+  Output, and the preload size, the instrument's own folder, Remove full WAV
+  and the FSI + FSB build make up Export to FastSampler. Both boxes follow
+  from the bank being cut from the full WAV, not from the sample files:
+  Generate split samples, on by default, cuts that WAV into one file per
+  sample and can be turned off by a run that only exports to FastSampler, and
+  Remove full WAV deletes the WAV once the bank has been built from it. With
+  the first off and the second on, an export is Build MIDI, Render to WAV,
+  Build FSI + FSB, and the folder is left holding only the instrument. Both folders are picked with the system's dialog.
   Save resampling project, last of all, writes every setting of the tab to
   `Projects\<name>.yaml` next to the exe and loads one back from the list of
   what is in that folder; a load starts the tab again at Build MIDI.

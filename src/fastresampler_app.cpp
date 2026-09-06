@@ -291,7 +291,7 @@ static void app_format_bytes(uint64_t bytes, char* out, size_t out_len) {
 static bool app_check_disk_space(App* app) {
     if (!app->resample_script.built) return true;
     const char* dir = app->settings.resample.output_dir;
-    uint64_t needed = resample_required_bytes(&app->resample_script);
+    uint64_t needed = resample_required_bytes(&app->resample_script, app->settings.resample.split_samples);
     uint64_t free_bytes = 0;
     char needed_text[32], free_text[32];
     app_format_bytes(needed, needed_text, sizeof(needed_text));
@@ -304,9 +304,15 @@ static bool app_check_disk_space(App* app) {
     }
     if (free_bytes < needed) {
         app_format_bytes(free_bytes, free_text, sizeof(free_text));
-        snprintf(app->disk_warning, sizeof(app->disk_warning),
-                 "Not enough disk space for the render. The full WAV and the %d sample files take %s; the disk that holds %s has %s free.",
-                 app->resample_script.segment_count, needed_text, dir, free_text);
+        if (app->settings.resample.split_samples) {
+            snprintf(app->disk_warning, sizeof(app->disk_warning),
+                     "Not enough disk space for the render. The full WAV and the %d sample files take %s; the disk that holds %s has %s free.",
+                     app->resample_script.segment_count, needed_text, dir, free_text);
+        } else {
+            snprintf(app->disk_warning, sizeof(app->disk_warning),
+                     "Not enough disk space for the render. The full WAV takes %s; the disk that holds %s has %s free.",
+                     needed_text, dir, free_text);
+        }
         app->disk_warning_open = true;
         fr_log("disk: %s", app->disk_warning);
         return false;
@@ -406,8 +412,8 @@ static void app_resample_finish(App* app) {
     fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), job->result);
     app->resample_result_is_error = job->result_is_error;
     app_set_status(app, job->result_is_error, "%s", job->result);
-    app->resample_fsi_ready = !job->result_is_error && !job->cancel.load() &&
-                              job->files_written == app->resample_script.segment_count;
+    bool samples_ok = !job->split_samples || job->files_written == app->resample_script.segment_count;
+    app->resample_fsi_ready = !job->result_is_error && !job->cancel.load() && samples_ok;
     // Back to the device's rate and realtime mode.
     if (app->plugin) {
         int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;

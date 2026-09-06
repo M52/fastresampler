@@ -124,6 +124,7 @@ bool project_save(const ResampleConfig* cfg, const char* name, char* err, size_t
     fprintf(f, "gap_ms: %d\n", project_ms(cfg->gap_seconds));
     fprintf(f, "sample_rate: %d\n", cfg->sample_rate);
     fprintf(f, "render_speed: %d\n", cfg->render_speed);
+    fprintf(f, "split_samples: %s\n", cfg->split_samples ? "true" : "false");
     fprintf(f, "delete_full_wav: %s\n", cfg->delete_full_wav ? "true" : "false");
     project_write_string(f, "output_dir", cfg->output_dir);
     project_write_string(f, "export_dir", cfg->export_dir);
@@ -223,6 +224,7 @@ bool project_load(ResampleConfig* cfg, const char* name, char* err, size_t err_l
     out.gap_seconds = project_seconds(root, "gap_ms", out.gap_seconds, 0);
     out.sample_rate = resample_valid_sample_rate(yaml_get_int(root, "sample_rate", out.sample_rate));
     out.render_speed = resample_valid_render_speed(yaml_get_int(root, "render_speed", out.render_speed), out.render_speed);
+    out.split_samples = yaml_get_bool(root, "split_samples", out.split_samples);
     out.delete_full_wav = yaml_get_bool(root, "delete_full_wav", out.delete_full_wav);
     fr_strcpy(out.output_dir, sizeof(out.output_dir), yaml_get_string(root, "output_dir", out.output_dir));
     fr_strcpy(out.export_dir, sizeof(out.export_dir), yaml_get_string(root, "export_dir", out.export_dir));

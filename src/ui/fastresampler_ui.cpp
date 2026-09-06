@@ -550,6 +550,11 @@ static void ui_tab_resample(App* app, float scale) {
     ui_section("Output", scale);
     ui_folder_row("Folder", cfg->output_dir, busy, &app->output_dir_pick_request, scale);
     ImGui::BeginDisabled(busy);
+    ImGui::Checkbox("Generate split samples", &cfg->split_samples);
+    ImGui::EndDisabled();
+    ui_hint("Cuts the full WAV into one file per sample. The FSI + FSB bank is cut from that same WAV, "
+            "so a run that only exports to FastSampler does not need these files.");
+    ImGui::BeginDisabled(busy);
     if (ImGui::Button("1. Build MIDI", ImVec2(-1.0f, 0.0f))) app_resample_build(app);
     ImGui::EndDisabled();
     if (app->resample_build_text[0]) {
@@ -580,8 +585,10 @@ static void ui_tab_resample(App* app, float scale) {
             ui_hint("Load a plugin to render.");
         } else if (!app->resample_script.built) {
             ui_hint("Build the MIDI to render.");
-        } else {
+        } else if (cfg->split_samples) {
             ui_hint("Renders faster than realtime with the speakers silent, then splits the file into one WAV per sample.");
+        } else {
+            ui_hint("Renders faster than realtime with the speakers silent, into the one long WAV the bank is built from.");
         }
     }
     if (app->resample_result_text[0]) {
@@ -606,9 +613,8 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ui_hint("How much of every sample the bank keeps in RAM; the rest streams from disk while it plays. RAM holds every sample whole.");
     ui_folder_row("Folder", cfg->export_dir, busy, &app->export_dir_pick_request, scale);
-    ui_label("Remove full WAV", scale);
     ImGui::BeginDisabled(busy);
-    ImGui::Checkbox("##deletefullwav", &cfg->delete_full_wav);
+    ImGui::Checkbox("Remove full WAV", &cfg->delete_full_wav);
     ImGui::EndDisabled();
     ui_hint("Deletes the one long WAV the samples and the bank are both cut from, once the bank has been built from it, "
             "so the folder keeps only the samples and the instrument.");
@@ -627,8 +633,10 @@ static void ui_tab_resample(App* app, float scale) {
             ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the output folder.");
         } else if (app->resample_full_wav_removed) {
             ui_hint("The bank was built and the full WAV removed with it. Render again to build another one.");
-        } else {
+        } else if (cfg->split_samples) {
             ui_hint("Available once the samples are rendered and split.");
+        } else {
+            ui_hint("Available once the WAV is rendered.");
         }
     }
     if (app->instrument_result_text[0]) {

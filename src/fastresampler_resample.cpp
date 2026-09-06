@@ -35,6 +35,7 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->gap_seconds = RESAMPLE_DEFAULT_GAP_SECONDS;
     cfg->sample_rate = RESAMPLE_DEFAULT_SAMPLE_RATE;
     cfg->render_speed = RESAMPLE_DEFAULT_RENDER_SPEED;
+    cfg->split_samples = true;
     cfg->delete_full_wav = false;
     cfg->preload_frames = RESAMPLE_DEFAULT_PRELOAD_FRAMES;
     char dir[FR_MAX_PATH];
@@ -73,9 +74,10 @@ void resample_preload_label(int preload_frames, char* out, size_t out_len) {
     }
 }
 
-uint64_t resample_required_bytes(const ResampleScript* script) {
+uint64_t resample_required_bytes(const ResampleScript* script, bool split_samples) {
     uint64_t frame_bytes = (uint64_t)FR_OUTPUT_CHANNELS * sizeof(float);
     uint64_t total = (uint64_t)script->total_frames * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
+    if (!split_samples) return total;
     for (int i = 0; i < script->segment_count; ++i) {
         const ResampleSegment* seg = &script->segments[i];
         total += (uint64_t)(seg->end_frame - seg->start_frame) * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
@@ -632,7 +634,7 @@ static void resample_thread_main(void* user) {
 
     int64_t frames_done = 0;
     bool ok = resample_render(job, &frames_done);
-    if (ok && !job->cancel.load()) ok = resample_split(job);
+    if (ok && !job->cancel.load() && job->split_samples) ok = resample_split(job);
 
     job->elapsed_seconds = (double)(plat_ms_now() - started_ms) / 1000.0;
     double audio_seconds = (double)frames_done / script->sample_rate;
@@ -640,14 +642,23 @@ static void resample_thread_main(void* user) {
     float peak_db = job->peak > 0.000001f ? 20.0f * log10f(job->peak) : -120.0f;
     if (!ok) {
         job->result_is_error = true;   // result already says what failed
-    } else if (job->cancel.load()) {
+    } else if (job->cancel.load() && job->split_samples) {
         snprintf(job->result, sizeof(job->result), "Cancelled after %.1f s of audio and %d sample files.",
                  audio_seconds, job->files_written);
         job->result_is_error = false;
-    } else {
+    } else if (job->cancel.load()) {
+        snprintf(job->result, sizeof(job->result), "Cancelled after %.1f s of audio.", audio_seconds);
+        job->result_is_error = false;
+    } else if (job->split_samples) {
         snprintf(job->result, sizeof(job->result),
                  "Wrote %d samples to %s: %.1f s of audio in %.1f s (%.1fx realtime), peak %.1f dBFS.",
                  job->files_written, job->out_dir, audio_seconds, job->elapsed_seconds, speed, peak_db);
+        job->result_is_error = false;
+    } else {
+        // No split: the one long WAV is the whole of what the render made.
+        snprintf(job->result, sizeof(job->result),
+                 "Wrote %s to %s: %.1f s of audio in %.1f s (%.1fx realtime), peak %.1f dBFS.",
+                 plat_path_basename(job->full_path), job->out_dir, audio_seconds, job->elapsed_seconds, speed, peak_db);
         job->result_is_error = false;
     }
     fr_log("resample: %s", job->result);
@@ -665,6 +676,7 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
     job->script = script;
     job->block_size = block_size > FR_MAX_BLOCK_SIZE ? FR_MAX_BLOCK_SIZE : block_size;
     job->speed = cfg->render_speed < 0 ? 0 : cfg->render_speed;
+    job->split_samples = cfg->split_samples;
     fr_strcpy(job->out_dir, sizeof(job->out_dir), cfg->output_dir);
     char full_name[RESAMPLE_FILE_NAME_LEN];
     snprintf(full_name, sizeof(full_name), "%s%s", job->prefix, RESAMPLE_FULL_FILE_SUFFIX);
@@ -685,8 +697,8 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
         job->running.store(false);
         return false;
     }
-    fr_log("resample: rendering %d events, %d samples, to %s at %dx realtime (0 = unlimited)",
-           script->count, script->segment_count, job->out_dir, job->speed);
+    fr_log("resample: rendering %d events, %d samples, to %s at %dx realtime (0 = unlimited), split %s",
+           script->count, script->segment_count, job->out_dir, job->speed, job->split_samples ? "on" : "off");
     return true;
 }
 

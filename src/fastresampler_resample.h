@@ -79,6 +79,7 @@ struct ResampleConfig {
     int   sample_rate;                              // the render's rate; 0 = the audio device's
     int   render_speed;                             // realtime multiple the render is held to; 0 = unlimited
     char  output_dir[FR_MAX_PATH];                  // the full WAV and the sample files
+    bool  split_samples;                            // cut the full WAV into one file per sample
     bool  delete_full_wav;                          // remove the full WAV once the bank is built from it
     char  export_dir[FR_MAX_PATH];                  // the .fsi and .fsb
     int   preload_frames;                           // frames of each sample the bank keeps in RAM; 0 = whole samples
@@ -156,6 +157,7 @@ struct ResampleJob {
     char                   out_dir[FR_MAX_PATH];
     char                   full_path[FR_MAX_PATH];      // the one long WAV
     char                   prefix[RESAMPLE_FILE_NAME_LEN]; // Microphone_Instrument_Articulation
+    bool                   split_samples;
 
     char   result[FR_STATUS_LEN];
     bool   result_is_error;
@@ -179,9 +181,9 @@ const char* resample_step_label(int step);
 // The dropdown label for a preload size: "RAM" for 0, else "8192 frames".
 void resample_preload_label(int preload_frames, char* out, size_t out_len);
 
-// Bytes a render writes to the output folder: the full WAV and one file per
-// sample, all 32 bit float with a header each.
-uint64_t resample_required_bytes(const ResampleScript* script);
+// Bytes a render writes to the output folder: the full WAV and, when the
+// split runs, one file per sample, all 32 bit float with a header each.
+uint64_t resample_required_bytes(const ResampleScript* script, bool split_samples);
 
 // --- Controller curves ---------------------------------------------------------
 

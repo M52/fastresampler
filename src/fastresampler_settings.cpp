@@ -192,6 +192,8 @@ bool settings_load(Settings* s, const char* path) {
             s->resample.sample_rate = resample_valid_sample_rate(atoi(value));
         } else if (strcmp(key, "resample_render_speed") == 0) {
             s->resample.render_speed = resample_valid_render_speed(atoi(value), s->resample.render_speed);
+        } else if (strcmp(key, "resample_split_samples") == 0) {
+            s->resample.split_samples = atoi(value) != 0;
         } else if (strcmp(key, "resample_delete_full_wav") == 0) {
             s->resample.delete_full_wav = atoi(value) != 0;
         } else if (strcmp(key, "resample_output_dir") == 0) {
@@ -291,6 +293,7 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_microphone \"%s\"\n", s->resample.microphone);
     fprintf(f, "resample_sample_rate %d\n", s->resample.sample_rate);
     fprintf(f, "resample_render_speed %d\n", s->resample.render_speed);
+    fprintf(f, "resample_split_samples %d\n", s->resample.split_samples ? 1 : 0);
     fprintf(f, "resample_delete_full_wav %d\n", s->resample.delete_full_wav ? 1 : 0);
     fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
     fprintf(f, "resample_export_dir \"%s\"\n", s->resample.export_dir);
