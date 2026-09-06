@@ -70,6 +70,7 @@ void app_init(App* app) {
     app->audio_apply_request = false;
     app->audio_refresh_request = false;
     app->output_dir_pick_request = false;
+    app->export_dir_pick_request = false;
     app->disk_warning[0] = '\0';
     app->disk_warning_open = false;
     app->editor_open = false;
@@ -406,9 +407,17 @@ static void app_instrument_start(App* app) {
         app->instrument_result_is_error = true;
         return;
     }
+    const char* export_dir = app->settings.resample.export_dir;
+    if (export_dir[0] == '\0') export_dir = app->resample_job.out_dir;
+    if (!plat_dir_create(export_dir)) {
+        snprintf(app->instrument_result_text, sizeof(app->instrument_result_text),
+                 "Could not create the export folder %s", export_dir);
+        app->instrument_result_is_error = true;
+        return;
+    }
     // The bank is cut from the same full WAV the samples came from.
     if (!instrument_start(&app->instrument_job, &app->resample_script, &app->settings.resample,
-                          app->resample_job.full_path, app->resample_job.out_dir, prefix)) {
+                          app->resample_job.full_path, export_dir, prefix)) {
         fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), "The instrument build could not start.");
         app->instrument_result_is_error = true;
         return;
@@ -426,7 +435,7 @@ static void app_instrument_finish(App* app) {
 }
 
 void app_process_requests(App* app) {
-    // The folder picker is modal and pumps messages; it runs here, outside
+    // The folder pickers are modal and pump messages; they run here, outside
     // the ImGui frame, so a repaint meanwhile cannot re-enter the UI.
     if (app->output_dir_pick_request) {
         app->output_dir_pick_request = false;
@@ -434,8 +443,17 @@ void app_process_requests(App* app) {
         if (plat_pick_folder(view_native_window(app->view), app->settings.resample.output_dir, dir, sizeof(dir))) {
             fr_strcpy(app->settings.resample.output_dir, sizeof(app->settings.resample.output_dir), dir);
             settings_save(&app->settings, app->settings_path);
-            app_set_status(app, false, "Output folder: %s", dir);
+            app_set_status(app, false, "Samples go to %s", dir);
             app_check_disk_space(app);
+        }
+    }
+    if (app->export_dir_pick_request) {
+        app->export_dir_pick_request = false;
+        char dir[FR_MAX_PATH];
+        if (plat_pick_folder(view_native_window(app->view), app->settings.resample.export_dir, dir, sizeof(dir))) {
+            fr_strcpy(app->settings.resample.export_dir, sizeof(app->settings.resample.export_dir), dir);
+            settings_save(&app->settings, app->settings_path);
+            app_set_status(app, false, "The instrument goes to %s", dir);
         }
     }
     if (app->instrument_start_request) {

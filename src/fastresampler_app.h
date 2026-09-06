@@ -77,7 +77,8 @@ struct App {
     bool       rescan_request;
     bool       audio_apply_request;
     bool       audio_refresh_request;
-    bool       output_dir_pick_request; // the folder picker for the resample output
+    bool       output_dir_pick_request; // the folder picker for the samples
+    bool       export_dir_pick_request; // the folder picker for the instrument
 
     // Settings tab scratch: what the combos show before "Apply".
     int        pending_driver;

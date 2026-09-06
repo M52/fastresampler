@@ -33,6 +33,11 @@
 #define CODE_COLOR_ORANGE_VEC4          ImVec4(1.00f, 0.55f, 0.00f, 1.00f) // Orange
 #define CODE_COLOR_ORANGE_U32           IM_COL32(255, 140, 0, 255)
 
+// Section headings in the side panel: the orange FastSampler titles its
+// panels with ("INSTRUMENTS BROWSER"), for the capitals and the double rule.
+#define CODE_COLOR_SECTION_VEC4         CODE_COLOR_ORANGE_VEC4
+#define CODE_COLOR_SECTION_U32          CODE_COLOR_ORANGE_U32
+
 // The selected tab, everywhere.
 #define CODE_COLOR_TAB_SELECTED_VEC4    ImVec4(0.196f, 0.125f, 0.094f, 1.00f) // Dark Brown
 #define CODE_COLOR_SPECTRUM_FILL_U32    IM_COL32(255, 150, 100, 40)

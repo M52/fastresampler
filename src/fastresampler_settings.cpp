@@ -98,6 +98,9 @@ bool settings_load(Settings* s, const char* path) {
 
     // The file replaces the scan path list entirely, so drop the default.
     bool saw_scan_path = false;
+    // A file from before the export folder existed puts the instrument with
+    // its samples, wherever those go.
+    bool saw_export_dir = false;
 
     char* line = text;
     while (line && *line) {
@@ -174,6 +177,11 @@ bool settings_load(Settings* s, const char* path) {
             }
         } else if (strcmp(key, "resample_output_dir") == 0) {
             if (value[0]) fr_strcpy(s->resample.output_dir, sizeof(s->resample.output_dir), value);
+        } else if (strcmp(key, "resample_export_dir") == 0) {
+            if (value[0]) {
+                fr_strcpy(s->resample.export_dir, sizeof(s->resample.export_dir), value);
+                saw_export_dir = true;
+            }
         } else if (strcmp(key, "resample_preload_frames") == 0) {
             // A value off the list leaves the default in place.
             int v = atoi(value);
@@ -224,6 +232,7 @@ bool settings_load(Settings* s, const char* path) {
         }
         line = next;
     }
+    if (!saw_export_dir) fr_strcpy(s->resample.export_dir, sizeof(s->resample.export_dir), s->resample.output_dir);
     // A curve the file skipped over still has to be a curve.
     for (int i = 0; i < s->resample.cc_curve_count; ++i) {
         ResampleCcCurve* c = &s->resample.cc_curves[i];
@@ -262,6 +271,7 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_sample_rate %d\n", s->resample.sample_rate);
     fprintf(f, "resample_render_speed %d\n", s->resample.render_speed);
     fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
+    fprintf(f, "resample_export_dir \"%s\"\n", s->resample.export_dir);
     fprintf(f, "resample_preload_frames %d\n", s->resample.preload_frames);
     fprintf(f, "show_tips %d\n", s->show_tips ? 1 : 0);
     for (int i = 0; i < s->resample.cc_curve_count; ++i) {

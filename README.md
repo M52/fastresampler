@@ -65,8 +65,11 @@ Layout of the window:
   curves (up to eight, one controller each) are drawn over the time of one
   sample, its pre-roll, hold and gap, in a bezier or freehand editor after
   FastSampler's, and sent along with every note: a CC1 held at 127, say, so a
-  sustain patch plays its loudest dynamic layer. The output folder is picked
-  with the system's folder dialog. **Settings** has the folders to scan, the
+  sustain patch plays its loudest dynamic layer. The tab is laid out in
+  sections under capitalised orange headings: the samples' folder and the
+  numbered Build MIDI and Render to WAV buttons make up Output, and the
+  preload size, the instrument's own folder and the FSI + FSB build make up
+  Export to FastSampler. Both folders are picked with the system's dialog. **Settings** has the folders to scan, the
   audio device and block size, the ASIO control panel, and whether the tips
   (the dim lines that explain a control) are shown.
 - Right: the plugin list when nothing is loaded (double-click to load), or the

@@ -28,6 +28,11 @@
 // Width of a modal message, like the disk space warning.
 #define UI_MODAL_WIDTH 420.0f
 
+// A section heading's double rule: the space between its two lines, and the
+// room left under a section's last control.
+#define UI_SECTION_RULE_GAP    2.0f
+#define UI_SECTION_BOTTOM_PAD  10.0f
+
 // The meter's floor and the height of its bars.
 #define UI_METER_MIN_DB   -60.0f
 #define UI_METER_HEIGHT   10.0f
@@ -194,6 +199,57 @@ static void ui_label_inline(const char* text) {
     ImGui::SameLine();
 }
 
+// A section heading: the title in capitals in the accent colour over a
+// double rule, as FastSampler titles its panels. ui_section_end() leaves
+// room under the section's last control so the sections stand apart.
+static void ui_section(const char* title, float scale) {
+    char caps[64];
+    size_t i = 0;
+    for (; title[i] && i + 1 < sizeof(caps); ++i) {
+        char c = title[i];
+        caps[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+    }
+    caps[i] = '\0';
+    ImGui::TextColored(CODE_COLOR_SECTION_VEC4, "%s", caps);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    float width = ImGui::GetContentRegionAvail().x;
+    float gap = UI_SECTION_RULE_GAP * scale;
+    dl->AddLine(pos, ImVec2(pos.x + width, pos.y), CODE_COLOR_SECTION_U32, 1.0f);
+    dl->AddLine(ImVec2(pos.x, pos.y + gap + 1.0f), ImVec2(pos.x + width, pos.y + gap + 1.0f), CODE_COLOR_SECTION_U32, 1.0f);
+    ImGui::Dummy(ImVec2(width, gap + 2.0f));
+}
+
+static void ui_section_end(float scale) {
+    ImGui::Dummy(ImVec2(0.0f, UI_SECTION_BOTTOM_PAD * scale));
+}
+
+// A folder row: the folder's name on a button that raises the picker, and
+// the full path fitted to one line under it.
+static void ui_folder_row(const char* label, const char* dir, bool disabled, bool* pick_request, float scale) {
+    ImGui::PushID(label);
+    char button[FR_MAX_PATH + 32];
+    if (dir[0]) {
+        char folder[FR_MAX_PATH];
+        ui_folder_name(dir, folder, sizeof(folder));
+        snprintf(button, sizeof(button), "%s (click to change)##folder", folder);
+    } else {
+        fr_strcpy(button, sizeof(button), "Choose a folder##folder");
+    }
+    ui_label(label, scale);
+    ImGui::BeginDisabled(disabled);
+    if (ImGui::Button(button, ImVec2(-1.0f, 0.0f))) *pick_request = true;
+    ImGui::EndDisabled();
+    if (dir[0]) {
+        char fitted[FR_MAX_PATH + 8];
+        ui_fit_path(dir, ImGui::GetContentRegionAvail().x, fitted, sizeof(fitted));
+        ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_SLOT_LABEL_TEXT);
+        ImGui::TextUnformatted(fitted);
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopID();
+}
+
 // A CC slider: shows the last value sent, sends on change.
 static void ui_cc_slider(App* app, const char* label, int controller, float scale) {
     char text[64];
@@ -231,14 +287,15 @@ static void ui_tab_plugin(App* app, float scale) {
     }
     ImGui::Separator();
 
-    ImGui::Text("Output");
+    ui_section("Output", scale);
     ui_draw_meters(app, scale);
-    ImGui::Separator();
+    ui_section_end(scale);
 
     if (ui_red_button("Close plugin", ImVec2(-1.0f, 0.0f))) app->unload_request = true;
 }
 
 static void ui_tab_midi(App* app, float scale) {
+    ui_section("Channel", scale);
     int channel = app->settings.midi_channel;
     char channel_label[16];
     snprintf(channel_label, sizeof(channel_label), "%d", channel + 1);
@@ -253,9 +310,9 @@ static void ui_tab_midi(App* app, float scale) {
         ImGui::EndCombo();
     }
     ui_hint("Click a key to play it. Lower on the key is louder.");
-    ImGui::Separator();
+    ui_section_end(scale);
 
-    ImGui::Text("Controllers");
+    ui_section("Controllers", scale);
     ui_cc_slider(app, "Mod wheel", MIDI_CC_MOD_WHEEL, scale);
     ui_cc_slider(app, "Breath", MIDI_CC_BREATH, scale);
     ui_cc_slider(app, "Volume", MIDI_CC_VOLUME, scale);
@@ -274,13 +331,11 @@ static void ui_tab_midi(App* app, float scale) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Centre", ImVec2(-1.0f, 0.0f))) app_pitch_bend(app, MIDI_PITCH_BEND_CENTER);
-    ImGui::Separator();
-
     if (app->plugin && !host_plugin_info(app->plugin)->has_midi_mapping) {
         ui_colored_wrapped("This plugin publishes no MIDI controller mapping, so CC and pitch bend do not reach it.",
                            CODE_COLOR_WARNING_VEC4);
-        ImGui::Separator();
     }
+    ui_section_end(scale);
 
     if (ui_red_button("All notes off", ImVec2(-1.0f, 0.0f))) app_all_notes_off(app);
 }
@@ -320,7 +375,7 @@ static void ui_tab_resample(App* app, float scale) {
     bool building = app_instrument_running(app);
     bool busy = rendering || building;
 
-    ImGui::Text("Naming");
+    ui_section("Naming", scale);
     ui_label("Instrument", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##instrument", cfg->instrument, sizeof(cfg->instrument));
@@ -341,9 +396,9 @@ static void ui_tab_resample(App* app, float scale) {
             ui_colored_wrapped(err, CODE_COLOR_WARNING_VEC4);
         }
     }
-    ImGui::Separator();
+    ui_section_end(scale);
 
-    ImGui::Text("Notes");
+    ui_section("Notes", scale);
     // The range is kept as note names in the settings; the sliders edit the
     // numbers behind them and show the name on the grab.
     int low = midi_note_parse(cfg->low_note);
@@ -393,9 +448,9 @@ static void ui_tab_resample(App* app, float scale) {
     ui_time_slider("##prerollgap", &cfg->preroll_gap_seconds, UI_PREROLL_GAP_MIN_SECONDS, UI_PREROLL_GAP_MAX_SECONDS, &g_preroll_drag);
     ImGui::EndDisabled();
     ui_hint("Pre-roll plays n-1 short notes before round robin n, one per gap, so a sampler that resets its counter after silence lands on variation n. The split discards them.");
-    ImGui::Separator();
+    ui_section_end(scale);
 
-    ImGui::Text("Timing");
+    ui_section("Timing", scale);
     ui_label("Hold", scale);
     {
         // The two sliders share the row's width past their labels.
@@ -447,10 +502,10 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ui_hint("A sampler that streams from disk needs time to read its sample tails. If samples come out cut short, lower the speed.");
 
-    ImGui::Separator();
+    ui_section_end(scale);
 
     // The controller curves: one controller each, over the time of a sample.
-    ImGui::Text("Controllers");
+    ui_section("Controllers", scale);
     ImGui::BeginDisabled(busy);
     int remove_curve = -1;
     for (int i = 0; i < cfg->cc_curve_count; ++i) {
@@ -486,56 +541,19 @@ static void ui_tab_resample(App* app, float scale) {
         ui_colored_wrapped("This plugin publishes no MIDI controller mapping, so the curves do not reach it.",
                            CODE_COLOR_WARNING_VEC4);
     }
-    ImGui::Separator();
+    ui_section_end(scale);
 
-    {
-        char label[FR_MAX_PATH + 32];
-        if (cfg->output_dir[0]) {
-            char folder[FR_MAX_PATH];
-            ui_folder_name(cfg->output_dir, folder, sizeof(folder));
-            snprintf(label, sizeof(label), "%s (click to change)##folder", folder);
-        } else {
-            fr_strcpy(label, sizeof(label), "Choose an output folder##folder");
-        }
-        ui_label("Output", scale);
-        ImGui::BeginDisabled(busy);
-        if (ImGui::Button(label, ImVec2(-1.0f, 0.0f))) app->output_dir_pick_request = true;
-        ImGui::EndDisabled();
-        if (cfg->output_dir[0]) {
-            // The full path on one line, shortened from the middle when it is too long.
-            char fitted[FR_MAX_PATH + 8];
-            ui_fit_path(cfg->output_dir, ImGui::GetContentRegionAvail().x, fitted, sizeof(fitted));
-            ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_SLOT_LABEL_TEXT);
-            ImGui::TextUnformatted(fitted);
-            ImGui::PopStyleColor();
-        }
-    }
-    ui_label("Preload", scale);
-    char preload_label[32];
-    resample_preload_label(cfg->preload_frames, preload_label, sizeof(preload_label));
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::BeginCombo("##preload", preload_label)) {
-        for (int i = 0; i < RESAMPLE_PRELOAD_OPTION_COUNT; ++i) {
-            int frames = g_resample_preload_options[i];
-            char item[32];
-            resample_preload_label(frames, item, sizeof(item));
-            if (ImGui::Selectable(item, cfg->preload_frames == frames)) cfg->preload_frames = frames;
-        }
-        ImGui::EndCombo();
-    }
-    ui_hint("How much of every sample the bank keeps in RAM; the rest streams from disk while it plays. RAM holds every sample whole.");
-    ImGui::Separator();
-
-    // Step 1: the script.
+    // The samples: where they go, the script, the render.
+    ui_section("Output", scale);
+    ui_folder_row("Folder", cfg->output_dir, busy, &app->output_dir_pick_request, scale);
     ImGui::BeginDisabled(busy);
-    if (ImGui::Button("Build MIDI", ImVec2(-1.0f, 0.0f))) app_resample_build(app);
+    if (ImGui::Button("1. Build MIDI", ImVec2(-1.0f, 0.0f))) app_resample_build(app);
     ImGui::EndDisabled();
     if (app->resample_build_text[0]) {
         ui_colored_wrapped(app->resample_build_text, app->resample_build_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_SLOT_LABEL_TEXT);
     }
-    ImGui::Separator();
 
-    // Step 2: the render and the split.
+    // The render and the split, once there is a script.
     if (rendering) {
         const ResampleScript* s = &app->resample_script;
         char overlay[64];
@@ -553,7 +571,7 @@ static void ui_tab_resample(App* app, float scale) {
     } else {
         bool can_render = app->plugin != nullptr && app->resample_script.built && !building;
         ImGui::BeginDisabled(!can_render);
-        if (ui_green_button("Render to WAV", ImVec2(-1.0f, 0.0f))) app->resample_start_request = true;
+        if (ImGui::Button("2. Render to WAV", ImVec2(-1.0f, 0.0f))) app->resample_start_request = true;
         ImGui::EndDisabled();
         if (!app->plugin) {
             ui_hint("Load a plugin to render.");
@@ -566,9 +584,25 @@ static void ui_tab_resample(App* app, float scale) {
     if (app->resample_result_text[0]) {
         ui_colored_wrapped(app->resample_result_text, app->resample_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
     }
-    ImGui::Separator();
+    ui_section_end(scale);
 
-    // Step 3: the FastSampler instrument.
+    // The FastSampler instrument: how much of it stays in RAM, where it goes.
+    ui_section("Export to FastSampler", scale);
+    ui_label("Preload", scale);
+    char preload_label[32];
+    resample_preload_label(cfg->preload_frames, preload_label, sizeof(preload_label));
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##preload", preload_label)) {
+        for (int i = 0; i < RESAMPLE_PRELOAD_OPTION_COUNT; ++i) {
+            int frames = g_resample_preload_options[i];
+            char item[32];
+            resample_preload_label(frames, item, sizeof(item));
+            if (ImGui::Selectable(item, cfg->preload_frames == frames)) cfg->preload_frames = frames;
+        }
+        ImGui::EndCombo();
+    }
+    ui_hint("How much of every sample the bank keeps in RAM; the rest streams from disk while it plays. RAM holds every sample whole.");
+    ui_folder_row("Folder", cfg->export_dir, busy, &app->export_dir_pick_request, scale);
     if (building) {
         int done = app->instrument_job.progress.load();
         int total = app->resample_script.segment_count;
@@ -578,7 +612,7 @@ static void ui_tab_resample(App* app, float scale) {
         if (ui_red_button("Cancel##instrument", ImVec2(-1.0f, 0.0f))) instrument_cancel(&app->instrument_job);
     } else {
         ImGui::BeginDisabled(!app->resample_fsi_ready || rendering);
-        if (ui_green_button("Build FSI + FSB", ImVec2(-1.0f, 0.0f))) app->instrument_start_request = true;
+        if (ImGui::Button("Build FSI + FSB", ImVec2(-1.0f, 0.0f))) app->instrument_start_request = true;
         ImGui::EndDisabled();
         if (app->resample_fsi_ready) {
             ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the output folder.");
@@ -589,10 +623,11 @@ static void ui_tab_resample(App* app, float scale) {
     if (app->instrument_result_text[0]) {
         ui_colored_wrapped(app->instrument_result_text, app->instrument_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
     }
+    ui_section_end(scale);
 }
 
 static void ui_tab_settings(App* app, float scale) {
-    ImGui::Text("Plugin folders");
+    ui_section("Plugin folders", scale);
     int remove_index = -1;
     for (int i = 0; i < app->settings.scan_path_count; ++i) {
         char id[32];
@@ -621,9 +656,9 @@ static void ui_tab_settings(App* app, float scale) {
         }
     }
     if (ImGui::Button("Rescan plugins", ImVec2(-1.0f, 0.0f))) app->rescan_request = true;
-    ImGui::Separator();
+    ui_section_end(scale);
 
-    ImGui::Text("Audio output");
+    ui_section("Audio output", scale);
     const char* driver_preview = "No devices";
     char preview_buf[FR_DRIVER_NAME_LEN + 16];
     if (app->pending_driver >= 0 && app->pending_driver < app->drivers.count) {
@@ -662,8 +697,6 @@ static void ui_tab_settings(App* app, float scale) {
     if (audio_has_control_panel(&app->audio)) {
         if (ImGui::Button("ASIO control panel", ImVec2(-1.0f, 0.0f))) audio_control_panel(&app->audio);
     }
-    ImGui::Separator();
-
     if (app->audio.open) {
         ImGui::Text("Running: %s", app->audio.name);
         ImGui::Text("%.0f Hz, %d frames per block", app->audio.sample_rate, app->audio.block_size);
@@ -672,12 +705,13 @@ static void ui_tab_settings(App* app, float scale) {
     } else {
         ui_colored_wrapped("No audio device is open.", CODE_COLOR_WARNING_VEC4);
     }
-    ImGui::Separator();
+    ui_section_end(scale);
 
-    ImGui::Text("Interface");
+    ui_section("Interface", scale);
     ui_label("Show tips", scale);
     ImGui::Checkbox("##tips", &app->settings.show_tips);
     ui_hint("The dim lines that explain a control, like this one.");
+    ui_section_end(scale);
 }
 
 static void ui_draw_side_panel(App* app, ImVec2 size, float scale) {

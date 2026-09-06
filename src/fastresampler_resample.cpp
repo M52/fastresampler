@@ -39,6 +39,8 @@ void resample_config_defaults(ResampleConfig* cfg) {
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));
     plat_path_join(cfg->output_dir, sizeof(cfg->output_dir), dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);
+    // The instrument goes with its samples until told otherwise.
+    fr_strcpy(cfg->export_dir, sizeof(cfg->export_dir), cfg->output_dir);
 }
 
 void resample_preload_label(int preload_frames, char* out, size_t out_len) {
