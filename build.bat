@@ -33,8 +33,18 @@ for %%x in (%*) do (
 
 if not exist build mkdir build
 
-set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "W:\VST_SDK\vst3sdk"
-set DEFINES=/DUNICODE /D_UNICODE /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
+rem The .fsi and .fsb file formats are FastSampler's. Their schema, the nanopb
+rem code generated from it and the bank header are compiled straight out of
+rem the FastSampler checkout, so this build always carries the current format.
+rem Point FASTSAMPLER_DIR elsewhere when the two checkouts are not siblings.
+if "%FASTSAMPLER_DIR%"=="" set FASTSAMPLER_DIR=%~dp0..\fastsampler
+if not exist "%FASTSAMPLER_DIR%\src\fileformats\fastsampler.pb.h" (
+    echo Error: FastSampler sources not found at "%FASTSAMPLER_DIR%". Set FASTSAMPLER_DIR.
+    exit /b 1
+)
+
+set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "W:\VST_SDK\vst3sdk" /I "%FASTSAMPLER_DIR%\src" /I "%FASTSAMPLER_DIR%\src\fileformats" /I "%FASTSAMPLER_DIR%\3rdparty\nanopb"
+set DEFINES=/DUNICODE /D_UNICODE /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /DPB_FIELD_32BIT /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
 set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib shell32.lib dwmapi.lib
 
 echo Compiling fastresampler.exe (build %BUILD_NUM%)...

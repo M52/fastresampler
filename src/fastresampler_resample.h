@@ -124,6 +124,10 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
 void resample_segment_file_name(const ResampleConfig* cfg, const ResampleSegment* seg,
                                 char* out, size_t out_len);
 
+// "Microphone_Instrument_Articulation" from the naming fields, cleaned for a
+// file name. False, with the reason in err, when a field is empty.
+bool resample_prefix(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
+
 // Starts the worker. The caller has taken the plugin away from the audio
 // thread first and gives it back after resample_collect(). The output folder
 // exists by then.

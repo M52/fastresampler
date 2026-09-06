@@ -49,6 +49,13 @@ void app_init(App* app) {
     app->cc_value[MIDI_CC_EXPRESSION] = MIDI_VALUE_MAX;
     app->cc_value[MIDI_CC_PAN] = 64;
     app->pitch_bend = MIDI_PITCH_BEND_CENTER;
+    app->last_note = -1;
+    app->last_velocity = 0;
+    app->active_tab = APP_TAB_PLUGIN;
+    app->range_valid = false;
+    app->range_low = 0;
+    app->range_high = 0;
+    app->range_step = 1;
     for (int c = 0; c < FR_OUTPUT_CHANNELS; ++c) {
         app->peak[c].store(0.0f);
         app->meter[c] = 0.0f;
@@ -76,6 +83,14 @@ void app_init(App* app) {
     app->resample_build_is_error = false;
     app->resample_result_text[0] = '\0';
     app->resample_result_is_error = false;
+    app->instrument_job.running.store(false);
+    app->instrument_job.cancel.store(false);
+    app->instrument_job.finished.store(false);
+    app->instrument_job.progress.store(0);
+    app->instrument_start_request = false;
+    app->resample_fsi_ready = false;
+    app->instrument_result_text[0] = '\0';
+    app->instrument_result_is_error = false;
 
     app->host = host_create();
     app->plugin = nullptr;
@@ -219,12 +234,20 @@ bool app_resample_running(const App* app) {
     return app->resample_job.running.load();
 }
 
+bool app_instrument_running(const App* app) {
+    return app->instrument_job.running.load();
+}
+
 // The rate the plugin runs at right now, which is the rate the script must use.
 static double app_plugin_sample_rate(const App* app) {
     return app->audio.open ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
 }
 
 void app_resample_build(App* app) {
+    if (app_resample_running(app) || app_instrument_running(app)) return;
+    // A new script means the files on disk no longer describe it.
+    app->resample_fsi_ready = false;
+    app->instrument_result_text[0] = '\0';
     char err[FR_STATUS_LEN];
     if (!resample_build(&app->resample_script, &app->settings.resample, app_plugin_sample_rate(app), err, sizeof(err))) {
         fr_strcpy(app->resample_build_text, sizeof(app->resample_build_text), err);
@@ -277,21 +300,64 @@ static void app_resample_start(App* app) {
     }
     app->resample_result_text[0] = '\0';
     app->resample_result_is_error = false;
+    app->resample_fsi_ready = false;
+    app->instrument_result_text[0] = '\0';
     app_set_status(app, false, "Rendering...");
 }
 
 static void app_resample_finish(App* app) {
     if (!resample_collect(&app->resample_job)) return;
-    fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), app->resample_job.result);
-    app->resample_result_is_error = app->resample_job.result_is_error;
-    app_set_status(app, app->resample_job.result_is_error, "%s", app->resample_job.result);
+    ResampleJob* job = &app->resample_job;
+    fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), job->result);
+    app->resample_result_is_error = job->result_is_error;
+    app_set_status(app, job->result_is_error, "%s", job->result);
+    app->resample_fsi_ready = !job->result_is_error && !job->cancel.load() &&
+                              job->files_written == app->resample_script.segment_count;
     app_resume_plugin(app);
 }
 
+static void app_instrument_start(App* app) {
+    if (!app->resample_fsi_ready || !app->resample_script.built) {
+        fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), "Render the samples first.");
+        app->instrument_result_is_error = true;
+        return;
+    }
+    char prefix[RESAMPLE_FILE_NAME_LEN];
+    char err[FR_STATUS_LEN];
+    if (!resample_prefix(&app->settings.resample, prefix, sizeof(prefix), err, sizeof(err))) {
+        fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), err);
+        app->instrument_result_is_error = true;
+        return;
+    }
+    // The bank is cut from the same full WAV the samples came from.
+    if (!instrument_start(&app->instrument_job, &app->resample_script, &app->settings.resample,
+                          app->resample_job.full_path, app->resample_job.out_dir, prefix)) {
+        fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), "The instrument build could not start.");
+        app->instrument_result_is_error = true;
+        return;
+    }
+    app->instrument_result_text[0] = '\0';
+    app->instrument_result_is_error = false;
+    app_set_status(app, false, "Building the instrument...");
+}
+
+static void app_instrument_finish(App* app) {
+    if (!instrument_collect(&app->instrument_job)) return;
+    fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), app->instrument_job.result);
+    app->instrument_result_is_error = app->instrument_job.result_is_error;
+    app_set_status(app, app->instrument_job.result_is_error, "%s", app->instrument_job.result);
+}
+
 void app_process_requests(App* app) {
+    if (app->instrument_start_request) {
+        app->instrument_start_request = false;
+        if (!app_instrument_running(app) && !app_resample_running(app)) app_instrument_start(app);
+    }
+    if (app_instrument_running(app)) app_instrument_finish(app);
+
     if (app->resample_start_request) {
         app->resample_start_request = false;
-        if (!app_resample_running(app)) app_resample_start(app);
+        if (!app_resample_running(app) && !app_instrument_running(app)) app_resample_start(app);
     }
     if (app_resample_running(app)) {
         // The worker has the plugin: nothing below may touch it until it is done.
@@ -397,6 +463,8 @@ void app_note_on(App* app, int note, float velocity) {
     if (v < 1) v = 1;
     midi_queue_push(&app->midi, midi_make(MIDI_STATUS_NOTE_ON, app->settings.midi_channel, note, v));
     app->note_held[note] = true;
+    app->last_note = note;
+    app->last_velocity = v;
 }
 
 void app_note_off(App* app, int note) {
@@ -434,6 +502,11 @@ void app_shutdown(App* app) {
         resample_cancel(&app->resample_job);
         while (!app->resample_job.finished.load()) plat_sleep_ms(1);
         resample_collect(&app->resample_job);
+    }
+    if (app_instrument_running(app)) {
+        instrument_cancel(&app->instrument_job);
+        while (!app->instrument_job.finished.load()) plat_sleep_ms(1);
+        instrument_collect(&app->instrument_job);
     }
     app_pause_plugin(app);
     audio_close(&app->audio);

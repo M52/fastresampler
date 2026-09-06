@@ -60,7 +60,7 @@ static bool resample_sanitize_name(char* dst, size_t dst_size, const char* src) 
     return o > 0;
 }
 
-static bool resample_prefix(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
+bool resample_prefix(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
     char mic[RESAMPLE_NAME_LEN], instrument[RESAMPLE_NAME_LEN], articulation[RESAMPLE_NAME_LEN];
     if (!resample_sanitize_name(instrument, sizeof(instrument), cfg->instrument)) {
         fr_strcpy(err, err_len, "Fill in the Instrument field");

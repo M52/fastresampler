@@ -66,6 +66,12 @@
 #define CODE_COLOR_ORANGE_TRANSLUCENT   ImVec4(0.80f, 0.45f, 0.00f, 0.65f) // Orange (translucent)
 #define CODE_COLOR_SLOT_LABEL_TEXT      ImVec4(0.60f, 0.50f, 0.50f, 1.00f) // Warm Gray
 
+// The note range the keyboard marks, in the key's own fill: FastSampler's
+// purple for a white key, a dark purple for a black key, lighter when hovered.
+#define CODE_COLOR_PURPLE_U32           IM_COL32(150, 80, 220, 255)
+#define CODE_COLOR_PURPLE_LIGHT_U32     IM_COL32(185, 130, 240, 255)
+#define CODE_COLOR_PURPLE_DIM_U32       IM_COL32(80, 40, 125, 255)
+
 // Keyboard keys
 #define KEY_COLOR_WHITE_U32             IM_COL32(255, 255, 255, 255)
 #define KEY_COLOR_WHITE_HOVERED_U32     IM_COL32(230, 235, 235, 255)

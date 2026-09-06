@@ -75,7 +75,9 @@ static const int g_block_size_options[FR_BLOCK_SIZE_OPTION_COUNT] = { 32, 64, 12
 #define WINDOW_MIN_HEIGHT       600
 
 #define UI_SIDEPANEL_WIDTH      320.0f
-#define UI_KEYBOARD_HEIGHT      110.0f
+#define UI_KEYBOARD_HEIGHT      130.0f
+#define UI_KEYBOARD_RAIL_HEIGHT 18.0f    // the readout strip above the keys
+#define UI_LABEL_COLUMN_WIDTH   100.0f   // labels sit left of their fields
 #define UI_MAIN_HEADER_HEIGHT   34.0f
 #define UI_PANEL_PADDING        8.0f
 #define UI_ITEM_SPACING         4.0f

@@ -88,6 +88,19 @@
 #include "public.sdk/source/vst/hosting/parameterchanges.cpp"
 #include "public.sdk/source/vst/hosting/processdata.cpp"
 
+// FastSampler's file formats, from the FastSampler checkout (see build.bat):
+// the nanopb runtime, the generated schema code, the bank header and the
+// magic of the instrument file.
+#include "pb.h"
+#include "pb_common.h"
+#include "pb_encode.h"
+#include "pb_common.c"
+#include "pb_encode.c"
+#include "fastsampler.pb.h"
+#include "fastsampler.pb.c"
+#include "fileformats/fastsampler_fsb.h"
+#include "fileformats/fastsampler_pb.h"
+
 #pragma warning(pop)
 
 // --- First-party ---------------------------------------------------------------
@@ -111,6 +124,8 @@
 #include "fastresampler_wav.h"
 #include "fastresampler_wav.cpp"
 #include "fastresampler_resample.cpp"
+#include "fastresampler_instrument.h"
+#include "fastresampler_instrument.cpp"
 #include "fastresampler_app.h"
 #include "fastresampler_view.h"
 #include "fastresampler_app.cpp"

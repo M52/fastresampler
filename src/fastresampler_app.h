@@ -11,8 +11,16 @@
 #include "fastresampler_host.h"
 #include "fastresampler_midi.h"
 #include "fastresampler_resample.h"
+#include "fastresampler_instrument.h"
 
 struct PlatView;
+
+enum AppTab {
+    APP_TAB_PLUGIN = 0,
+    APP_TAB_MIDI,
+    APP_TAB_RESAMPLE,
+    APP_TAB_SETTINGS
+};
 
 struct App {
     Settings   settings;
@@ -41,6 +49,16 @@ struct App {
     bool       keyboard_dragging;            // the current mouse press began on a key
     int        cc_value[MIDI_NOTE_COUNT];    // last value sent per controller
     int        pitch_bend;                   // 0..16383, centre 8192
+    int        last_note;                    // the keyboard's readout, -1 before any
+    int        last_velocity;
+
+    // What the side panel shows, and the note range the Resample tab holds,
+    // parsed each frame so the keyboard can mark the notes it will sample.
+    int        active_tab;                   // AppTab
+    bool       range_valid;
+    int        range_low;
+    int        range_high;
+    int        range_step;
 
     std::atomic<float> peak[FR_OUTPUT_CHANNELS];   // written by the audio thread
     float      meter[FR_OUTPUT_CHANNELS];          // decayed copy the UI draws
@@ -74,13 +92,23 @@ struct App {
     char           resample_result_text[FR_STATUS_LEN];
     bool           resample_result_is_error;
 
+    // The instrument build: allowed once a render finished with every sample
+    // file written, and until the script is built or rendered again.
+    InstrumentJob  instrument_job;
+    bool           instrument_start_request;
+    bool           resample_fsi_ready;
+    char           instrument_result_text[FR_STATUS_LEN];
+    bool           instrument_result_is_error;
+
     PlatView*  view;
 };
 
-// The Resample tab's two buttons. Build parses the tab's settings into the
-// script; the render request is served by app_process_requests().
+// The Resample tab's buttons. Build parses the tab's settings into the
+// script; the render and instrument requests are served by
+// app_process_requests().
 void app_resample_build(App* app);
 bool app_resample_running(const App* app);
+bool app_instrument_running(const App* app);
 
 void app_init(App* app);
 void app_shutdown(App* app);

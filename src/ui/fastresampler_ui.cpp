@@ -11,7 +11,7 @@
 // Height of the status strip at the bottom of the side panel.
 #define UI_STATUS_HEIGHT 44.0f
 
-// The meter's floor and the width of its bars.
+// The meter's floor and the height of its bars.
 #define UI_METER_MIN_DB   -60.0f
 #define UI_METER_HEIGHT   10.0f
 
@@ -76,11 +76,37 @@ static void ui_hint(const char* text) {
     ImGui::PopStyleColor();
 }
 
+static void ui_colored_wrapped(const char* text, ImVec4 color) {
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
+// Labels come first: the label in a column of fixed width, the field after
+// it on the same line. Fields that share a line take ui_label_inline for the
+// second label.
+static void ui_label(const char* text, float scale) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(text);
+    ImGui::SameLine(UI_LABEL_COLUMN_WIDTH * scale);
+}
+
+static void ui_label_inline(const char* text) {
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(text);
+    ImGui::SameLine();
+}
+
 // A CC slider: shows the last value sent, sends on change.
-static void ui_cc_slider(App* app, const char* label, int controller) {
+static void ui_cc_slider(App* app, const char* label, int controller, float scale) {
+    char text[64];
+    snprintf(text, sizeof(text), "%s (CC%d)", label, controller);
+    ui_label(text, scale);
+    char id[32];
+    snprintf(id, sizeof(id), "##cc%d", controller);
     int value = app->cc_value[controller];
-    char id[64];
-    snprintf(id, sizeof(id), "%s (CC%d)", label, controller);
+    ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::SliderInt(id, &value, 0, MIDI_VALUE_MAX)) app_control_change(app, controller, value);
 }
 
@@ -89,7 +115,7 @@ static void ui_cc_slider(App* app, const char* label, int controller) {
 static void ui_tab_plugin(App* app, float scale) {
     if (!app->plugin) {
         ImGui::TextWrapped("No plugin loaded.");
-        ImGui::TextDisabled("Double-click a plugin in the list to load it.");
+        ui_hint("Double-click a plugin in the list to load it.");
         return;
     }
     const HostPluginInfo* info = host_plugin_info(app->plugin);
@@ -120,8 +146,9 @@ static void ui_tab_midi(App* app, float scale) {
     int channel = app->settings.midi_channel;
     char channel_label[16];
     snprintf(channel_label, sizeof(channel_label), "%d", channel + 1);
+    ui_label("MIDI channel", scale);
     ImGui::SetNextItemWidth(80.0f * scale);
-    if (ImGui::BeginCombo("MIDI channel", channel_label)) {
+    if (ImGui::BeginCombo("##channel", channel_label)) {
         for (int i = 0; i < MIDI_CHANNEL_COUNT; ++i) {
             char item[16];
             snprintf(item, sizeof(item), "%d", i + 1);
@@ -133,101 +160,144 @@ static void ui_tab_midi(App* app, float scale) {
     ImGui::Separator();
 
     ImGui::Text("Controllers");
-    ImGui::PushItemWidth(-90.0f * scale);
-    ui_cc_slider(app, "Mod wheel", MIDI_CC_MOD_WHEEL);
-    ui_cc_slider(app, "Breath", MIDI_CC_BREATH);
-    ui_cc_slider(app, "Volume", MIDI_CC_VOLUME);
-    ui_cc_slider(app, "Pan", MIDI_CC_PAN);
-    ui_cc_slider(app, "Expression", MIDI_CC_EXPRESSION);
+    ui_cc_slider(app, "Mod wheel", MIDI_CC_MOD_WHEEL, scale);
+    ui_cc_slider(app, "Breath", MIDI_CC_BREATH, scale);
+    ui_cc_slider(app, "Volume", MIDI_CC_VOLUME, scale);
+    ui_cc_slider(app, "Pan", MIDI_CC_PAN, scale);
+    ui_cc_slider(app, "Expression", MIDI_CC_EXPRESSION, scale);
 
+    ui_label("Sustain (CC64)", scale);
     bool sustain = app->cc_value[MIDI_CC_SUSTAIN] >= 64;
-    if (ImGui::Checkbox("Sustain pedal (CC64)", &sustain)) app_control_change(app, MIDI_CC_SUSTAIN, sustain ? MIDI_VALUE_MAX : 0);
+    if (ImGui::Checkbox("##sustain", &sustain)) app_control_change(app, MIDI_CC_SUSTAIN, sustain ? MIDI_VALUE_MAX : 0);
 
+    ui_label("Pitch bend", scale);
     int bend = app->pitch_bend - MIDI_PITCH_BEND_CENTER;
-    if (ImGui::SliderInt("Pitch bend", &bend, -MIDI_PITCH_BEND_CENTER, MIDI_PITCH_BEND_CENTER - 1)) {
+    ImGui::SetNextItemWidth(-70.0f * scale);
+    if (ImGui::SliderInt("##bend", &bend, -MIDI_PITCH_BEND_CENTER, MIDI_PITCH_BEND_CENTER - 1)) {
         app_pitch_bend(app, bend + MIDI_PITCH_BEND_CENTER);
     }
-    ImGui::PopItemWidth();
-    if (ImGui::Button("Centre bend")) app_pitch_bend(app, MIDI_PITCH_BEND_CENTER);
+    ImGui::SameLine();
+    if (ImGui::Button("Centre", ImVec2(-1.0f, 0.0f))) app_pitch_bend(app, MIDI_PITCH_BEND_CENTER);
     ImGui::Separator();
 
     if (app->plugin && !host_plugin_info(app->plugin)->has_midi_mapping) {
-        ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_WARNING_VEC4);
-        ImGui::TextWrapped("This plugin publishes no MIDI controller mapping, so CC and pitch bend do not reach it.");
-        ImGui::PopStyleColor();
+        ui_colored_wrapped("This plugin publishes no MIDI controller mapping, so CC and pitch bend do not reach it.",
+                           CODE_COLOR_WARNING_VEC4);
         ImGui::Separator();
     }
 
     if (ui_red_button("All notes off", ImVec2(-1.0f, 0.0f))) app_all_notes_off(app);
 }
 
+// Parses the range fields so the keyboard can mark the notes; nothing is
+// reported here, Build says what is wrong.
+static void ui_update_range(App* app) {
+    const ResampleConfig* cfg = &app->settings.resample;
+    int low = midi_note_parse(cfg->low_note);
+    int high = midi_note_parse(cfg->high_note);
+    app->range_valid = low >= 0 && high >= 0 && cfg->step >= 1;
+    if (!app->range_valid) return;
+    if (high < low) {
+        int t = low;
+        low = high;
+        high = t;
+    }
+    app->range_low = low;
+    app->range_high = high;
+    app->range_step = cfg->step;
+}
+
 static void ui_tab_resample(App* app, float scale) {
     ResampleConfig* cfg = &app->settings.resample;
-    bool running = app_resample_running(app);
-    float label_w = 90.0f * scale;
+    bool rendering = app_resample_running(app);
+    bool building = app_instrument_running(app);
+    bool busy = rendering || building;
 
     ImGui::Text("Naming");
-    ImGui::PushItemWidth(-label_w);
-    ImGui::InputText("Instrument", cfg->instrument, sizeof(cfg->instrument));
-    ImGui::InputText("Articulation", cfg->articulation, sizeof(cfg->articulation));
-    ImGui::InputText("Microphone", cfg->microphone, sizeof(cfg->microphone));
-    ImGui::PopItemWidth();
-    ui_hint("Files are named Microphone_Instrument_Articulation_Note_Velocity_RRn.wav.");
+    ui_label("Instrument", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##instrument", cfg->instrument, sizeof(cfg->instrument));
+    ui_label("Articulation", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##articulation", cfg->articulation, sizeof(cfg->articulation));
+    ui_label("Microphone", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##microphone", cfg->microphone, sizeof(cfg->microphone));
+    {
+        char prefix[RESAMPLE_FILE_NAME_LEN];
+        char err[FR_STATUS_LEN];
+        char preview[RESAMPLE_FILE_NAME_LEN + 32];
+        if (resample_prefix(cfg, prefix, sizeof(prefix), err, sizeof(err))) {
+            snprintf(preview, sizeof(preview), "Files: %s_<Note>_<Velocity>_RR<n>.wav", prefix);
+            ui_hint(preview);
+        } else {
+            ui_colored_wrapped(err, CODE_COLOR_WARNING_VEC4);
+        }
+    }
     ImGui::Separator();
 
     ImGui::Text("Notes");
+    ui_label("Range", scale);
     ImGui::SetNextItemWidth(60.0f * scale);
-    ImGui::InputText("Low", cfg->low_note, sizeof(cfg->low_note));
-    ImGui::SameLine();
+    ImGui::InputText("##low", cfg->low_note, sizeof(cfg->low_note));
+    ui_label_inline("to");
     ImGui::SetNextItemWidth(60.0f * scale);
-    ImGui::InputText("High", cfg->high_note, sizeof(cfg->high_note));
-    ui_hint("Note names: C3 is middle C, C-2 is note 0.");
-    ImGui::SetNextItemWidth(-label_w);
-    if (ImGui::BeginCombo("Sample every", resample_step_label(cfg->step))) {
+    ImGui::InputText("##high", cfg->high_note, sizeof(cfg->high_note));
+    ui_update_range(app);
+    ui_hint("Note names: C3 is middle C, C-2 is note 0. The keyboard marks the notes that will be sampled.");
+
+    ui_label("Sample every", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##step", resample_step_label(cfg->step))) {
         for (int step = 1; step <= RESAMPLE_MAX_STEP; ++step) {
             if (ImGui::Selectable(resample_step_label(step), step == cfg->step)) cfg->step = step;
         }
         ImGui::EndCombo();
     }
-    ImGui::SetNextItemWidth(-label_w);
-    ImGui::InputText("Velocities", cfg->velocities, sizeof(cfg->velocities));
-    ImGui::SetNextItemWidth(70.0f * scale);
-    if (ImGui::InputInt("Round robins", &cfg->round_robins)) {
+    ui_label("Velocities", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##velocities", cfg->velocities, sizeof(cfg->velocities));
+
+    ui_label("Round robins", scale);
+    ImGui::SetNextItemWidth(90.0f * scale);
+    if (ImGui::InputInt("##rr", &cfg->round_robins)) {
         cfg->round_robins = fr_clampi(cfg->round_robins, 1, RESAMPLE_MAX_ROUND_ROBINS);
     }
-    ImGui::Checkbox("Pre-roll", &cfg->preroll);
-    ImGui::SameLine();
+    ui_label("Pre-roll", scale);
+    ImGui::Checkbox("##preroll", &cfg->preroll);
+    ui_label_inline("gap (s)");
     ImGui::SetNextItemWidth(60.0f * scale);
     ImGui::BeginDisabled(!cfg->preroll);
-    ImGui::InputFloat("Pre-roll gap (s)", &cfg->preroll_gap_seconds, 0.0f, 0.0f, "%.2f");
+    ImGui::InputFloat("##prerollgap", &cfg->preroll_gap_seconds, 0.0f, 0.0f, "%.2f");
     ImGui::EndDisabled();
     ui_hint("Pre-roll plays n-1 short notes before round robin n, one per gap, so a sampler that resets its counter after silence lands on variation n. The split discards them.");
     ImGui::Separator();
 
     ImGui::Text("Timing");
-    ImGui::SetNextItemWidth(70.0f * scale);
-    ImGui::InputFloat("Hold (s)", &cfg->hold_seconds, 0.0f, 0.0f, "%.2f");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(70.0f * scale);
-    ImGui::InputFloat("Gap (s)", &cfg->gap_seconds, 0.0f, 0.0f, "%.2f");
+    ui_label("Hold (s)", scale);
+    ImGui::SetNextItemWidth(60.0f * scale);
+    ImGui::InputFloat("##hold", &cfg->hold_seconds, 0.0f, 0.0f, "%.2f");
+    ui_label_inline("Gap (s)");
+    ImGui::SetNextItemWidth(60.0f * scale);
+    ImGui::InputFloat("##gap", &cfg->gap_seconds, 0.0f, 0.0f, "%.2f");
     ui_hint("Each note is held, then left to ring out for the gap; the sample file spans both.");
 
-    ImGui::Text("Output folder");
+    ui_label("Output folder", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##output", cfg->output_dir, sizeof(cfg->output_dir));
     ImGui::Separator();
 
-    ImGui::BeginDisabled(running);
+    // Step 1: the script.
+    ImGui::BeginDisabled(busy);
     if (ImGui::Button("Build MIDI", ImVec2(-1.0f, 0.0f))) app_resample_build(app);
     ImGui::EndDisabled();
     if (app->resample_build_text[0]) {
-        ImGui::PushStyleColor(ImGuiCol_Text, app->resample_build_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_SLOT_LABEL_TEXT);
-        ImGui::TextWrapped("%s", app->resample_build_text);
-        ImGui::PopStyleColor();
+        ui_colored_wrapped(app->resample_build_text, app->resample_build_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_SLOT_LABEL_TEXT);
     }
     ImGui::Separator();
 
-    if (running) {
+    // Step 2: the render and the split.
+    if (rendering) {
         const ResampleScript* s = &app->resample_script;
         char overlay[64];
         float fraction;
@@ -242,7 +312,7 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
         if (ui_red_button("Cancel", ImVec2(-1.0f, 0.0f))) resample_cancel(&app->resample_job);
     } else {
-        bool can_render = app->plugin != nullptr && app->resample_script.built;
+        bool can_render = app->plugin != nullptr && app->resample_script.built && !building;
         ImGui::BeginDisabled(!can_render);
         if (ui_green_button("Render to WAV", ImVec2(-1.0f, 0.0f))) app->resample_start_request = true;
         ImGui::EndDisabled();
@@ -255,9 +325,30 @@ static void ui_tab_resample(App* app, float scale) {
         }
     }
     if (app->resample_result_text[0]) {
-        ImGui::PushStyleColor(ImGuiCol_Text, app->resample_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
-        ImGui::TextWrapped("%s", app->resample_result_text);
-        ImGui::PopStyleColor();
+        ui_colored_wrapped(app->resample_result_text, app->resample_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
+    }
+    ImGui::Separator();
+
+    // Step 3: the FastSampler instrument.
+    if (building) {
+        int done = app->instrument_job.progress.load();
+        int total = app->resample_script.segment_count;
+        char overlay[64];
+        snprintf(overlay, sizeof(overlay), "Writing bank %d / %d", done, total);
+        ImGui::ProgressBar(total > 0 ? (float)done / (float)total : 0.0f, ImVec2(-1.0f, 0.0f), overlay);
+        if (ui_red_button("Cancel##instrument", ImVec2(-1.0f, 0.0f))) instrument_cancel(&app->instrument_job);
+    } else {
+        ImGui::BeginDisabled(!app->resample_fsi_ready || rendering);
+        if (ui_green_button("Build FSI + FSB", ImVec2(-1.0f, 0.0f))) app->instrument_start_request = true;
+        ImGui::EndDisabled();
+        if (app->resample_fsi_ready) {
+            ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the output folder.");
+        } else {
+            ui_hint("Available once the samples are rendered and split.");
+        }
+    }
+    if (app->instrument_result_text[0]) {
+        ui_colored_wrapped(app->instrument_result_text, app->instrument_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
     }
 }
 
@@ -275,7 +366,8 @@ static void ui_tab_settings(App* app, float scale) {
         settings_remove_scan_path(&app->settings, remove_index);
         app->rescan_request = true;
     }
-    ImGui::SetNextItemWidth(-70.0f * scale);
+    ui_label("Add folder", scale);
+    ImGui::SetNextItemWidth(-50.0f * scale);
     bool submitted = ImGui::InputTextWithHint("##newpath", "Folder to scan", app->new_scan_path,
                                               sizeof(app->new_scan_path), ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
@@ -300,6 +392,7 @@ static void ui_tab_settings(App* app, float scale) {
         snprintf(preview_buf, sizeof(preview_buf), "%s: %s", audio_api_name(d->api), d->name);
         driver_preview = preview_buf;
     }
+    ui_label("Device", scale);
     ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::BeginCombo("##driver", driver_preview)) {
         for (int i = 0; i < app->drivers.count; ++i) {
@@ -313,8 +406,9 @@ static void ui_tab_settings(App* app, float scale) {
 
     char block_label[32];
     snprintf(block_label, sizeof(block_label), "%d frames", g_block_size_options[app->pending_block_index]);
-    ImGui::SetNextItemWidth(-90.0f * scale);
-    if (ImGui::BeginCombo("Block size", block_label)) {
+    ui_label("Block size", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##block", block_label)) {
         for (int i = 0; i < FR_BLOCK_SIZE_OPTION_COUNT; ++i) {
             char item[32];
             snprintf(item, sizeof(item), "%d frames", g_block_size_options[i]);
@@ -337,9 +431,7 @@ static void ui_tab_settings(App* app, float scale) {
         ImGui::Text("Output latency: %d frames (%.1f ms)", app->audio.latency_frames,
                     1000.0 * (double)app->audio.latency_frames / app->audio.sample_rate);
     } else {
-        ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_WARNING_VEC4);
-        ImGui::TextWrapped("No audio device is open.");
-        ImGui::PopStyleColor();
+        ui_colored_wrapped("No audio device is open.", CODE_COLOR_WARNING_VEC4);
     }
 }
 
@@ -351,18 +443,22 @@ static void ui_draw_side_panel(App* app, ImVec2 size, float scale) {
     ImGui::BeginChild("##tabs", tabs_size, ImGuiChildFlags_None, ImGuiWindowFlags_None);
     if (ImGui::BeginTabBar("##sidetabs")) {
         if (ImGui::BeginTabItem("Plugin")) {
+            app->active_tab = APP_TAB_PLUGIN;
             ui_tab_plugin(app, scale);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("MIDI")) {
+            app->active_tab = APP_TAB_MIDI;
             ui_tab_midi(app, scale);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Resample")) {
+            app->active_tab = APP_TAB_RESAMPLE;
             ui_tab_resample(app, scale);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Settings")) {
+            app->active_tab = APP_TAB_SETTINGS;
             ui_tab_settings(app, scale);
             ImGui::EndTabItem();
         }
@@ -371,9 +467,7 @@ static void ui_draw_side_panel(App* app, ImVec2 size, float scale) {
     ImGui::EndChild();
 
     ImGui::Separator();
-    ImGui::PushStyleColor(ImGuiCol_Text, app->status_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_SLOT_LABEL_TEXT);
-    ImGui::TextWrapped("%s", app->status);
-    ImGui::PopStyleColor();
+    ui_colored_wrapped(app->status, app->status_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_SLOT_LABEL_TEXT);
 
     ImGui::EndChild();
 }
@@ -391,7 +485,7 @@ static void ui_draw_plugin_list(App* app, float scale) {
     ImGui::Separator();
 
     if (app->plugins.count == 0) {
-        ImGui::TextDisabled("No plugins found. Add a folder in the Settings tab.");
+        ui_hint("No plugins found. Add a folder in the Settings tab.");
         return;
     }
 
@@ -431,7 +525,7 @@ static void ui_draw_plugin_header(App* app, float scale) {
     ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - close_w);
     if (ui_red_button("Close plugin", ImVec2(close_w, 0.0f))) app->unload_request = true;
     if (!app->editor_open) {
-        ImGui::TextDisabled("This plugin has no editor. Play it from the keyboard below.");
+        ui_hint("This plugin has no editor. Play it from the keyboard below.");
     }
 }
 
