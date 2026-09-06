@@ -47,7 +47,9 @@ Layout of the window:
   effect on a shared counter, each key on its nearest sampled note (ties pitch
   down), each velocity range up to its sampled velocity. The render runs at
   the chosen export rate (96 kHz by default, up to 192 kHz) with the plugin in
-  offline mode, then the plugin returns to the device's rate. **Settings**
+  offline mode, then the plugin returns to the device's rate. A render speed
+  (realtime to 16x, or unlimited; 4x by default) paces the render so a sampler
+  that streams from disk has the wall time to read its sample tails. **Settings**
   has the folders to scan, the audio device and block size, and the ASIO
   control panel.
 - Right: the plugin list when nothing is loaded (double-click to load), or the

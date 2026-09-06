@@ -189,6 +189,17 @@ static void ui_tab_midi(App* app, float scale) {
     if (ui_red_button("All notes off", ImVec2(-1.0f, 0.0f))) app_all_notes_off(app);
 }
 
+// "Realtime", "4x realtime", or the unlimited setting's name.
+static void ui_speed_label(int speed, char* out, size_t out_len) {
+    if (speed <= 0) {
+        fr_strcpy(out, out_len, "As fast as possible");
+    } else if (speed == 1) {
+        fr_strcpy(out, out_len, "Realtime");
+    } else {
+        snprintf(out, out_len, "%dx realtime", speed);
+    }
+}
+
 // Parses the range fields so the keyboard can mark the notes; nothing is
 // reported here, Build says what is wrong.
 static void ui_update_range(App* app) {
@@ -317,6 +328,21 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::EndCombo();
     }
     ui_hint("The plugin renders at this rate, offline, and returns to the device's rate afterwards. The samples and the bank keep it.");
+
+    ui_label("Render speed", scale);
+    char speed_label[32];
+    ui_speed_label(cfg->render_speed, speed_label, sizeof(speed_label));
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##speed", speed_label)) {
+        for (int i = 0; i < RESAMPLE_SPEED_OPTION_COUNT; ++i) {
+            int speed = g_resample_speed_options[i];
+            char item[32];
+            ui_speed_label(speed, item, sizeof(item));
+            if (ImGui::Selectable(item, cfg->render_speed == speed)) cfg->render_speed = speed;
+        }
+        ImGui::EndCombo();
+    }
+    ui_hint("A sampler that streams from disk needs time to read its sample tails. If samples come out cut short, lower the speed.");
 
     ui_label("Output folder", scale);
     ImGui::SetNextItemWidth(-1.0f);

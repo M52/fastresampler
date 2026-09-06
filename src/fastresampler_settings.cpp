@@ -150,6 +150,12 @@ bool settings_load(Settings* s, const char* path) {
             for (int i = 0; i < RESAMPLE_RATE_OPTION_COUNT; ++i) {
                 if (g_resample_rate_options[i] == v) s->resample.sample_rate = v;
             }
+        } else if (strcmp(key, "resample_render_speed") == 0) {
+            // A value off the list leaves the default in place.
+            int v = atoi(value);
+            for (int i = 0; i < RESAMPLE_SPEED_OPTION_COUNT; ++i) {
+                if (g_resample_speed_options[i] == v) s->resample.render_speed = v;
+            }
         } else if (strcmp(key, "resample_output_dir") == 0) {
             if (value[0]) fr_strcpy(s->resample.output_dir, sizeof(s->resample.output_dir), value);
         }
@@ -186,6 +192,7 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_articulation \"%s\"\n", s->resample.articulation);
     fprintf(f, "resample_microphone \"%s\"\n", s->resample.microphone);
     fprintf(f, "resample_sample_rate %d\n", s->resample.sample_rate);
+    fprintf(f, "resample_render_speed %d\n", s->resample.render_speed);
     fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
     fclose(f);
     return true;

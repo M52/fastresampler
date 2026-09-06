@@ -52,12 +52,19 @@ struct ResampleConfig {
     float hold_seconds;                             // note on to note off
     float gap_seconds;                              // note off to the segment's end
     int   sample_rate;                              // the render's rate; 0 = the audio device's
+    int   render_speed;                             // realtime multiple the render is held to; 0 = unlimited
     char  output_dir[FR_MAX_PATH];
 };
 
 // The export rates the tab offers, besides the device's own.
 #define RESAMPLE_RATE_OPTION_COUNT 6
 static const int g_resample_rate_options[RESAMPLE_RATE_OPTION_COUNT] = { 44100, 48000, 88200, 96000, 176400, 192000 };
+
+// The render speeds the tab offers. A sampler that streams from disk needs
+// wall time to read its sample tails: rendered too fast, it delivers only
+// what it had preloaded and the samples come out cut short. 0 is unlimited.
+#define RESAMPLE_SPEED_OPTION_COUNT 6
+static const int g_resample_speed_options[RESAMPLE_SPEED_OPTION_COUNT] = { 1, 2, 4, 8, 16, 0 };
 
 struct ResampleEvent {
     int64_t   frame;
@@ -105,6 +112,7 @@ struct ResampleJob {
     struct HostPlugin*     plugin;
     const ResampleScript*  script;
     int                    block_size;
+    int                    speed;                   // realtime multiple, 0 = unlimited
     char                   out_dir[FR_MAX_PATH];
     char                   full_path[FR_MAX_PATH];      // the one long WAV
     char                   prefix[RESAMPLE_FILE_NAME_LEN]; // Microphone_Instrument_Articulation

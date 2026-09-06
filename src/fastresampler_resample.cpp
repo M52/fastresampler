@@ -15,6 +15,8 @@
 #define RESAMPLE_DEFAULT_STEP                2
 // The highest rate common plugins render without complaint; 192 kHz is on the list.
 #define RESAMPLE_DEFAULT_SAMPLE_RATE         96000
+// Fast enough to be worth it, slow enough for a disk-streaming sampler to keep up.
+#define RESAMPLE_DEFAULT_RENDER_SPEED        4
 #define RESAMPLE_DEFAULT_OUTPUT_DIR_NAME     "samples"
 #define RESAMPLE_FULL_FILE_SUFFIX            "_full.wav"
 
@@ -30,6 +32,7 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->hold_seconds = RESAMPLE_DEFAULT_HOLD_SECONDS;
     cfg->gap_seconds = RESAMPLE_DEFAULT_GAP_SECONDS;
     cfg->sample_rate = RESAMPLE_DEFAULT_SAMPLE_RATE;
+    cfg->render_speed = RESAMPLE_DEFAULT_RENDER_SPEED;
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));
     plat_path_join(cfg->output_dir, sizeof(cfg->output_dir), dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);
@@ -274,7 +277,16 @@ static bool resample_render(ResampleJob* job, int64_t* frames_done) {
     int64_t pos = 0;
     float peak = 0.0f;
     bool write_ok = true;
+    uint64_t pace_start_ms = plat_ms_now();
     while (pos < script->total_frames && write_ok && !job->cancel.load()) {
+        // Hold the render to the chosen multiple of realtime: the wall clock
+        // must have reached the audio position over the speed before the
+        // next block. A sleep that overshoots is caught up by the blocks that
+        // follow, so the average holds and no block ever runs early.
+        if (job->speed > 0) {
+            double target_ms = (double)pos / script->sample_rate / (double)job->speed * 1000.0;
+            while ((double)(plat_ms_now() - pace_start_ms) < target_ms && !job->cancel.load()) plat_sleep_ms(1);
+        }
         int64_t remaining = script->total_frames - pos;
         int frames = remaining < job->block_size ? (int)remaining : job->block_size;
         for (int c = 0; c < FR_OUTPUT_CHANNELS; ++c) memset(buffers[c], 0, (size_t)frames * sizeof(float));
@@ -373,6 +385,7 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
     job->plugin = plugin;
     job->script = script;
     job->block_size = block_size > FR_MAX_BLOCK_SIZE ? FR_MAX_BLOCK_SIZE : block_size;
+    job->speed = cfg->render_speed < 0 ? 0 : cfg->render_speed;
     fr_strcpy(job->out_dir, sizeof(job->out_dir), cfg->output_dir);
     char full_name[RESAMPLE_FILE_NAME_LEN];
     snprintf(full_name, sizeof(full_name), "%s%s", job->prefix, RESAMPLE_FULL_FILE_SUFFIX);
@@ -393,7 +406,8 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
         job->running.store(false);
         return false;
     }
-    fr_log("resample: rendering %d events, %d samples, to %s", script->count, script->segment_count, job->out_dir);
+    fr_log("resample: rendering %d events, %d samples, to %s at %dx realtime (0 = unlimited)",
+           script->count, script->segment_count, job->out_dir, job->speed);
     return true;
 }
 
