@@ -6,6 +6,8 @@
 #include "imgui.h"
 
 struct App;
+struct ResampleCcCurve;
+struct ResampleConfig;
 
 // One frame. width and height are the window's client size in pixels, scale
 // the DPI factor every layout constant is multiplied by.
@@ -14,3 +16,8 @@ void ui_draw_frame(App* app, float width, float height, float scale);
 // The 88-key keyboard inside the rectangle given. Mouse presses on keys send
 // notes; held notes are drawn in the accent colour.
 void ui_draw_keyboard(App* app, ImVec2 pos, ImVec2 size, float scale);
+
+// One controller curve editor, the panel's width: the canvas over the time
+// of one sample (the pre-roll, the hold, the gap), then the mode and shape
+// controls under it. The configuration gives the timing the axis shows.
+void ui_draw_cc_curve(ResampleCcCurve* curve, const ResampleConfig* cfg, const char* id, float scale);

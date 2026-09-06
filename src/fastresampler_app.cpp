@@ -69,6 +69,9 @@ void app_init(App* app) {
     app->rescan_request = false;
     app->audio_apply_request = false;
     app->audio_refresh_request = false;
+    app->output_dir_pick_request = false;
+    app->disk_warning[0] = '\0';
+    app->disk_warning_open = false;
     app->editor_open = false;
     app->editor_width = 0;
     app->editor_height = 0;
@@ -249,6 +252,45 @@ static double app_resample_rate(const App* app) {
     return chosen > 0 ? (double)chosen : app_device_sample_rate(app);
 }
 
+// "1.5 GB" or "320 MB".
+static void app_format_bytes(uint64_t bytes, char* out, size_t out_len) {
+    double mb = (double)bytes / (1024.0 * 1024.0);
+    if (mb >= 1024.0) {
+        snprintf(out, out_len, "%.1f GB", mb / 1024.0);
+    } else {
+        snprintf(out, out_len, "%.0f MB", mb);
+    }
+}
+
+// Whether the disk of the output folder has room for the built script's
+// files. True with no script. False raises the warning the UI shows as a
+// modal, and the caller must not render.
+static bool app_check_disk_space(App* app) {
+    if (!app->resample_script.built) return true;
+    const char* dir = app->settings.resample.output_dir;
+    uint64_t needed = resample_required_bytes(&app->resample_script);
+    uint64_t free_bytes = 0;
+    char needed_text[32], free_text[32];
+    app_format_bytes(needed, needed_text, sizeof(needed_text));
+    if (!plat_disk_free_bytes(dir, &free_bytes)) {
+        snprintf(app->disk_warning, sizeof(app->disk_warning),
+                 "The free space of the disk that holds %s could not be read. The render writes %s.", dir, needed_text);
+        app->disk_warning_open = true;
+        fr_log("disk: %s", app->disk_warning);
+        return false;
+    }
+    if (free_bytes < needed) {
+        app_format_bytes(free_bytes, free_text, sizeof(free_text));
+        snprintf(app->disk_warning, sizeof(app->disk_warning),
+                 "Not enough disk space for the render. The full WAV and the %d sample files take %s; the disk that holds %s has %s free.",
+                 app->resample_script.segment_count, needed_text, dir, free_text);
+        app->disk_warning_open = true;
+        fr_log("disk: %s", app->disk_warning);
+        return false;
+    }
+    return true;
+}
+
 void app_resample_build(App* app) {
     if (app_resample_running(app) || app_instrument_running(app)) return;
     // A new script means the files on disk no longer describe it.
@@ -264,12 +306,16 @@ void app_resample_build(App* app) {
     double seconds = (double)s->total_frames / s->sample_rate;
     char example[RESAMPLE_FILE_NAME_LEN];
     resample_segment_file_name(&app->settings.resample, &s->segments[0], example, sizeof(example));
+    char curves[32] = "";
+    int curve_count = app->settings.resample.cc_curve_count;
+    if (curve_count > 0) snprintf(curves, sizeof(curves), ", %d CC curve%s", curve_count, curve_count == 1 ? "" : "s");
     snprintf(app->resample_build_text, sizeof(app->resample_build_text),
-             "%d samples: %d notes x %d velocities x %d round robins, %d events, %d:%02d of audio at %.0f Hz. First file: %s",
-             s->segment_count, s->note_count, s->velocity_count, s->round_robin_count, s->count,
+             "%d samples: %d notes x %d velocities x %d round robins%s, %d events, %d:%02d of audio at %.0f Hz. First file: %s",
+             s->segment_count, s->note_count, s->velocity_count, s->round_robin_count, curves, s->count,
              (int)seconds / 60, (int)seconds % 60, s->sample_rate, example);
     app->resample_build_is_error = false;
     settings_save(&app->settings, app->settings_path);
+    app_check_disk_space(app);
 }
 
 static void app_resample_start(App* app) {
@@ -292,6 +338,12 @@ static void app_resample_start(App* app) {
     if (!plat_dir_create(app->settings.resample.output_dir)) {
         snprintf(app->resample_result_text, sizeof(app->resample_result_text),
                  "Could not create the output folder %s", app->settings.resample.output_dir);
+        app->resample_result_is_error = true;
+        return;
+    }
+    // Checked again here: the disk may have filled up since the build.
+    if (!app_check_disk_space(app)) {
+        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "Not enough disk space; the render did not start.");
         app->resample_result_is_error = true;
         return;
     }
@@ -374,6 +426,18 @@ static void app_instrument_finish(App* app) {
 }
 
 void app_process_requests(App* app) {
+    // The folder picker is modal and pumps messages; it runs here, outside
+    // the ImGui frame, so a repaint meanwhile cannot re-enter the UI.
+    if (app->output_dir_pick_request) {
+        app->output_dir_pick_request = false;
+        char dir[FR_MAX_PATH];
+        if (plat_pick_folder(view_native_window(app->view), app->settings.resample.output_dir, dir, sizeof(dir))) {
+            fr_strcpy(app->settings.resample.output_dir, sizeof(app->settings.resample.output_dir), dir);
+            settings_save(&app->settings, app->settings_path);
+            app_set_status(app, false, "Output folder: %s", dir);
+            app_check_disk_space(app);
+        }
+    }
     if (app->instrument_start_request) {
         app->instrument_start_request = false;
         if (!app_instrument_running(app) && !app_resample_running(app)) app_instrument_start(app);

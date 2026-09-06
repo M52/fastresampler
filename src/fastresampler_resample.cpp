@@ -17,6 +17,8 @@
 #define RESAMPLE_DEFAULT_SAMPLE_RATE         96000
 // Fast enough to be worth it, slow enough for a disk-streaming sampler to keep up.
 #define RESAMPLE_DEFAULT_RENDER_SPEED        4
+// What FastSampler's own export preloads by default.
+#define RESAMPLE_DEFAULT_PRELOAD_FRAMES      8192
 #define RESAMPLE_DEFAULT_OUTPUT_DIR_NAME     "samples"
 #define RESAMPLE_FULL_FILE_SUFFIX            "_full.wav"
 
@@ -33,9 +35,28 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->gap_seconds = RESAMPLE_DEFAULT_GAP_SECONDS;
     cfg->sample_rate = RESAMPLE_DEFAULT_SAMPLE_RATE;
     cfg->render_speed = RESAMPLE_DEFAULT_RENDER_SPEED;
+    cfg->preload_frames = RESAMPLE_DEFAULT_PRELOAD_FRAMES;
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));
     plat_path_join(cfg->output_dir, sizeof(cfg->output_dir), dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);
+}
+
+void resample_preload_label(int preload_frames, char* out, size_t out_len) {
+    if (preload_frames <= 0) {
+        fr_strcpy(out, out_len, "RAM");
+    } else {
+        snprintf(out, out_len, "%d frames", preload_frames);
+    }
+}
+
+uint64_t resample_required_bytes(const ResampleScript* script) {
+    uint64_t frame_bytes = (uint64_t)FR_OUTPUT_CHANNELS * sizeof(float);
+    uint64_t total = (uint64_t)script->total_frames * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
+    for (int i = 0; i < script->segment_count; ++i) {
+        const ResampleSegment* seg = &script->segments[i];
+        total += (uint64_t)(seg->end_frame - seg->start_frame) * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
+    }
+    return total;
 }
 
 const char* resample_step_label(int step) {
@@ -46,6 +67,159 @@ const char* resample_step_label(int step) {
     };
     if (step < 1 || step > RESAMPLE_MAX_STEP) return "?";
     return labels[step - 1];
+}
+
+// --- Controller curves --------------------------------------------------------------
+
+// The fit of a bezier to painted values stops at this many nodes, or when
+// no point is further off than the tolerance.
+#define RESAMPLE_CC_FIT_MAX_NODES 10
+#define RESAMPLE_CC_FIT_TOLERANCE 0.03f
+
+float resample_cc_span(const ResampleConfig* cfg, float* preroll, float* hold, float* gap) {
+    float pre = cfg->preroll && cfg->round_robins > 1 ? (float)(cfg->round_robins - 1) * cfg->preroll_gap_seconds : 0.0f;
+    if (pre < 0.0f) pre = 0.0f;
+    float h = cfg->hold_seconds > 0.0f ? cfg->hold_seconds : 0.0f;
+    float g = cfg->gap_seconds > 0.0f ? cfg->gap_seconds : 0.0f;
+    if (preroll) *preroll = pre;
+    if (hold) *hold = h;
+    if (gap) *gap = g;
+    return pre + h + g;
+}
+
+void resample_cc_set_constant(ResampleCcCurve* c, float value) {
+    value = fr_clampf(value, 0.0f, 1.0f);
+    for (int i = 0; i < RESAMPLE_CC_CURVE_POINTS; ++i) c->values[i] = value;
+    c->node_count = 2;
+    c->node_x[0] = 0.0f;
+    c->node_y[0] = value;
+    c->curvature[0] = value;
+    c->node_x[1] = 1.0f;
+    c->node_y[1] = value;
+    c->curvature[1] = 0.0f;
+}
+
+bool resample_cc_add(ResampleConfig* cfg) {
+    if (cfg->cc_curve_count >= RESAMPLE_MAX_CC_CURVES) return false;
+    // The lowest controller no curve has yet, from the mod wheel up.
+    int controller = MIDI_CC_MOD_WHEEL;
+    for (int i = 0; i < cfg->cc_curve_count; ++i) {
+        if (cfg->cc_curves[i].controller == controller) {
+            ++controller;
+            i = -1;   // the next candidate is checked against every curve again
+        }
+    }
+    ResampleCcCurve* c = &cfg->cc_curves[cfg->cc_curve_count++];
+    memset(c, 0, sizeof(*c));
+    c->controller = controller > MIDI_VALUE_MAX ? MIDI_VALUE_MAX : controller;
+    c->is_bezier = true;
+    c->constant = MIDI_VALUE_MAX;
+    resample_cc_set_constant(c, 1.0f);
+    return true;
+}
+
+void resample_cc_remove(ResampleConfig* cfg, int index) {
+    if (index < 0 || index >= cfg->cc_curve_count) return;
+    for (int i = index; i + 1 < cfg->cc_curve_count; ++i) cfg->cc_curves[i] = cfg->cc_curves[i + 1];
+    cfg->cc_curve_count--;
+}
+
+void resample_cc_from_bezier(ResampleCcCurve* c) {
+    if (c->node_count < 2) return;
+    for (int p = 0; p < RESAMPLE_CC_CURVE_POINTS; ++p) {
+        float x = (float)p / (float)(RESAMPLE_CC_CURVE_POINTS - 1);
+        int seg = 0;
+        for (int i = 0; i < c->node_count - 1; ++i) {
+            if (x >= c->node_x[i] && x <= c->node_x[i + 1]) {
+                seg = i;
+                break;
+            }
+        }
+        float x0 = c->node_x[seg], x1 = c->node_x[seg + 1];
+        float y0 = c->node_y[seg], y1 = c->node_y[seg + 1];
+        float cy = c->curvature[seg];
+        float t = x1 > x0 ? fr_clampf((x - x0) / (x1 - x0), 0.0f, 1.0f) : 0.0f;
+        // A quadratic bezier: the control point sits at the segment's middle
+        // in x, at the curvature in y.
+        float y = (1.0f - t) * (1.0f - t) * y0 + 2.0f * (1.0f - t) * t * cy + t * t * y1;
+        c->values[p] = fr_clampf(y, 0.0f, 1.0f);
+    }
+}
+
+// The control point of one segment that best fits the values under it: a
+// least squares fit of the quadratic's middle term.
+static void resample_cc_fit_segment(ResampleCcCurve* c, int seg) {
+    float x0 = c->node_x[seg], x1 = c->node_x[seg + 1];
+    float y0 = c->node_y[seg], y1 = c->node_y[seg + 1];
+    int first = (int)(x0 * (float)(RESAMPLE_CC_CURVE_POINTS - 1));
+    int last = (int)(x1 * (float)(RESAMPLE_CC_CURVE_POINTS - 1));
+    float num = 0.0f, den = 0.0f;
+    for (int p = first; p <= last && p < RESAMPLE_CC_CURVE_POINTS; ++p) {
+        float x = (float)p / (float)(RESAMPLE_CC_CURVE_POINTS - 1);
+        float t = x1 > x0 ? (x - x0) / (x1 - x0) : 0.0f;
+        float w = 2.0f * (1.0f - t) * t;
+        float d = (1.0f - t) * (1.0f - t) * y0 + t * t * y1;
+        num += w * (c->values[p] - d);
+        den += w * w;
+    }
+    c->curvature[seg] = den > 0.0001f ? fr_clampf(num / den, 0.0f, 1.0f) : 0.5f * (y0 + y1);
+}
+
+void resample_cc_fit_bezier(ResampleCcCurve* c) {
+    const int last = RESAMPLE_CC_CURVE_POINTS - 1;
+    c->node_count = 2;
+    c->node_x[0] = 0.0f;
+    c->node_y[0] = c->values[0];
+    c->node_x[1] = 1.0f;
+    c->node_y[1] = c->values[last];
+    c->curvature[1] = 0.0f;
+    resample_cc_fit_segment(c, 0);
+    // A node where the fit is worst, until it is close enough everywhere.
+    // The curve passes through its nodes, so the worst point never sits on one.
+    while (c->node_count < RESAMPLE_CC_FIT_MAX_NODES) {
+        ResampleCcCurve probe = *c;
+        resample_cc_from_bezier(&probe);
+        float max_err = 0.0f;
+        int worst = -1;
+        for (int p = 0; p <= last; ++p) {
+            float err = fabsf(c->values[p] - probe.values[p]);
+            if (err > max_err) {
+                max_err = err;
+                worst = p;
+            }
+        }
+        if (worst < 0 || max_err < RESAMPLE_CC_FIT_TOLERANCE) break;
+        float nx = (float)worst / (float)last;
+        int at = 0;
+        while (at < c->node_count && c->node_x[at] < nx) ++at;
+        for (int i = c->node_count; i > at; --i) {
+            c->node_x[i] = c->node_x[i - 1];
+            c->node_y[i] = c->node_y[i - 1];
+            c->curvature[i] = c->curvature[i - 1];
+        }
+        c->node_x[at] = nx;
+        c->node_y[at] = c->values[worst];
+        c->curvature[at] = c->values[worst];
+        c->node_count++;
+        for (int s = 0; s < c->node_count - 1; ++s) resample_cc_fit_segment(c, s);
+    }
+}
+
+void resample_cc_smooth(ResampleCcCurve* c) {
+    const int last = RESAMPLE_CC_CURVE_POINTS - 1;
+    float out[RESAMPLE_CC_CURVE_POINTS];
+    out[0] = c->values[0];
+    out[last] = c->values[last];
+    for (int i = 1; i < last; ++i) out[i] = 0.25f * c->values[i - 1] + 0.5f * c->values[i] + 0.25f * c->values[i + 1];
+    memcpy(c->values, out, sizeof(out));
+}
+
+float resample_cc_value_at(const ResampleCcCurve* c, float x) {
+    float pos = fr_clampf(x, 0.0f, 1.0f) * (float)(RESAMPLE_CC_CURVE_POINTS - 1);
+    int i = (int)pos;
+    if (i >= RESAMPLE_CC_CURVE_POINTS - 1) return c->values[RESAMPLE_CC_CURVE_POINTS - 1];
+    float frac = pos - (float)i;
+    return c->values[i] + (c->values[i + 1] - c->values[i]) * frac;
 }
 
 // A naming field as it goes into a file name: the characters Windows refuses
@@ -137,11 +311,49 @@ static int resample_parse_velocities(const char* text, int* out, int max_count, 
     return count;
 }
 
-static void resample_add(ResampleScript* script, int64_t frame, MidiEvent midi) {
-    if (script->count >= RESAMPLE_MAX_EVENTS) return;
-    script->events[script->count].frame = frame;
-    script->events[script->count].midi = midi;
+// False when the script is full.
+static bool resample_add(ResampleScript* script, int64_t frame, MidiEvent midi) {
+    if (script->count >= RESAMPLE_MAX_EVENTS) return false;
+    ResampleEvent* e = &script->events[script->count];
+    e->frame = frame;
+    e->midi = midi;
+    e->order = (uint32_t)script->count;
     script->count++;
+    return true;
+}
+
+// By frame, and for one frame in the order they were added: the controller
+// values of a window go in before its notes, so the sampler has them when
+// the note starts.
+static int resample_event_compare(const void* a, const void* b) {
+    const ResampleEvent* x = (const ResampleEvent*)a;
+    const ResampleEvent* y = (const ResampleEvent*)b;
+    if (x->frame != y->frame) return x->frame < y->frame ? -1 : 1;
+    if (x->order != y->order) return x->order < y->order ? -1 : 1;
+    return 0;
+}
+
+// The controller events of one sample's window, from its first pre-roll
+// note to the end of its gap. The curve's time starts at the longest
+// pre-roll, so the real note-on lands on the same point of it for every
+// round robin; a shorter pre-roll starts further along the curve. An event
+// goes out when the 7-bit value differs from the last one sent, so a flat
+// curve costs one event. False when the script is full.
+static bool resample_add_cc(ResampleScript* script, const ResampleConfig* cfg, int64_t window_start,
+                            int64_t note_on, int64_t window_end, double sample_rate, float span_seconds,
+                            float preroll_seconds, int64_t tick_frames, int* last_value) {
+    for (int k = 0; k < cfg->cc_curve_count; ++k) {
+        const ResampleCcCurve* curve = &cfg->cc_curves[k];
+        for (int64_t f = window_start; f < window_end; f += tick_frames) {
+            float seconds = (float)((double)(f - note_on) / sample_rate) + preroll_seconds;
+            float x = span_seconds > 0.0f ? seconds / span_seconds : 0.0f;
+            int v = fr_clampi((int)(resample_cc_value_at(curve, x) * (float)MIDI_VALUE_MAX + 0.5f), 0, MIDI_VALUE_MAX);
+            if (v == last_value[k]) continue;
+            if (!resample_add(script, f, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, curve->controller, v))) return false;
+            last_value[k] = v;
+        }
+    }
+    return true;
 }
 
 bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sample_rate,
@@ -198,8 +410,25 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         return false;
     }
     if (cfg->output_dir[0] == '\0') {
-        fr_strcpy(err, err_len, "Give an output folder");
+        fr_strcpy(err, err_len, "Choose an output folder");
         return false;
+    }
+    if (cfg->cc_curve_count < 0 || cfg->cc_curve_count > RESAMPLE_MAX_CC_CURVES) {
+        snprintf(err, err_len, "CC curves: at most %d", RESAMPLE_MAX_CC_CURVES);
+        return false;
+    }
+    for (int i = 0; i < cfg->cc_curve_count; ++i) {
+        int cc = cfg->cc_curves[i].controller;
+        if (cc < 0 || cc > MIDI_VALUE_MAX) {
+            snprintf(err, err_len, "CC curves: controller %d is outside 0..127", cc);
+            return false;
+        }
+        for (int j = 0; j < i; ++j) {
+            if (cfg->cc_curves[j].controller == cc) {
+                snprintf(err, err_len, "CC curves: CC%d has two curves; remove one", cc);
+                return false;
+            }
+        }
     }
 
     int note_count = (high - low) / cfg->step + 1;
@@ -214,34 +443,60 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     int64_t gap_frames = (int64_t)((double)cfg->gap_seconds * sample_rate + 0.5);
     int64_t preroll_hold_frames = (int64_t)((double)RESAMPLE_PREROLL_HOLD_SECONDS * sample_rate + 0.5);
     int64_t preroll_gap_frames = (int64_t)((double)cfg->preroll_gap_seconds * sample_rate + 0.5);
+
+    // The controller curves: their span, how often they are read, and the
+    // value each last sent, so the first tick of the run always sends one.
+    float preroll_seconds;
+    float span_seconds = resample_cc_span(cfg, &preroll_seconds, nullptr, nullptr);
+    int64_t tick_frames = (int64_t)((double)RESAMPLE_CC_TICK_SECONDS * sample_rate + 0.5);
+    if (tick_frames < 1) tick_frames = 1;
+    int last_value[RESAMPLE_MAX_CC_CURVES];
+    for (int k = 0; k < RESAMPLE_MAX_CC_CURVES; ++k) last_value[k] = -1;
+
+    bool fits = true;
     int64_t t = 0;
     for (int note = low; note <= high; note += cfg->step) {
         for (int v = 0; v < velocity_count; ++v) {
             for (int rr = 1; rr <= cfg->round_robins; ++rr) {
-                if (cfg->preroll) {
-                    // Advance the sampler's counter to variation rr with short
-                    // notes that each ring out before the next.
-                    for (int i = 1; i < rr; ++i) {
-                        resample_add(script, t, midi_make(MIDI_STATUS_NOTE_ON, 0, note, velocities[v]));
-                        resample_add(script, t + preroll_hold_frames, midi_make(MIDI_STATUS_NOTE_OFF, 0, note, 0));
-                        t += preroll_gap_frames;
-                    }
+                // The window of this sample: the pre-roll notes, the real
+                // note, the gap. The controllers go in first.
+                int preroll_notes = cfg->preroll ? rr - 1 : 0;
+                int64_t note_on = t + (int64_t)preroll_notes * preroll_gap_frames;
+                int64_t window_end = note_on + hold_frames + gap_frames;
+                fits = fits && resample_add_cc(script, cfg, t, note_on, window_end, sample_rate,
+                                               span_seconds, preroll_seconds, tick_frames, last_value);
+                // Advance the sampler's counter to variation rr with short
+                // notes that each ring out before the next.
+                for (int i = 0; i < preroll_notes; ++i) {
+                    fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_NOTE_ON, 0, note, velocities[v]));
+                    fits = fits && resample_add(script, t + preroll_hold_frames, midi_make(MIDI_STATUS_NOTE_OFF, 0, note, 0));
+                    t += preroll_gap_frames;
                 }
                 ResampleSegment* seg = &script->segments[script->segment_count++];
                 seg->start_frame = t;
                 seg->note = (uint8_t)note;
                 seg->velocity = (uint8_t)velocities[v];
                 seg->round_robin = (uint8_t)rr;
-                resample_add(script, t, midi_make(MIDI_STATUS_NOTE_ON, 0, note, velocities[v]));
-                resample_add(script, t + hold_frames, midi_make(MIDI_STATUS_NOTE_OFF, 0, note, 0));
+                fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_NOTE_ON, 0, note, velocities[v]));
+                fits = fits && resample_add(script, t + hold_frames, midi_make(MIDI_STATUS_NOTE_OFF, 0, note, 0));
                 t += hold_frames + gap_frames;
                 seg->end_frame = t;
             }
         }
     }
     // Whatever still rings is cut at the end of the file.
-    resample_add(script, t, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, MIDI_CC_ALL_NOTES_OFF, 0));
-    resample_add(script, t, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, MIDI_CC_ALL_SOUND_OFF, 0));
+    fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, MIDI_CC_ALL_NOTES_OFF, 0));
+    fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, MIDI_CC_ALL_SOUND_OFF, 0));
+    if (!fits) {
+        snprintf(err, err_len, "More than %d MIDI events in one run: shorten the timing, or use fewer notes, velocities or CC curves",
+                 RESAMPLE_MAX_EVENTS);
+        script->count = 0;
+        script->segment_count = 0;
+        return false;
+    }
+    // The controller events were added per window, out of order with the
+    // notes; the render walks the list from front to back.
+    qsort(script->events, (size_t)script->count, sizeof(ResampleEvent), resample_event_compare);
 
     script->total_frames = t;
     script->sample_rate = sample_rate;
@@ -249,8 +504,8 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     script->velocity_count = velocity_count;
     script->round_robin_count = cfg->round_robins;
     script->built = true;
-    fr_log("resample: %d notes x %d velocities x %d round robins = %d samples, %d events, %.1f s at %.0f Hz, pre-roll %s",
-           note_count, velocity_count, cfg->round_robins, script->segment_count, script->count,
+    fr_log("resample: %d notes x %d velocities x %d round robins = %d samples, %d CC curves, %d events, %.1f s at %.0f Hz, pre-roll %s",
+           note_count, velocity_count, cfg->round_robins, script->segment_count, cfg->cc_curve_count, script->count,
            (double)t / sample_rate, sample_rate, cfg->preroll ? "on" : "off");
     return true;
 }

@@ -16,6 +16,8 @@ struct Settings {
 
     int  midi_channel;                           // 0..15
 
+    bool show_tips;                              // the dim lines that explain a control
+
     int  window_width;
     int  window_height;
 };

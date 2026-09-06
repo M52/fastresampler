@@ -6,9 +6,9 @@
 #include "fastresampler_helpers.h"
 #include "platform/fastresampler_platform.h"
 
-// Largest settings file the loader reads. 16 paths plus a few numbers fit
-// many times over.
-#define SETTINGS_FILE_MAX_BYTES 16384
+// Largest settings file the loader reads. 16 paths, a few numbers and the
+// controller curves (about a kilobyte each) fit many times over.
+#define SETTINGS_FILE_MAX_BYTES 65536
 
 void settings_defaults(Settings* s) {
     memset(s, 0, sizeof(*s));
@@ -18,9 +18,25 @@ void settings_defaults(Settings* s) {
     s->audio_driver_name[0] = '\0';
     s->block_size = FR_DEFAULT_BLOCK_SIZE;
     s->midi_channel = 0;
+    s->show_tips = true;
     s->window_width = WINDOW_DEFAULT_WIDTH;
     s->window_height = WINDOW_DEFAULT_HEIGHT;
     resample_config_defaults(&s->resample);
+}
+
+// Whitespace-separated numbers from text into out, at most max_count of
+// them. Returns how many were read.
+static int settings_parse_floats(const char* text, float* out, int max_count) {
+    int count = 0;
+    const char* s = text;
+    while (count < max_count) {
+        char* end = nullptr;
+        double v = strtod(s, &end);
+        if (end == s) break;
+        out[count++] = (float)v;
+        s = end;
+    }
+    return count;
 }
 
 bool settings_has_scan_path(const Settings* s, const char* path) {
@@ -158,8 +174,60 @@ bool settings_load(Settings* s, const char* path) {
             }
         } else if (strcmp(key, "resample_output_dir") == 0) {
             if (value[0]) fr_strcpy(s->resample.output_dir, sizeof(s->resample.output_dir), value);
+        } else if (strcmp(key, "resample_preload_frames") == 0) {
+            // A value off the list leaves the default in place.
+            int v = atoi(value);
+            for (int i = 0; i < RESAMPLE_PRELOAD_OPTION_COUNT; ++i) {
+                if (g_resample_preload_options[i] == v) s->resample.preload_frames = v;
+            }
+        } else if (strcmp(key, "show_tips") == 0) {
+            s->show_tips = atoi(value) != 0;
+        } else if (strcmp(key, "resample_cc") == 0) {
+            // "index controller bezier constant"; the nodes and values follow
+            // on their own lines, so the curve starts out flat at 127.
+            float nums[4];
+            if (settings_parse_floats(value, nums, 4) == 4) {
+                int i = (int)nums[0];
+                if (i >= 0 && i < RESAMPLE_MAX_CC_CURVES) {
+                    ResampleCcCurve* c = &s->resample.cc_curves[i];
+                    resample_cc_set_constant(c, 1.0f);
+                    c->controller = fr_clampi((int)nums[1], 0, MIDI_VALUE_MAX);
+                    c->is_bezier = nums[2] != 0.0f;
+                    c->constant = fr_clampi((int)nums[3], 0, MIDI_VALUE_MAX);
+                    if (s->resample.cc_curve_count < i + 1) s->resample.cc_curve_count = i + 1;
+                }
+            }
+        } else if (strcmp(key, "resample_cc_nodes") == 0) {
+            // "index count", then x y curvature per node.
+            float nums[2 + 3 * RESAMPLE_CC_MAX_NODES];
+            int read = settings_parse_floats(value, nums, 2 + 3 * RESAMPLE_CC_MAX_NODES);
+            int i = read >= 2 ? (int)nums[0] : -1;
+            int count = read >= 2 ? (int)nums[1] : 0;
+            if (i >= 0 && i < RESAMPLE_MAX_CC_CURVES && count >= 2 && count <= RESAMPLE_CC_MAX_NODES && read >= 2 + 3 * count) {
+                ResampleCcCurve* c = &s->resample.cc_curves[i];
+                c->node_count = count;
+                for (int k = 0; k < count; ++k) {
+                    c->node_x[k] = fr_clampf(nums[2 + 3 * k], 0.0f, 1.0f);
+                    c->node_y[k] = fr_clampf(nums[3 + 3 * k], 0.0f, 1.0f);
+                    c->curvature[k] = fr_clampf(nums[4 + 3 * k], 0.0f, 1.0f);
+                }
+            }
+        } else if (strcmp(key, "resample_cc_values") == 0) {
+            // "index", then every point of the curve.
+            float nums[1 + RESAMPLE_CC_CURVE_POINTS];
+            int read = settings_parse_floats(value, nums, 1 + RESAMPLE_CC_CURVE_POINTS);
+            int i = read >= 1 ? (int)nums[0] : -1;
+            if (i >= 0 && i < RESAMPLE_MAX_CC_CURVES && read == 1 + RESAMPLE_CC_CURVE_POINTS) {
+                ResampleCcCurve* c = &s->resample.cc_curves[i];
+                for (int k = 0; k < RESAMPLE_CC_CURVE_POINTS; ++k) c->values[k] = fr_clampf(nums[1 + k], 0.0f, 1.0f);
+            }
         }
         line = next;
+    }
+    // A curve the file skipped over still has to be a curve.
+    for (int i = 0; i < s->resample.cc_curve_count; ++i) {
+        ResampleCcCurve* c = &s->resample.cc_curves[i];
+        if (c->node_count < 2) resample_cc_set_constant(c, 1.0f);
     }
 
     free(text);
@@ -194,6 +262,20 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_sample_rate %d\n", s->resample.sample_rate);
     fprintf(f, "resample_render_speed %d\n", s->resample.render_speed);
     fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
+    fprintf(f, "resample_preload_frames %d\n", s->resample.preload_frames);
+    fprintf(f, "show_tips %d\n", s->show_tips ? 1 : 0);
+    for (int i = 0; i < s->resample.cc_curve_count; ++i) {
+        const ResampleCcCurve* c = &s->resample.cc_curves[i];
+        fprintf(f, "resample_cc %d %d %d %d\n", i, c->controller, c->is_bezier ? 1 : 0, c->constant);
+        fprintf(f, "resample_cc_nodes %d %d", i, c->node_count);
+        for (int k = 0; k < c->node_count; ++k) {
+            fprintf(f, " %.4f %.4f %.4f", c->node_x[k], c->node_y[k], c->curvature[k]);
+        }
+        fprintf(f, "\n");
+        fprintf(f, "resample_cc_values %d", i);
+        for (int k = 0; k < RESAMPLE_CC_CURVE_POINTS; ++k) fprintf(f, " %.4f", c->values[k]);
+        fprintf(f, "\n");
+    }
     fclose(f);
     return true;
 }

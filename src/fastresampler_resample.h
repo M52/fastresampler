@@ -26,7 +26,9 @@
 #define RESAMPLE_MAX_STEP           SEMITONES_PER_OCTAVE
 #define RESAMPLE_MAX_SEGMENTS       4096
 #define RESAMPLE_EVENTS_PER_SEGMENT (2 + 2 * (RESAMPLE_MAX_ROUND_ROBINS - 1))
-#define RESAMPLE_MAX_EVENTS         (RESAMPLE_MAX_SEGMENTS * RESAMPLE_EVENTS_PER_SEGMENT + 8)
+// The note events of a full run always fit; the controller curves add
+// events on top and the build fails, with a message, when they overflow.
+#define RESAMPLE_MAX_EVENTS         262144
 #define RESAMPLE_VELOCITY_TEXT_LEN  96
 #define RESAMPLE_NOTE_TEXT_LEN      8
 #define RESAMPLE_NAME_LEN           64
@@ -34,6 +36,29 @@
 
 // How long a pre-roll note is held before it is released to ring out.
 #define RESAMPLE_PREROLL_HOLD_SECONDS 0.2f
+
+// --- Controller curves ----------------------------------------------------------
+// A controller drawn over the time of one sample: the pre-roll notes, the
+// held note, and the gap it rings out in. The values cover that whole span,
+// 0 to 1 for controller value 0 to 127, and stretch with the timing. The
+// bezier nodes are the editor's; the values are what plays. While the script
+// plays, each curve is read every tick and a controller event goes out when
+// its 7-bit value differs from the last one sent.
+#define RESAMPLE_MAX_CC_CURVES      8
+#define RESAMPLE_CC_CURVE_POINTS    128
+#define RESAMPLE_CC_MAX_NODES       16
+#define RESAMPLE_CC_TICK_SECONDS    0.005f
+
+struct ResampleCcCurve {
+    int   controller;                            // 0..127
+    float values[RESAMPLE_CC_CURVE_POINTS];
+    bool  is_bezier;
+    int   node_count;
+    float node_x[RESAMPLE_CC_MAX_NODES];
+    float node_y[RESAMPLE_CC_MAX_NODES];
+    float curvature[RESAMPLE_CC_MAX_NODES];      // the control point of the segment after node i
+    int   constant;                              // the Constant button's slider, 0..127
+};
 
 // What the Resample tab edits. Lives in Settings so it survives a restart.
 struct ResampleConfig {
@@ -54,11 +79,23 @@ struct ResampleConfig {
     int   sample_rate;                              // the render's rate; 0 = the audio device's
     int   render_speed;                             // realtime multiple the render is held to; 0 = unlimited
     char  output_dir[FR_MAX_PATH];
+    int   preload_frames;                           // frames of each sample the bank keeps in RAM; 0 = whole samples
+
+    ResampleCcCurve cc_curves[RESAMPLE_MAX_CC_CURVES];
+    int   cc_curve_count;
 };
 
 // The export rates the tab offers, besides the device's own.
 #define RESAMPLE_RATE_OPTION_COUNT 6
 static const int g_resample_rate_options[RESAMPLE_RATE_OPTION_COUNT] = { 44100, 48000, 88200, 96000, 176400, 192000 };
+
+// The preload sizes the tab offers for the bank, in frames of each sample;
+// 0 keeps every sample whole in RAM, the rest stream from disk past that.
+#define RESAMPLE_PRELOAD_OPTION_COUNT 8
+static const int g_resample_preload_options[RESAMPLE_PRELOAD_OPTION_COUNT] = { 0, 1024, 2048, 4096, 8192, 16384, 32768, 65536 };
+
+// The bytes of one WAV header the writer makes.
+#define RESAMPLE_WAV_HEADER_BYTES 44
 
 // The render speeds the tab offers. A sampler that streams from disk needs
 // wall time to read its sample tails: rendered too fast, it delivers only
@@ -69,6 +106,7 @@ static const int g_resample_speed_options[RESAMPLE_SPEED_OPTION_COUNT] = { 1, 2,
 struct ResampleEvent {
     int64_t   frame;
     MidiEvent midi;
+    uint32_t  order;     // the position it was added at; keeps the sort stable
 };
 
 // One wanted sample: its span in the full file and what to call it.
@@ -128,6 +166,36 @@ void resample_config_defaults(ResampleConfig* cfg);
 
 // The dropdown label for a step in semitones, "Every wholetone" for 2.
 const char* resample_step_label(int step);
+
+// The dropdown label for a preload size: "RAM" for 0, else "8192 frames".
+void resample_preload_label(int preload_frames, char* out, size_t out_len);
+
+// Bytes a render writes to the output folder: the full WAV and one file per
+// sample, all 32 bit float with a header each.
+uint64_t resample_required_bytes(const ResampleScript* script);
+
+// --- Controller curves ---------------------------------------------------------
+
+// The time one curve spans for the configuration, in seconds: the longest
+// pre-roll (that of the last round robin, 0 without pre-roll), the hold and
+// the gap. Each part comes back on its own when a pointer is given.
+float resample_cc_span(const ResampleConfig* cfg, float* preroll, float* hold, float* gap);
+
+// A new curve at the end of the list: the lowest controller not in use yet,
+// flat at 127. False when the list is full.
+bool resample_cc_add(ResampleConfig* cfg);
+void resample_cc_remove(ResampleConfig* cfg, int index);
+
+// A flat curve at value 0..1: the values and the two bezier nodes.
+void resample_cc_set_constant(ResampleCcCurve* c, float value);
+
+// The values from the bezier nodes; the nodes fitted to the values.
+void resample_cc_from_bezier(ResampleCcCurve* c);
+void resample_cc_fit_bezier(ResampleCcCurve* c);
+void resample_cc_smooth(ResampleCcCurve* c);
+
+// The value at a position 0..1 along the span, linear between the points.
+float resample_cc_value_at(const ResampleCcCurve* c, float x);
 
 // Parses the configuration and fills the script for the given sample rate.
 bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sample_rate,

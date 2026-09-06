@@ -11,6 +11,9 @@
 // Height of the status strip at the bottom of the side panel.
 #define UI_STATUS_HEIGHT 44.0f
 
+// Width of a modal message, like the disk space warning.
+#define UI_MODAL_WIDTH 420.0f
+
 // The meter's floor and the height of its bars.
 #define UI_METER_MIN_DB   -60.0f
 #define UI_METER_HEIGHT   10.0f
@@ -69,11 +72,30 @@ static bool ui_green_button(const char* label, ImVec2 size = ImVec2(0, 0)) {
     return pressed;
 }
 
-// A hint in the dimmed text colour that wraps to the panel width.
-static void ui_hint(const char* text) {
+// Whether the tips are shown this frame, from the settings.
+static bool g_ui_show_tips = true;
+
+// A line in the dimmed text colour that wraps to the panel width. A note
+// says what the state is and always shows; a tip explains a control and
+// goes when the tips are switched off in Settings.
+static void ui_note(const char* text) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
     ImGui::TextWrapped("%s", text);
     ImGui::PopStyleColor();
+}
+
+static void ui_hint(const char* text) {
+    if (g_ui_show_tips) ui_note(text);
+}
+
+// The last part of a folder path, "samples" for "D:\work\samples\"; the
+// whole path when it has no parts.
+static void ui_folder_name(const char* path, char* out, size_t out_len) {
+    fr_strcpy(out, out_len, path);
+    size_t len = strlen(out);
+    while (len > 1 && (out[len - 1] == '\\' || out[len - 1] == '/')) out[--len] = '\0';
+    const char* base = plat_path_basename(out);
+    if (base[0]) memmove(out, base, strlen(base) + 1);
 }
 
 static void ui_colored_wrapped(const char* text, ImVec4 color) {
@@ -240,7 +262,7 @@ static void ui_tab_resample(App* app, float scale) {
         char preview[RESAMPLE_FILE_NAME_LEN + 32];
         if (resample_prefix(cfg, prefix, sizeof(prefix), err, sizeof(err))) {
             snprintf(preview, sizeof(preview), "Files: %s_<Note>_<Velocity>_RR<n>.wav", prefix);
-            ui_hint(preview);
+            ui_note(preview);
         } else {
             ui_colored_wrapped(err, CODE_COLOR_WARNING_VEC4);
         }
@@ -344,9 +366,76 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ui_hint("A sampler that streams from disk needs time to read its sample tails. If samples come out cut short, lower the speed.");
 
-    ui_label("Output folder", scale);
+    ImGui::Separator();
+
+    // The controller curves: one controller each, over the time of a sample.
+    ImGui::Text("Controllers");
+    ImGui::BeginDisabled(busy);
+    int remove_curve = -1;
+    for (int i = 0; i < cfg->cc_curve_count; ++i) {
+        ResampleCcCurve* curve = &cfg->cc_curves[i];
+        ImGui::PushID(i);
+        char cc_label[32];
+        midi_cc_label(curve->controller, cc_label, sizeof(cc_label));
+        ui_label("Controller", scale);
+        ImGui::SetNextItemWidth(-28.0f * scale);
+        if (ImGui::BeginCombo("##cc", cc_label)) {
+            for (int cc = 0; cc <= MIDI_VALUE_MAX; ++cc) {
+                char item[32];
+                midi_cc_label(cc, item, sizeof(item));
+                if (ImGui::Selectable(item, cc == curve->controller)) curve->controller = cc;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("x", ImVec2(-1.0f, 0.0f))) remove_curve = i;
+        ui_draw_cc_curve(curve, cfg, "##curve", scale);
+        ImGui::PopID();
+        ImGui::Spacing();
+    }
+    if (remove_curve >= 0) resample_cc_remove(cfg, remove_curve);
+    ImGui::BeginDisabled(cfg->cc_curve_count >= RESAMPLE_MAX_CC_CURVES);
+    if (ImGui::Button("Add CC curve", ImVec2(-1.0f, 0.0f))) resample_cc_add(cfg);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ui_hint("Each curve sends one controller over the time of every sample: the pre-roll, the held note and the gap. "
+            "Bezier: drag the nodes and the handles between them, double-click to add a node, right-click to remove one. "
+            "Off: paint the curve with the mouse. Constant sets the whole curve to the slider's value.");
+    if (app->plugin && cfg->cc_curve_count > 0 && !host_plugin_info(app->plugin)->has_midi_mapping) {
+        ui_colored_wrapped("This plugin publishes no MIDI controller mapping, so the curves do not reach it.",
+                           CODE_COLOR_WARNING_VEC4);
+    }
+    ImGui::Separator();
+
+    ImGui::Text("Output");
+    {
+        char label[FR_MAX_PATH + 32];
+        if (cfg->output_dir[0]) {
+            char folder[FR_MAX_PATH];
+            ui_folder_name(cfg->output_dir, folder, sizeof(folder));
+            snprintf(label, sizeof(label), "%s (click to change)##folder", folder);
+        } else {
+            fr_strcpy(label, sizeof(label), "Choose an output folder##folder");
+        }
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button(label, ImVec2(-1.0f, 0.0f))) app->output_dir_pick_request = true;
+        ImGui::EndDisabled();
+        if (cfg->output_dir[0]) ui_colored_wrapped(cfg->output_dir, CODE_COLOR_SLOT_LABEL_TEXT);
+    }
+    ui_label("Preload", scale);
+    char preload_label[32];
+    resample_preload_label(cfg->preload_frames, preload_label, sizeof(preload_label));
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##output", cfg->output_dir, sizeof(cfg->output_dir));
+    if (ImGui::BeginCombo("##preload", preload_label)) {
+        for (int i = 0; i < RESAMPLE_PRELOAD_OPTION_COUNT; ++i) {
+            int frames = g_resample_preload_options[i];
+            char item[32];
+            resample_preload_label(frames, item, sizeof(item));
+            if (ImGui::Selectable(item, cfg->preload_frames == frames)) cfg->preload_frames = frames;
+        }
+        ImGui::EndCombo();
+    }
+    ui_hint("How much of every sample the bank keeps in RAM; the rest streams from disk while it plays. RAM holds every sample whole.");
     ImGui::Separator();
 
     // Step 1: the script.
@@ -379,9 +468,9 @@ static void ui_tab_resample(App* app, float scale) {
         if (ui_green_button("Render to WAV", ImVec2(-1.0f, 0.0f))) app->resample_start_request = true;
         ImGui::EndDisabled();
         if (!app->plugin) {
-            ui_hint("Load a plugin to render.");
+            ui_note("Load a plugin to render.");
         } else if (!app->resample_script.built) {
-            ui_hint("Build the MIDI to render.");
+            ui_note("Build the MIDI to render.");
         } else {
             ui_hint("Renders faster than realtime with the speakers silent, then splits the file into one WAV per sample.");
         }
@@ -406,7 +495,7 @@ static void ui_tab_resample(App* app, float scale) {
         if (app->resample_fsi_ready) {
             ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the output folder.");
         } else {
-            ui_hint("Available once the samples are rendered and split.");
+            ui_note("Available once the samples are rendered and split.");
         }
     }
     if (app->instrument_result_text[0]) {
@@ -495,6 +584,12 @@ static void ui_tab_settings(App* app, float scale) {
     } else {
         ui_colored_wrapped("No audio device is open.", CODE_COLOR_WARNING_VEC4);
     }
+    ImGui::Separator();
+
+    ImGui::Text("Interface");
+    ui_label("Show tips", scale);
+    ImGui::Checkbox("##tips", &app->settings.show_tips);
+    ui_hint("The dim lines that explain a control, like this one.");
 }
 
 static void ui_draw_side_panel(App* app, ImVec2 size, float scale) {
@@ -547,7 +642,7 @@ static void ui_draw_plugin_list(App* app, float scale) {
     ImGui::Separator();
 
     if (app->plugins.count == 0) {
-        ui_hint("No plugins found. Add a folder in the Settings tab.");
+        ui_note("No plugins found. Add a folder in the Settings tab.");
         return;
     }
 
@@ -604,10 +699,15 @@ static void ui_draw_main_area(App* app, ImVec2 size, float scale) {
 // --- Frame ---------------------------------------------------------------------
 
 void ui_draw_frame(App* app, float width, float height, float scale) {
+    g_ui_show_tips = app->settings.show_tips;
+    // The side panel is one column down the whole left edge; the main area
+    // and, under it, the keyboard share the rest.
     float side_w = UI_SIDEPANEL_WIDTH * scale;
     float kb_h = UI_KEYBOARD_HEIGHT * scale;
-    float panel_h = height - kb_h;
-    if (panel_h < 1.0f) panel_h = 1.0f;
+    float main_w = width - side_w;
+    if (main_w < 1.0f) main_w = 1.0f;
+    float main_h = height - kb_h;
+    if (main_h < 1.0f) main_h = 1.0f;
 
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
     ImGui::SetNextWindowSize(ImVec2(width, height));
@@ -621,18 +721,32 @@ void ui_draw_frame(App* app, float width, float height, float scale) {
     ImGui::PopStyleVar(3);
 
     ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
-    ui_draw_side_panel(app, ImVec2(side_w, panel_h), scale);
+    ui_draw_side_panel(app, ImVec2(side_w, height), scale);
 
     ImGui::SetCursorPos(ImVec2(side_w, 0.0f));
-    ui_draw_main_area(app, ImVec2(width - side_w, panel_h), scale);
+    ui_draw_main_area(app, ImVec2(main_w, main_h), scale);
 
-    ImGui::SetCursorPos(ImVec2(0.0f, panel_h));
-    ImGui::BeginChild("##keyboard", ImVec2(width, kb_h), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+    ImGui::SetCursorPos(ImVec2(side_w, main_h));
+    ImGui::BeginChild("##keyboard", ImVec2(main_w, kb_h), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
     float pad = UI_PANEL_PADDING * scale;
     ImVec2 kb_pos = ImGui::GetWindowPos();
     ImVec2 kb_size = ImGui::GetWindowSize();
     ui_draw_keyboard(app, ImVec2(kb_pos.x + pad, kb_pos.y + pad), ImVec2(kb_size.x - 2.0f * pad, kb_size.y - 2.0f * pad), scale);
     ImGui::EndChild();
+
+    // The disk space warning: a modal over everything until it is dismissed.
+    if (app->disk_warning_open) {
+        app->disk_warning_open = false;
+        ImGui::OpenPopup("Disk space");
+    }
+    ImGui::SetNextWindowPos(ImVec2(width * 0.5f, height * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(UI_MODAL_WIDTH * scale, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Disk space", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+        ui_colored_wrapped(app->disk_warning, CODE_COLOR_WARNING_VEC4);
+        ImGui::Spacing();
+        if (ImGui::Button("OK", ImVec2(-1.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 
     ImGui::End();
 }

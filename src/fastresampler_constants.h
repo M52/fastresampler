@@ -71,10 +71,12 @@ static const int g_block_size_options[FR_BLOCK_SIZE_OPTION_COUNT] = { 32, 64, 12
 // --- Window and layout (logical pixels at 100% scale) ----------------------
 #define WINDOW_DEFAULT_WIDTH    1400
 #define WINDOW_DEFAULT_HEIGHT   900
-#define WINDOW_MIN_WIDTH        900
+#define WINDOW_MIN_WIDTH        1000
 #define WINDOW_MIN_HEIGHT       600
 
-#define UI_SIDEPANEL_WIDTH      320.0f
+// The side panel is one column down the whole left edge; the plugin editor
+// and, under it, the keyboard share the rest.
+#define UI_SIDEPANEL_WIDTH      420.0f
 #define UI_KEYBOARD_HEIGHT      130.0f
 #define UI_KEYBOARD_RAIL_HEIGHT 18.0f    // the readout strip above the keys
 #define UI_LABEL_COLUMN_WIDTH   100.0f   // labels sit left of their fields

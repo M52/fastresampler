@@ -57,11 +57,21 @@ bool plat_path_exists(const char* path);
 bool plat_path_is_dir(const char* path);
 bool plat_dir_create(const char* path);      // one level; true when it exists after
 
+// The free bytes on the disk that holds path. The folder need not exist
+// yet: the nearest folder above it that does is asked. False when none is
+// found or the disk does not say.
+bool plat_disk_free_bytes(const char* path, uint64_t* out_free);
+
 // Directory of the running executable, with a trailing separator.
 void plat_module_dir(char* out_dir, size_t max_len);
 
 // The folder the platform installs VST3 plugins into by default.
 void plat_default_plugin_dir(char* out_dir, size_t max_len);
+
+// The system's folder picker, modal over the given window; starts in
+// start_dir when that exists. True with the chosen folder in out, false when
+// the user cancelled. UI thread, outside the ImGui frame.
+bool plat_pick_folder(void* parent_window, const char* start_dir, char* out, size_t out_len);
 
 // Directory iteration. plat_dir_open() positions on the first entry; the
 // "." and ".." entries are skipped. plat_dir_next() advances. Read name and

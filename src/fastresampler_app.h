@@ -66,12 +66,18 @@ struct App {
     char       status[FR_STATUS_LEN];
     bool       status_is_error;
 
+    // The disk space warning: raised when the output folder's disk cannot
+    // hold the run, shown by the UI as a modal until dismissed.
+    char       disk_warning[FR_STATUS_LEN];
+    bool       disk_warning_open;
+
     // Requests raised by the UI during a frame, served after it.
     int        load_request;           // plugin list index, -1 none
     bool       unload_request;
     bool       rescan_request;
     bool       audio_apply_request;
     bool       audio_refresh_request;
+    bool       output_dir_pick_request; // the folder picker for the resample output
 
     // Settings tab scratch: what the combos show before "Apply".
     int        pending_driver;

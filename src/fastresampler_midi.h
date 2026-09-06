@@ -96,6 +96,48 @@ inline const char* midi_note_name(int note, char* buf, size_t buf_size) {
     return buf;
 }
 
+// --- Controller names -------------------------------------------------------
+
+// The name of a controller with a standard meaning, else an empty string.
+inline const char* midi_cc_name(int cc) {
+    switch (cc) {
+        case 0:   return "Bank select";
+        case 1:   return "Mod wheel";
+        case 2:   return "Breath";
+        case 4:   return "Foot";
+        case 5:   return "Portamento time";
+        case 7:   return "Volume";
+        case 8:   return "Balance";
+        case 10:  return "Pan";
+        case 11:  return "Expression";
+        case 64:  return "Sustain";
+        case 65:  return "Portamento";
+        case 66:  return "Sostenuto";
+        case 67:  return "Soft pedal";
+        case 68:  return "Legato";
+        case 71:  return "Resonance";
+        case 72:  return "Release";
+        case 73:  return "Attack";
+        case 74:  return "Cutoff";
+        case 91:  return "Reverb";
+        case 93:  return "Chorus";
+        case 120: return "All sound off";
+        case 121: return "Reset controllers";
+        case 123: return "All notes off";
+        default:  return "";
+    }
+}
+
+// "CC1 Mod wheel", or "CC3" for a controller without a name.
+inline void midi_cc_label(int cc, char* buf, size_t buf_size) {
+    const char* name = midi_cc_name(cc);
+    if (name[0]) {
+        snprintf(buf, buf_size, "CC%d %s", cc, name);
+    } else {
+        snprintf(buf, buf_size, "CC%d", cc);
+    }
+}
+
 // A white key: no sharp in its name.
 inline bool midi_note_is_white(int note) {
     int pc = note % SEMITONES_PER_OCTAVE;

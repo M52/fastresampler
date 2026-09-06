@@ -102,6 +102,32 @@ bool plat_dir_create(const char* path) {
     return GetLastError() == ERROR_ALREADY_EXISTS && plat_path_is_dir(path);
 }
 
+bool plat_disk_free_bytes(const char* path, uint64_t* out_free) {
+    char probe[FR_MAX_PATH];
+    size_t len = strlen(path);
+    if (len == 0 || len >= sizeof(probe)) return false;
+    memcpy(probe, path, len + 1);
+    for (;;) {
+        wchar_t wpath[FR_MAX_PATH];
+        if (plat_utf8_to_wide(probe, wpath, FR_MAX_PATH)) {
+            ULARGE_INTEGER free_bytes;
+            if (GetDiskFreeSpaceExW(wpath, &free_bytes, NULL, NULL)) {
+                *out_free = (uint64_t)free_bytes.QuadPart;
+                return true;
+            }
+        }
+        // Up one level, keeping the separator so a drive root stays "D:\".
+        while (len > 0 && (probe[len - 1] == '\\' || probe[len - 1] == '/')) probe[--len] = '\0';
+        size_t cut = 0;
+        for (size_t i = 0; i < len; ++i) {
+            if (probe[i] == '\\' || probe[i] == '/') cut = i + 1;
+        }
+        if (cut == 0) return false;
+        probe[cut] = '\0';
+        len = cut;
+    }
+}
+
 void plat_module_dir(char* out_dir, size_t max_len) {
     wchar_t wpath[FR_MAX_PATH];
     DWORD n = GetModuleFileNameW(NULL, wpath, FR_MAX_PATH);
@@ -125,6 +151,42 @@ void plat_default_plugin_dir(char* out_dir, size_t max_len) {
     SHGetFolderPathW(NULL, CSIDL_PROGRAM_FILES_COMMON, NULL, SHGFP_TYPE_CURRENT, wpath);
     wcscat_s(wpath, FR_MAX_PATH, L"\\VST3");
     if (!plat_wide_to_utf8(wpath, out_dir, (int)max_len)) out_dir[0] = '\0';
+}
+
+bool plat_pick_folder(void* parent_window, const char* start_dir, char* out, size_t out_len) {
+    IFileDialog* dialog = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
+    if (FAILED(hr) || !dialog) return false;
+
+    DWORD options = 0;
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    dialog->SetTitle(L"Output folder");
+    if (start_dir && start_dir[0] && plat_path_is_dir(start_dir)) {
+        wchar_t wdir[FR_MAX_PATH];
+        if (plat_utf8_to_wide(start_dir, wdir, FR_MAX_PATH)) {
+            IShellItem* start = nullptr;
+            if (SUCCEEDED(SHCreateItemFromParsingName(wdir, NULL, IID_PPV_ARGS(&start))) && start) {
+                dialog->SetFolder(start);
+                start->Release();
+            }
+        }
+    }
+
+    bool ok = false;
+    if (SUCCEEDED(dialog->Show((HWND)parent_window))) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+            PWSTR wpath = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &wpath)) && wpath) {
+                ok = plat_wide_to_utf8(wpath, out, (int)out_len);
+                CoTaskMemFree(wpath);
+            }
+            item->Release();
+        }
+    }
+    dialog->Release();
+    return ok;
 }
 
 // Copies one search result into the iterator, or reports that it was a dot entry.

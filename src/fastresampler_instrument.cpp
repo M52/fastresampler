@@ -159,22 +159,106 @@ static void instrument_fill_zone(FSIZone* dst, const char* name, const Instrumen
 
 // --- The bank ------------------------------------------------------------------
 
+// One float sample as the bank's 24 bit integer.
+static int32_t instrument_sample_24(float s) {
+    int32_t v = (int32_t)lrintf(fr_clampf(s, -1.0f, 1.0f) * PCM_ENCODE_24BIT);
+    if (v > INSTRUMENT_PCM_MAX_24) v = INSTRUMENT_PCM_MAX_24;
+    if (v < INSTRUMENT_PCM_MIN_24) v = INSTRUMENT_PCM_MIN_24;
+    return v;
+}
+
 // Float frames to the bank's packed 24 bit little-endian samples.
 static void instrument_pcm_to_24(const float* src, uint8_t* dst, size_t sample_count) {
     for (size_t i = 0; i < sample_count; ++i) {
-        float s = fr_clampf(src[i], -1.0f, 1.0f);
-        int32_t v = (int32_t)lrintf(s * PCM_ENCODE_24BIT);
-        if (v > INSTRUMENT_PCM_MAX_24) v = INSTRUMENT_PCM_MAX_24;
-        if (v < INSTRUMENT_PCM_MIN_24) v = INSTRUMENT_PCM_MIN_24;
+        int32_t v = instrument_sample_24(src[i]);
         dst[i * 3 + 0] = (uint8_t)(v & 0xFF);
         dst[i * 3 + 1] = (uint8_t)((v >> 8) & 0xFF);
         dst[i * 3 + 2] = (uint8_t)((v >> 16) & 0xFF);
     }
 }
 
-// A RAM-only bank: every zone is its own sample, held whole in the preload
-// block, nothing streamed. Rows are written in zone order because the loader
-// pairs row i with zone i.
+// --- WavPack ---------------------------------------------------------------------
+// The streamed part of a sample is compressed the way FastSampler's own
+// export compresses it: 24 bit, normal mode, packed in blocks of frames.
+
+#define INSTRUMENT_PACK_BLOCK_FRAMES     4096
+#define INSTRUMENT_PACK_FIRST_CAPACITY   65536
+// WAVE channel masks: front-centre for mono, front-left and front-right for stereo.
+#define INSTRUMENT_WP_CHANNEL_MASK_MONO   4
+#define INSTRUMENT_WP_CHANNEL_MASK_STEREO 3
+
+// Where the encoder puts its blocks: one growing buffer per stream.
+struct InstrumentPackBuffer {
+    uint8_t* data;
+    size_t   size;
+    size_t   capacity;
+    bool     failed;
+};
+
+static int instrument_pack_output(void* id, void* data, int32_t count) {
+    InstrumentPackBuffer* buf = (InstrumentPackBuffer*)id;
+    if (count <= 0) return 1;
+    if (buf->size + (size_t)count > buf->capacity) {
+        size_t capacity = buf->capacity ? buf->capacity * 2 : INSTRUMENT_PACK_FIRST_CAPACITY;
+        while (capacity < buf->size + (size_t)count) capacity *= 2;
+        uint8_t* grown = (uint8_t*)realloc(buf->data, capacity);
+        if (!grown) {
+            buf->failed = true;
+            return 0;
+        }
+        buf->data = grown;
+        buf->capacity = capacity;
+    }
+    memcpy(buf->data + buf->size, data, (size_t)count);
+    buf->size += (size_t)count;
+    return 1;
+}
+
+// Float frames to one WavPack stream. False, with nothing kept, when the
+// library refused; the log says what it said.
+static bool instrument_compress(const float* pcm, int frames, int channels, int sample_rate, InstrumentPackBuffer* out) {
+    memset(out, 0, sizeof(*out));
+    if (frames <= 0) return false;
+    WavpackContext* wpc = WavpackOpenFileOutput(instrument_pack_output, out, NULL);
+    if (!wpc) {
+        fr_log("instrument: WavPack could not open an output stream");
+        return false;
+    }
+    WavpackConfig config = {};
+    config.bits_per_sample = INSTRUMENT_FSB_BITS;
+    config.bytes_per_sample = INSTRUMENT_FSB_BYTES_PER_SAMPLE;
+    config.num_channels = channels;
+    config.sample_rate = sample_rate;
+    config.channel_mask = channels == 1 ? INSTRUMENT_WP_CHANNEL_MASK_MONO : INSTRUMENT_WP_CHANNEL_MASK_STEREO;
+
+    size_t samples = (size_t)frames * (size_t)channels;
+    int32_t* ints = (int32_t*)malloc(samples * sizeof(int32_t));
+    bool ok = ints != nullptr && WavpackSetConfiguration(wpc, &config, (uint32_t)frames) && WavpackPackInit(wpc);
+    if (ok) {
+        for (size_t i = 0; i < samples; ++i) ints[i] = instrument_sample_24(pcm[i]);
+        for (int done = 0; done < frames && ok; done += INSTRUMENT_PACK_BLOCK_FRAMES) {
+            int block = frames - done < INSTRUMENT_PACK_BLOCK_FRAMES ? frames - done : INSTRUMENT_PACK_BLOCK_FRAMES;
+            ok = WavpackPackSamples(wpc, ints + (size_t)done * (size_t)channels, (uint32_t)block) != 0;
+        }
+        ok = ok && WavpackFlushSamples(wpc) != 0;
+    }
+    if (!ok) fr_log("instrument: WavPack: %s", WavpackGetErrorMessage(wpc));
+    WavpackCloseFile(wpc);
+    free(ints);
+    ok = ok && !out->failed && out->size > 0;
+    if (!ok) {
+        free(out->data);
+        memset(out, 0, sizeof(*out));
+    }
+    return ok;
+}
+
+// The bank: every zone is its own stored sample. In RAM mode each sample is
+// held whole in the preload block and nothing streams. Otherwise each sample
+// keeps its first preload frames in the block and the rest follows, WavPack
+// compressed, in a stream of its own: FastSampler's own layout for a sample
+// one zone plays. Rows are written in zone order because the loader pairs
+// row i with zone i.
 static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const InstrumentZoneMap* map, int zone_count,
                                  FSBZoneEntry* rows, const char (*names)[MAX_NAME_LENGTH]) {
     FILE* f = fopen(job->fsb_path, "wb");
@@ -182,12 +266,14 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
         snprintf(job->result, sizeof(job->result), "Could not create %s", job->fsb_path);
         return false;
     }
+    bool ram_only = job->cfg.preload_frames <= 0;
+    int channels = wav->channels;
     FSBHeader header = {};
     header.magic = FSB_MAGIC;
     header.version = FSB_VERSION;
     header.sample_rate = (uint32_t)wav->sample_rate;
-    header.channels = (uint32_t)wav->channels;
-    header.preload_frames = FSB_PRELOAD_ALL_FRAMES;
+    header.channels = (uint32_t)channels;
+    header.preload_frames = ram_only ? FSB_PRELOAD_ALL_FRAMES : (uint32_t)job->cfg.preload_frames;
     header.zone_count = (uint32_t)zone_count;
     header.bps = INSTRUMENT_FSB_BITS;
     header.preload_offset = sizeof(FSBHeader) + sizeof(FSBZoneEntry) * (uint64_t)zone_count;
@@ -196,16 +282,18 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
     bool ok = fwrite(&header, sizeof(header), 1, f) == 1;
     ok = ok && fwrite(rows, sizeof(FSBZoneEntry), (size_t)zone_count, f) == (size_t)zone_count;
 
+    // The preload block: the resident head of every sample, one after the other.
     const ResampleScript* script = job->script;
     uint64_t preload_frame = 0;
     for (int z = 0; z < zone_count && ok; ++z) {
         if (job->cancel.load()) break;
         const ResampleSegment* seg = &script->segments[map[z].segment];
         int64_t frames = seg->end_frame - seg->start_frame;
-        size_t samples = (size_t)frames * (size_t)wav->channels;
+        int64_t preload = ram_only || frames < (int64_t)job->cfg.preload_frames ? frames : (int64_t)job->cfg.preload_frames;
+        size_t samples = (size_t)preload * (size_t)channels;
         float* pcm = (float*)malloc(samples * sizeof(float));
         uint8_t* packed = (uint8_t*)malloc(samples * INSTRUMENT_FSB_BYTES_PER_SAMPLE);
-        ok = pcm && packed && wav_reader_read(wav, seg->start_frame, frames, pcm);
+        ok = pcm && packed && wav_reader_read(wav, seg->start_frame, preload, pcm);
         if (ok) {
             instrument_pcm_to_24(pcm, packed, samples);
             ok = fwrite(packed, INSTRUMENT_FSB_BYTES_PER_SAMPLE, samples, f) == samples;
@@ -220,18 +308,47 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
         memset(row, 0, sizeof(*row));
         fr_strcpy(row->name, sizeof(row->name), names[z]);
         row->preload_frame_offset = preload_frame;
-        row->preload_frame_count = (uint64_t)frames;
+        row->preload_frame_count = (uint64_t)preload;
         row->total_frames = (uint64_t)frames;
         row->sample_frame_offset = 0;
         row->sample_index = (uint32_t)z;
         row->sample_frames = (uint32_t)frames;
         row->stream_offset = 0;
         row->stream_size = 0;
-        row->stream_first_frame = (uint64_t)frames;   // nothing past the preload
-        preload_frame += (uint64_t)frames;
+        row->stream_first_frame = (uint64_t)preload;   // the stream, when there is one, starts past the preload
+        preload_frame += (uint64_t)preload;
+    }
+    header.preload_size = preload_frame * (uint64_t)channels * INSTRUMENT_FSB_BYTES_PER_SAMPLE;
+
+    // The streams: what each sample holds past its preload. The file position
+    // is counted here rather than asked, so a bank past 2 GB keeps its offsets.
+    uint64_t write_pos = header.preload_offset + header.preload_size;
+    for (int z = 0; z < zone_count && ok; ++z) {
+        if (job->cancel.load()) break;
+        FSBZoneEntry* row = &rows[z];
+        int64_t stream_frames = (int64_t)(row->total_frames - row->preload_frame_count);
+        if (stream_frames > 0) {
+            const ResampleSegment* seg = &script->segments[map[z].segment];
+            size_t samples = (size_t)stream_frames * (size_t)channels;
+            float* pcm = (float*)malloc(samples * sizeof(float));
+            InstrumentPackBuffer stream = {};
+            ok = pcm && wav_reader_read(wav, seg->start_frame + (int64_t)row->preload_frame_count, stream_frames, pcm) &&
+                 instrument_compress(pcm, (int)stream_frames, channels, wav->sample_rate, &stream);
+            free(pcm);
+            if (ok) {
+                ok = fwrite(stream.data, 1, stream.size, f) == stream.size;
+                row->stream_offset = write_pos;
+                row->stream_size = (uint64_t)stream.size;
+                write_pos += (uint64_t)stream.size;
+            }
+            free(stream.data);
+            if (!ok) {
+                snprintf(job->result, sizeof(job->result), "Could not compress sample %d of %d for the bank", z + 1, zone_count);
+                break;
+            }
+        }
         job->progress.store(z + 1);
     }
-    header.preload_size = preload_frame * (uint64_t)wav->channels * INSTRUMENT_FSB_BYTES_PER_SAMPLE;
 
     if (ok && !job->cancel.load()) {
         ok = fseek(f, 0, SEEK_SET) == 0 &&
@@ -371,9 +488,11 @@ static void instrument_thread_main(void* user) {
         fr_strcpy(job->result, sizeof(job->result), "Cancelled; the instrument files are incomplete.");
         job->result_is_error = true;
     } else if (ok) {
-        snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s%s.",
+        char preload[32];
+        resample_preload_label(job->cfg.preload_frames, preload, sizeof(preload));
+        snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s%s, preload %s.",
                  plat_path_basename(job->fsi_path), plat_path_basename(job->fsb_path), zone_count,
-                 rr_count, rr_count == 1 ? "" : "s", rr_count > 1 ? " linked by a round robin effect" : "");
+                 rr_count, rr_count == 1 ? "" : "s", rr_count > 1 ? " linked by a round robin effect" : "", preload);
         job->result_is_error = false;
     } else {
         job->result_is_error = true;

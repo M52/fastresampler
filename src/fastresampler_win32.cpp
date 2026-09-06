@@ -103,6 +103,10 @@
 // The collection effect ids and parameter slots, for the round robin effect
 // the instrument builder writes.
 #include "fx/collection/fastsampler_cfx.h"
+// WavPack, from FastSampler's third-party folder: the bank builder
+// compresses the streamed part of every sample with it. The DLL sits next
+// to the exe, copied there by build.bat.
+#include "wavpack.h"
 
 #pragma warning(pop)
 
@@ -135,6 +139,7 @@
 #include "ui/fastresampler_palette.h"
 #include "ui/fastresampler_ui.h"
 #include "ui/fastresampler_ui_keyboard.cpp"
+#include "ui/fastresampler_ui_cc_curve.cpp"
 #include "ui/fastresampler_ui.cpp"
 #include "fastresampler_view_win32.cpp"
 

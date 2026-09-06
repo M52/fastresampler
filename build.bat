@@ -43,9 +43,17 @@ if not exist "%FASTSAMPLER_DIR%\src\fileformats\fastsampler.pb.h" (
     exit /b 1
 )
 
-set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "W:\VST_SDK\vst3sdk" /I "%FASTSAMPLER_DIR%\src" /I "%FASTSAMPLER_DIR%\src\fileformats" /I "%FASTSAMPLER_DIR%\3rdparty\nanopb"
+rem WavPack, the DLL FastSampler ships, compresses the streamed part of a bank.
+rem The import library is linked and the DLL is copied next to the exe.
+set WAVPACK_DIR=%FASTSAMPLER_DIR%\3rdparty\wavpack-4.80.0-dll
+if not exist "%WAVPACK_DIR%\x64\wavpackdll.dll" (
+    echo Error: WavPack not found at "%WAVPACK_DIR%\x64".
+    exit /b 1
+)
+
+set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "W:\VST_SDK\vst3sdk" /I "%FASTSAMPLER_DIR%\src" /I "%FASTSAMPLER_DIR%\src\fileformats" /I "%FASTSAMPLER_DIR%\3rdparty\nanopb" /I "%WAVPACK_DIR%"
 set DEFINES=/DUNICODE /D_UNICODE /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /DPB_FIELD_32BIT /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
-set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib shell32.lib dwmapi.lib
+set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib shell32.lib dwmapi.lib "%WAVPACK_DIR%\x64\wavpackdll.lib"
 
 echo Compiling fastresampler.exe (build %BUILD_NUM%)...
 cl.exe %WARN_FLAGS% %OPT_FLAGS% /MT /EHsc /std:c++17 %DEFINES% %INCLUDES% src\fastresampler_win32.cpp /Fe"build\fastresampler.exe" /Fo"build/" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS%
@@ -54,5 +62,7 @@ if %ERRORLEVEL% neq 0 (
     echo Error: Compilation failed.
     exit /b %ERRORLEVEL%
 )
+
+copy /y "%WAVPACK_DIR%\x64\wavpackdll.dll" build\ >nul
 
 echo fastresampler.exe compiled successfully.
