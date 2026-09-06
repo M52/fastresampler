@@ -224,6 +224,13 @@ static LRESULT CALLBACK view_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
 
+    // A click on the plugin editor gives its child window the keyboard focus,
+    // and Windows leaves it there. A press in our own area takes it back, or
+    // the side panel's text fields never see a keystroke again.
+    if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) {
+        if (GetFocus() != hwnd) SetFocus(hwnd);
+    }
+
     if (v->imgui) {
         ImGui::SetCurrentContext(v->imgui);
         if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam)) return 1;

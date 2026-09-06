@@ -237,14 +237,29 @@ static void ui_tab_resample(App* app, float scale) {
     ImGui::Separator();
 
     ImGui::Text("Notes");
-    ui_label("Range", scale);
-    ImGui::SetNextItemWidth(60.0f * scale);
-    ImGui::InputText("##low", cfg->low_note, sizeof(cfg->low_note));
-    ui_label_inline("to");
-    ImGui::SetNextItemWidth(60.0f * scale);
-    ImGui::InputText("##high", cfg->high_note, sizeof(cfg->high_note));
+    // The range is kept as note names in the settings; the sliders edit the
+    // numbers behind them and show the name on the grab.
+    int low = midi_note_parse(cfg->low_note);
+    int high = midi_note_parse(cfg->high_note);
+    if (low < 0) low = MIDI_NOTE_A0;
+    if (high < 0) high = MIDI_NOTE_C8;
+    char low_name[8], high_name[8];
+    midi_note_name(low, low_name, sizeof(low_name));
+    midi_note_name(high, high_name, sizeof(high_name));
+    ui_label("Low note", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderInt("##low", &low, 0, MIDI_NOTE_COUNT - 1, low_name)) {
+        if (high < low) high = low;
+    }
+    ui_label("High note", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderInt("##high", &high, 0, MIDI_NOTE_COUNT - 1, high_name)) {
+        if (low > high) low = high;
+    }
+    midi_note_name(low, cfg->low_note, sizeof(cfg->low_note));
+    midi_note_name(high, cfg->high_note, sizeof(cfg->high_note));
     ui_update_range(app);
-    ui_hint("Note names: C3 is middle C, C-2 is note 0. The keyboard marks the notes that will be sampled.");
+    ui_hint("C3 is middle C, C-2 is note 0. The keyboard marks the notes that will be sampled.");
 
     ui_label("Sample every", scale);
     ImGui::SetNextItemWidth(-1.0f);
