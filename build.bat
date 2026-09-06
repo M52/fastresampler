@@ -51,7 +51,14 @@ if not exist "%WAVPACK_DIR%\x64\wavpackdll.dll" (
     exit /b 1
 )
 
-set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "W:\VST_SDK\vst3sdk" /I "%FASTSAMPLER_DIR%\src" /I "%FASTSAMPLER_DIR%\src\fileformats" /I "%FASTSAMPLER_DIR%\3rdparty\nanopb" /I "%WAVPACK_DIR%"
+rem The VST3 SDK, version 3.8.1: the first under the MIT licence.
+if "%VST3_SDK_DIR%"=="" set VST3_SDK_DIR=W:\vst-sdk_3.8.1\VST_SDK\vst3sdk
+if not exist "%VST3_SDK_DIR%\pluginterfaces\base\funknown.h" (
+    echo Error: VST3 SDK not found at "%VST3_SDK_DIR%". Set VST3_SDK_DIR.
+    exit /b 1
+)
+
+set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "%VST3_SDK_DIR%" /I "%FASTSAMPLER_DIR%\src" /I "%FASTSAMPLER_DIR%\src\fileformats" /I "%FASTSAMPLER_DIR%\3rdparty\nanopb" /I "%WAVPACK_DIR%"
 set DEFINES=/DUNICODE /D_UNICODE /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /DPB_FIELD_32BIT /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
 set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib shell32.lib dwmapi.lib "%WAVPACK_DIR%\x64\wavpackdll.lib"
 

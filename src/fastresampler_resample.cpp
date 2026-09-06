@@ -43,6 +43,27 @@ void resample_config_defaults(ResampleConfig* cfg) {
     fr_strcpy(cfg->export_dir, sizeof(cfg->export_dir), cfg->output_dir);
 }
 
+int resample_valid_sample_rate(int value) {
+    for (int i = 0; i < RESAMPLE_RATE_OPTION_COUNT; ++i) {
+        if (g_resample_rate_options[i] == value) return value;
+    }
+    return 0;
+}
+
+int resample_valid_render_speed(int value, int fallback) {
+    for (int i = 0; i < RESAMPLE_SPEED_OPTION_COUNT; ++i) {
+        if (g_resample_speed_options[i] == value) return value;
+    }
+    return fallback;
+}
+
+int resample_valid_preload_frames(int value, int fallback) {
+    for (int i = 0; i < RESAMPLE_PRELOAD_OPTION_COUNT; ++i) {
+        if (g_resample_preload_options[i] == value) return value;
+    }
+    return fallback;
+}
+
 void resample_preload_label(int preload_frames, char* out, size_t out_len) {
     if (preload_frames <= 0) {
         fr_strcpy(out, out_len, "RAM");

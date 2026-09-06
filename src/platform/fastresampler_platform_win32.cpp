@@ -153,6 +153,172 @@ void plat_default_plugin_dir(char* out_dir, size_t max_len) {
     if (!plat_wide_to_utf8(wpath, out_dir, (int)max_len)) out_dir[0] = '\0';
 }
 
+void plat_default_vst2_dir(char* out_dir, size_t max_len) {
+    out_dir[0] = '\0';
+    wchar_t wpath[FR_MAX_PATH];
+    // The folder the installers of VST 2 plugins register.
+    DWORD size = sizeof(wpath);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\VST", L"VSTPluginsPath", RRF_RT_REG_SZ, NULL, wpath, &size) == ERROR_SUCCESS &&
+        wpath[0] && plat_wide_to_utf8(wpath, out_dir, (int)max_len) && plat_path_is_dir(out_dir)) {
+        return;
+    }
+    // Else the usual folders, the first that exists.
+    static const int roots[3] = { CSIDL_PROGRAM_FILES, CSIDL_PROGRAM_FILES, CSIDL_PROGRAM_FILES_COMMON };
+    static const wchar_t* const tails[3] = { L"\\VstPlugins", L"\\Steinberg\\VstPlugins", L"\\VST2" };
+    for (int i = 0; i < 3; ++i) {
+        wpath[0] = L'\0';
+        SHGetFolderPathW(NULL, roots[i], NULL, SHGFP_TYPE_CURRENT, wpath);
+        if (!wpath[0]) continue;
+        wcscat_s(wpath, FR_MAX_PATH, tails[i]);
+        if (plat_wide_to_utf8(wpath, out_dir, (int)max_len) && plat_path_is_dir(out_dir)) return;
+    }
+    out_dir[0] = '\0';
+}
+
+bool plat_file_stat(const char* path, uint64_t* out_size, uint64_t* out_mtime) {
+    wchar_t wpath[FR_MAX_PATH];
+    if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) return false;
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExW(wpath, GetFileExInfoStandard, &fad)) return false;
+    *out_size = ((uint64_t)fad.nFileSizeHigh << 32) | (uint64_t)fad.nFileSizeLow;
+    *out_mtime = ((uint64_t)fad.ftLastWriteTime.dwHighDateTime << 32) | (uint64_t)fad.ftLastWriteTime.dwLowDateTime;
+    return true;
+}
+
+// ------------------------------------------------------ native libraries ----
+
+void* plat_library_load(const char* path, char* err, size_t err_len) {
+    wchar_t wpath[FR_MAX_PATH];
+    if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) {
+        snprintf(err, err_len, "The path is too long");
+        return nullptr;
+    }
+    HMODULE h = LoadLibraryExW(wpath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (h) return (void*)h;
+    DWORD code = GetLastError();
+    char message[256];
+    DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code,
+                             MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), message, sizeof(message), NULL);
+    while (n > 0 && (message[n - 1] == '\r' || message[n - 1] == '\n' || message[n - 1] == '.' || message[n - 1] == ' ')) message[--n] = '\0';
+    if (n > 0) {
+        snprintf(err, err_len, "The DLL did not load: %s (%lu)", message, (unsigned long)code);
+    } else {
+        snprintf(err, err_len, "The DLL did not load (%lu)", (unsigned long)code);
+    }
+    return nullptr;
+}
+
+void* plat_library_symbol(void* library, const char* name) {
+    if (!library) return nullptr;
+    return (void*)GetProcAddress((HMODULE)library, name);
+}
+
+void plat_library_unload(void* library) {
+    if (library) FreeLibrary((HMODULE)library);
+}
+
+// The PE headers, read piece by piece: a plugin DLL with samples inside can
+// be hundreds of megabytes.
+static bool plat_pe_read(FILE* f, uint64_t offset, void* out, size_t len) {
+    if (_fseeki64(f, (long long)offset, SEEK_SET) != 0) return false;
+    return fread(out, 1, len, f) == len;
+}
+
+// A virtual address of the loaded image to an offset in the file.
+static bool plat_pe_rva_to_offset(const IMAGE_SECTION_HEADER* sections, int count, DWORD rva, uint64_t* out) {
+    for (int i = 0; i < count; ++i) {
+        const IMAGE_SECTION_HEADER* s = &sections[i];
+        DWORD size = s->Misc.VirtualSize ? s->Misc.VirtualSize : s->SizeOfRawData;
+        if (rva >= s->VirtualAddress && rva < s->VirtualAddress + size) {
+            *out = (uint64_t)s->PointerToRawData + (uint64_t)(rva - s->VirtualAddress);
+            return true;
+        }
+    }
+    return false;
+}
+
+#define PLAT_PE_MAX_SECTIONS 96
+#define PLAT_PE_MAX_NAMES    65536
+#define PLAT_PE_NAME_LEN     64
+
+bool plat_library_exports(const char* path, const char* const* names, int name_count) {
+    wchar_t wpath[FR_MAX_PATH];
+    if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) return false;
+    FILE* f = _wfopen(wpath, L"rb");
+    if (!f) return false;
+
+    bool found = false;
+    DWORD* name_rvas = nullptr;
+    IMAGE_DOS_HEADER dos;
+    DWORD signature = 0;
+    IMAGE_FILE_HEADER fh;
+    IMAGE_SECTION_HEADER sections[PLAT_PE_MAX_SECTIONS];
+    IMAGE_DATA_DIRECTORY export_dir = {};
+    IMAGE_EXPORT_DIRECTORY ed;
+    uint64_t nt_offset, opt_offset, sections_offset, offset;
+    int section_count;
+    WORD opt_magic = 0;
+#if defined(_M_X64)
+    const WORD machine = IMAGE_FILE_MACHINE_AMD64;
+#elif defined(_M_ARM64)
+    const WORD machine = IMAGE_FILE_MACHINE_ARM64;
+#else
+    const WORD machine = IMAGE_FILE_MACHINE_I386;
+#endif
+
+    if (!plat_pe_read(f, 0, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew <= 0) goto done;
+    nt_offset = (uint64_t)dos.e_lfanew;
+    if (!plat_pe_read(f, nt_offset, &signature, sizeof(signature)) || signature != IMAGE_NT_SIGNATURE) goto done;
+    if (!plat_pe_read(f, nt_offset + 4, &fh, sizeof(fh))) goto done;
+    if (fh.Machine != machine || !(fh.Characteristics & IMAGE_FILE_DLL)) goto done;
+
+    // The export table's place, from whichever optional header the file has.
+    opt_offset = nt_offset + 4 + sizeof(IMAGE_FILE_HEADER);
+    if (!plat_pe_read(f, opt_offset, &opt_magic, sizeof(opt_magic))) goto done;
+    if (opt_magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+        IMAGE_OPTIONAL_HEADER64 opt;
+        if (!plat_pe_read(f, opt_offset, &opt, sizeof(opt))) goto done;
+        export_dir = opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    } else if (opt_magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+        IMAGE_OPTIONAL_HEADER32 opt;
+        if (!plat_pe_read(f, opt_offset, &opt, sizeof(opt))) goto done;
+        export_dir = opt.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    } else {
+        goto done;
+    }
+    if (export_dir.VirtualAddress == 0 || export_dir.Size == 0) goto done;
+
+    section_count = fh.NumberOfSections < PLAT_PE_MAX_SECTIONS ? fh.NumberOfSections : PLAT_PE_MAX_SECTIONS;
+    sections_offset = opt_offset + fh.SizeOfOptionalHeader;
+    if (!plat_pe_read(f, sections_offset, sections, sizeof(IMAGE_SECTION_HEADER) * (size_t)section_count)) goto done;
+
+    if (!plat_pe_rva_to_offset(sections, section_count, export_dir.VirtualAddress, &offset)) goto done;
+    if (!plat_pe_read(f, offset, &ed, sizeof(ed))) goto done;
+    if (ed.NumberOfNames == 0 || ed.NumberOfNames > PLAT_PE_MAX_NAMES) goto done;
+    if (!plat_pe_rva_to_offset(sections, section_count, ed.AddressOfNames, &offset)) goto done;
+    name_rvas = (DWORD*)malloc(sizeof(DWORD) * ed.NumberOfNames);
+    if (!name_rvas || !plat_pe_read(f, offset, name_rvas, sizeof(DWORD) * ed.NumberOfNames)) goto done;
+
+    for (DWORD i = 0; i < ed.NumberOfNames && !found; ++i) {
+        uint64_t name_offset;
+        if (!plat_pe_rva_to_offset(sections, section_count, name_rvas[i], &name_offset)) continue;
+        if (_fseeki64(f, (long long)name_offset, SEEK_SET) != 0) continue;
+        char name[PLAT_PE_NAME_LEN];
+        size_t n = fread(name, 1, sizeof(name) - 1, f);
+        name[n] = '\0';
+        for (int k = 0; k < name_count; ++k) {
+            if (strcmp(name, names[k]) == 0) {
+                found = true;
+                break;
+            }
+        }
+    }
+done:
+    free(name_rvas);
+    fclose(f);
+    return found;
+}
+
 bool plat_pick_folder(void* parent_window, const char* start_dir, char* out, size_t out_len) {
     IFileDialog* dialog = nullptr;
     HRESULT hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));

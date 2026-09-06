@@ -7,3 +7,4 @@ src/fastresampler_build.h
 *.ilk
 *.log
 fastresampler_settings.txt
+fastresampler_vsti_cache.txt

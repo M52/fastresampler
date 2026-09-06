@@ -5,6 +5,18 @@
 #define FR_SETTINGS_FILE        "fastresampler_settings.txt"
 #define FR_LOG_FILE             "fastresampler.log"
 
+// What the scan learnt about every VST 2 DLL it opened: whether it is an
+// instrument and its name, so a DLL is opened once, not on every start.
+#define FR_VSTI_CACHE_FILE      "fastresampler_vsti_cache.txt"
+#define FR_MAX_VSTI_CACHE       1024
+
+// The saved resampling projects: one YAML file each, in this folder next to
+// the exe.
+#define FR_PROJECTS_DIR         "Projects"
+#define FR_PROJECT_EXT          ".yaml"
+#define FR_PROJECT_NAME_LEN     64
+#define FR_MAX_PROJECTS         256
+
 // --- Sizes of the fixed arrays ----------------------------------------------
 #define FR_MAX_PATH             260
 #define FR_MAX_SCAN_PATHS       16

@@ -118,15 +118,22 @@
 #include "fastresampler_log.h"
 #include "fastresampler_midi.h"
 #include "fastresampler_resample.h"
+#include "fastresampler_yaml.h"
+#include "fastresampler_yaml.cpp"
+#include "fastresampler_project.h"
+#include "fastresampler_project.cpp"
 #include "fastresampler_settings.h"
 #include "fastresampler_settings.cpp"
+#include "fastresampler_host.h"
+#include "fastresampler_vst2.h"
+#include "fastresampler_host_vst2.h"
+#include "fastresampler_host_vst2.cpp"
 #include "fastresampler_scan.h"
 #include "fastresampler_scan.cpp"
 #include "fastresampler_audio.h"
 #include "fastresampler_audio.cpp"
 #include "platform/fastresampler_audio_wasapi.cpp"
 #include "platform/fastresampler_audio_asio.cpp"
-#include "fastresampler_host.h"
 #include "fastresampler_host.cpp"
 #include "fastresampler_wav.h"
 #include "fastresampler_wav.cpp"
@@ -169,7 +176,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, 
     }
     app_start_audio(&app);
 
-    // An optional .vst3 path on the command line loads right away.
+    // An optional path on the command line, a .vst3 module or a VST 2
+    // instrument .dll, loads right away.
     if (cmd_line && cmd_line[0]) {
         char path[FR_MAX_PATH];
         fr_strcpy(path, sizeof(path), cmd_line);

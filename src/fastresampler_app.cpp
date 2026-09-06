@@ -33,6 +33,12 @@ static int app_block_size_index(int block_size) {
     return 3;   // 256
 }
 
+// Both lists again from the settings' folders; nothing stays selected.
+static void app_scan_plugins(App* app) {
+    scan_plugins(&app->plugins[HOST_FORMAT_VST3], &app->plugins[HOST_FORMAT_VST2], &app->vsti_cache, &app->settings);
+    for (int f = 0; f < HOST_FORMAT_COUNT; ++f) app->selected_plugin[f] = -1;
+}
+
 void app_init(App* app) {
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));
@@ -63,8 +69,10 @@ void app_init(App* app) {
     app->plugin_active.store(false);
     app->audio_busy.store(0);
 
-    app->selected_plugin = -1;
+    for (int f = 0; f < HOST_FORMAT_COUNT; ++f) app->selected_plugin[f] = -1;
+    app->plugin_tab_select_request = true;
     app->load_request = -1;
+    app->load_request_format = HOST_FORMAT_VST3;
     app->unload_request = false;
     app->rescan_request = false;
     app->audio_apply_request = false;
@@ -95,6 +103,13 @@ void app_init(App* app) {
     app->resample_fsi_ready = false;
     app->instrument_result_text[0] = '\0';
     app->instrument_result_is_error = false;
+    app->project_scan_request = false;
+    app->project_save_request = false;
+    app->project_load_request = false;
+    app->project_load_name[0] = '\0';
+    app->project_result_text[0] = '\0';
+    app->project_result_is_error = false;
+    project_scan(&app->projects);
 
     app->host = host_create();
     app->plugin = nullptr;
@@ -104,8 +119,12 @@ void app_init(App* app) {
     app->pending_driver = app->selected_driver;
     app->pending_block_index = app_block_size_index(app->settings.block_size);
 
-    scan_plugins(&app->plugins, &app->settings);
-    app_set_status(app, false, "%d plugins found. Double-click one to load it.", app->plugins.count);
+    char cache_path[FR_MAX_PATH];
+    plat_path_join(cache_path, sizeof(cache_path), dir, FR_VSTI_CACHE_FILE);
+    scan_cache_init(&app->vsti_cache, cache_path);
+    app_scan_plugins(app);
+    app_set_status(app, false, "%d VST3 plugins and %d VST instruments found. Double-click one to load it.",
+                   app->plugins[HOST_FORMAT_VST3].count, app->plugins[HOST_FORMAT_VST2].count);
 }
 
 // Stops the audio thread from touching the plugin and waits until it is out.
@@ -162,9 +181,11 @@ static void app_unload_plugin(App* app) {
     app_set_status(app, false, "Closed %s.", name);
 }
 
-static void app_load_plugin(App* app, int index) {
-    if (index < 0 || index >= app->plugins.count) return;
-    const PluginEntry* entry = &app->plugins.entries[index];
+static void app_load_plugin(App* app, int format, int index) {
+    if (format < 0 || format >= HOST_FORMAT_COUNT) return;
+    const PluginList* list = &app->plugins[format];
+    if (index < 0 || index >= list->count) return;
+    const PluginEntry* entry = &list->entries[index];
     app_set_status(app, false, "Loading %s...", entry->name);
 
     double sample_rate = app->audio.open ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
@@ -182,9 +203,9 @@ static void app_load_plugin(App* app, int index) {
 
     const HostPluginInfo* info = host_plugin_info(p);
     if (app->editor_open) {
-        app_set_status(app, false, "Loaded %s by %s.", info->name, info->vendor);
+        app_set_status(app, false, "Loaded %s by %s (%s).", info->name, info->vendor, host_format_name(info->format));
     } else {
-        app_set_status(app, false, "Loaded %s by %s (no editor).", info->name, info->vendor);
+        app_set_status(app, false, "Loaded %s by %s (%s, no editor).", info->name, info->vendor, host_format_name(info->format));
     }
 }
 
@@ -434,7 +455,70 @@ static void app_instrument_finish(App* app) {
     app_set_status(app, app->instrument_job.result_is_error, "%s", app->instrument_job.result);
 }
 
+// What the tab shows under the project buttons, and the status line with it.
+static void app_project_result(App* app, bool is_error, const char* text) {
+    fr_strcpy(app->project_result_text, sizeof(app->project_result_text), text);
+    app->project_result_is_error = is_error;
+    app_set_status(app, is_error, "%s", text);
+}
+
+// The saved projects: the list, and the save and load the tab asked for.
+// Neither runs while a render or an instrument build does, because both read
+// the configuration a load would replace.
+static void app_process_project_requests(App* app) {
+    if (app->project_scan_request) {
+        app->project_scan_request = false;
+        project_scan(&app->projects);
+    }
+    if (!app->project_save_request && !app->project_load_request) return;
+
+    bool busy = app_resample_running(app) || app_instrument_running(app);
+    char err[FR_STATUS_LEN];
+    char text[FR_STATUS_LEN];
+
+    if (app->project_save_request) {
+        app->project_save_request = false;
+        if (busy) {
+            app_project_result(app, true, "Wait for the render to finish, or cancel it.");
+        } else if (project_save(&app->settings.resample, app->settings.project_name, err, sizeof(err))) {
+            snprintf(text, sizeof(text), "Project %s saved.", app->settings.project_name);
+            app_project_result(app, false, text);
+            settings_save(&app->settings, app->settings_path);
+            project_scan(&app->projects);
+        } else {
+            app_project_result(app, true, err);
+        }
+    }
+
+    if (app->project_load_request) {
+        app->project_load_request = false;
+        if (busy) {
+            app_project_result(app, true, "Wait for the render to finish, or cancel it.");
+        } else if (project_load(&app->settings.resample, app->project_load_name, err, sizeof(err))) {
+            fr_strcpy(app->settings.project_name, sizeof(app->settings.project_name), app->project_load_name);
+            settings_save(&app->settings, app->settings_path);
+            // The script and the samples belong to the settings that made
+            // them, so the tab starts again at Build MIDI.
+            app->resample_script.built = false;
+            app->resample_fsi_ready = false;
+            app->resample_build_text[0] = '\0';
+            app->resample_result_text[0] = '\0';
+            app->instrument_result_text[0] = '\0';
+            snprintf(text, sizeof(text), "Project %s loaded.", app->settings.project_name);
+            app_project_result(app, false, text);
+        } else {
+            app_project_result(app, true, err);
+        }
+    }
+}
+
 void app_process_requests(App* app) {
+    app_process_project_requests(app);
+
+    // A VST 2 editor repaints on this call, on the UI thread, a render in
+    // progress or not: that is the plugin's own thread split.
+    if (app->plugin && app->editor_open) host_plugin_editor_idle(app->plugin);
+
     // The folder pickers are modal and pump messages; they run here, outside
     // the ImGui frame, so a repaint meanwhile cannot re-enter the UI.
     if (app->output_dir_pick_request) {
@@ -488,9 +572,9 @@ void app_process_requests(App* app) {
     if (app->rescan_request) {
         app->rescan_request = false;
         settings_save(&app->settings, app->settings_path);
-        scan_plugins(&app->plugins, &app->settings);
-        app->selected_plugin = -1;
-        app_set_status(app, false, "%d plugins found.", app->plugins.count);
+        app_scan_plugins(app);
+        app_set_status(app, false, "%d VST3 plugins and %d VST instruments found.",
+                       app->plugins[HOST_FORMAT_VST3].count, app->plugins[HOST_FORMAT_VST2].count);
     }
     if (app->unload_request || app->load_request >= 0) {
         app->unload_request = false;
@@ -499,7 +583,7 @@ void app_process_requests(App* app) {
     if (app->load_request >= 0) {
         int index = app->load_request;
         app->load_request = -1;
-        app_load_plugin(app, index);
+        app_load_plugin(app, app->load_request_format, index);
     }
     if (app->audio_apply_request) {
         app->audio_apply_request = false;
@@ -520,10 +604,16 @@ void app_process_requests(App* app) {
 
 void app_request_load_path(App* app, const char* path) {
     if (!path || !path[0]) return;
-    for (int i = 0; i < app->plugins.count; ++i) {
-        if (fr_stricmp(app->plugins.entries[i].path, path) == 0) {
-            app->selected_plugin = i;
+    int format = host_format_of_path(path);
+    PluginList* list = &app->plugins[format];
+    // The list of that format comes to the front, so the row shows.
+    app->settings.plugin_tab = format;
+    app->plugin_tab_select_request = true;
+    for (int i = 0; i < list->count; ++i) {
+        if (fr_stricmp(list->entries[i].path, path) == 0) {
+            app->selected_plugin[format] = i;
             app->load_request = i;
+            app->load_request_format = format;
             return;
         }
     }
@@ -531,14 +621,15 @@ void app_request_load_path(App* app, const char* path) {
         app_set_status(app, true, "Not found: %s", path);
         return;
     }
-    if (app->plugins.count >= FR_MAX_PLUGINS) return;
-    PluginEntry* e = &app->plugins.entries[app->plugins.count];
+    if (list->count >= FR_MAX_PLUGINS) return;
+    PluginEntry* e = &list->entries[list->count];
     fr_strcpy(e->path, FR_MAX_PATH, path);
     fr_strcpy(e->name, FR_PLUGIN_NAME_LEN, plat_path_basename(path));
-    fr_strip_vst3_ext(e->name);
-    app->selected_plugin = app->plugins.count;
-    app->load_request = app->plugins.count;
-    app->plugins.count++;
+    fr_strip_plugin_ext(e->name);
+    app->selected_plugin[format] = list->count;
+    app->load_request = list->count;
+    app->load_request_format = format;
+    list->count++;
 }
 
 void app_audio_render(void* user, float* const* outputs, int channel_count, int frames) {

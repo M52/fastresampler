@@ -3,6 +3,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // Bounded copy that always terminates.
 inline void fr_strcpy(char* dst, size_t dst_size, const char* src) {
@@ -24,10 +25,14 @@ inline int fr_stricmp(const char* a, const char* b) {
     }
 }
 
-// Removes a trailing ".vst3" (any case) from a file name, in place.
-inline void fr_strip_vst3_ext(char* name) {
+// Removes a trailing ".vst3" or ".dll" (any case) from a file name, in place.
+inline void fr_strip_plugin_ext(char* name) {
     size_t len = strlen(name);
-    if (len >= 5 && fr_stricmp(name + len - 5, ".vst3") == 0) name[len - 5] = '\0';
+    if (len >= 5 && fr_stricmp(name + len - 5, ".vst3") == 0) {
+        name[len - 5] = '\0';
+    } else if (len >= 4 && fr_stricmp(name + len - 4, ".dll") == 0) {
+        name[len - 4] = '\0';
+    }
 }
 
 // UTF-16 to UTF-8 for the SDK's String128 names. Non-BMP characters are
@@ -51,6 +56,21 @@ inline void fr_utf16_to_utf8(const char16_t* src, char* dst, size_t dst_size) {
         }
     }
     dst[o] = '\0';
+}
+
+// Whitespace-separated numbers from text into out, at most max_count of
+// them. Returns how many were read.
+inline int fr_parse_floats(const char* text, float* out, int max_count) {
+    int count = 0;
+    const char* s = text;
+    while (count < max_count) {
+        char* end = nullptr;
+        double v = strtod(s, &end);
+        if (end == s) break;
+        out[count++] = (float)v;
+        s = end;
+    }
+    return count;
 }
 
 inline float fr_clampf(float v, float lo, float hi) {

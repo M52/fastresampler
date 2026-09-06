@@ -165,6 +165,13 @@ struct ResampleJob {
 
 void resample_config_defaults(ResampleConfig* cfg);
 
+// A value read from a file against the list the tab offers. The rate falls
+// back to 0, the device's own; the other two to what the caller gives, which
+// is the default that was already there.
+int resample_valid_sample_rate(int value);
+int resample_valid_render_speed(int value, int fallback);
+int resample_valid_preload_frames(int value, int fallback);
+
 // The dropdown label for a step in semitones, "Every wholetone" for 2.
 const char* resample_step_label(int step);
 

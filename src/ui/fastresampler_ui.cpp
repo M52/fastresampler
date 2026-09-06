@@ -225,9 +225,11 @@ static void ui_section_end(float scale) {
 }
 
 // A folder row: the folder's name on a button that raises the picker, and
-// the full path fitted to one line under it.
+// the full path fitted to one line under it. The samples and the instrument
+// each get a row and both are labelled "Folder", so the id comes from the
+// request the row raises: one flag per row is one id per row.
 static void ui_folder_row(const char* label, const char* dir, bool disabled, bool* pick_request, float scale) {
-    ImGui::PushID(label);
+    ImGui::PushID((const void*)pick_request);
     char button[FR_MAX_PATH + 32];
     if (dir[0]) {
         char folder[FR_MAX_PATH];
@@ -267,7 +269,7 @@ static void ui_cc_slider(App* app, const char* label, int controller, float scal
 static void ui_tab_plugin(App* app, float scale) {
     if (!app->plugin) {
         ImGui::TextWrapped("No plugin loaded.");
-        ui_hint("Double-click a plugin in the list to load it.");
+        ui_hint("Double-click a plugin in the VST3 list or an instrument in the VSTi list to load it.");
         return;
     }
     const HostPluginInfo* info = host_plugin_info(app->plugin);
@@ -277,6 +279,7 @@ static void ui_tab_plugin(App* app, float scale) {
     if (info->category[0]) ImGui::TextDisabled("%s", info->category);
     ImGui::Separator();
 
+    ImGui::Text("Format: %s", info->format == HOST_FORMAT_VST2 ? "VSTi (VST 2.4)" : "VST3");
     ImGui::Text("Output channels: %d", info->output_channels);
     ImGui::Text("Latency: %d frames", info->latency_frames);
     ImGui::Text("MIDI CC mapping: %s", info->has_midi_mapping ? "yes" : "no");
@@ -624,6 +627,40 @@ static void ui_tab_resample(App* app, float scale) {
         ui_colored_wrapped(app->instrument_result_text, app->instrument_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
     }
     ui_section_end(scale);
+
+    // The project: every setting of this tab in one file, so a whole set-up
+    // comes back later.
+    ui_section("Save resampling project", scale);
+    ui_label("Name", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##projectname", app->settings.project_name, sizeof(app->settings.project_name));
+    ImGui::BeginDisabled(busy || app->settings.project_name[0] == '\0');
+    if (ImGui::Button("Save project", ImVec2(-1.0f, 0.0f))) app->project_save_request = true;
+    ImGui::EndDisabled();
+    ui_hint("Writes every setting of this tab to Projects\\<name>.yaml next to the exe. A project of the same name is replaced.");
+
+    ui_label("Open", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::BeginDisabled(busy);
+    if (ImGui::BeginCombo("##project", app->projects.count > 0 ? "Choose a project" : "No projects yet")) {
+        // The folder is read again every time the list opens, so a file put
+        // there while the app runs shows up.
+        if (ImGui::IsWindowAppearing()) app->project_scan_request = true;
+        for (int i = 0; i < app->projects.count; ++i) {
+            const char* name = app->projects.names[i];
+            if (ImGui::Selectable(name, fr_stricmp(name, app->settings.project_name) == 0)) {
+                fr_strcpy(app->project_load_name, sizeof(app->project_load_name), name);
+                app->project_load_request = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+    ui_hint("Puts every setting of this tab back, the folders with them. Build the MIDI again after a load.");
+    if (app->project_result_text[0]) {
+        ui_colored_wrapped(app->project_result_text, app->project_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
+    }
+    ui_section_end(scale);
 }
 
 static void ui_tab_settings(App* app, float scale) {
@@ -656,6 +693,8 @@ static void ui_tab_settings(App* app, float scale) {
         }
     }
     if (ImGui::Button("Rescan plugins", ImVec2(-1.0f, 0.0f))) app->rescan_request = true;
+    ui_hint("The folders are searched for VST3 plugins and for VST 2 instruments (.dll). A new DLL is opened once "
+            "to see whether it is an instrument; the answer is kept in fastresampler_vsti_cache.txt next to the exe.");
     ui_section_end(scale);
 
     ui_section("Audio output", scale);
@@ -753,44 +792,79 @@ static void ui_draw_side_panel(App* app, ImVec2 size, float scale) {
 
 // --- Main area -----------------------------------------------------------------
 
-static void ui_draw_plugin_list(App* app, float scale) {
-    ImGui::Text("Available VST3 plugins (%d)", app->plugins.count);
+// The list of one format: the VST3 modules, or the VST 2 instruments.
+static void ui_draw_plugin_list(App* app, int format, float scale) {
+    const PluginList* list = &app->plugins[format];
+    int* selected = &app->selected_plugin[format];
+    bool vsti = format == HOST_FORMAT_VST2;
+    ImGui::Text(vsti ? "Available VST instruments (%d)" : "Available VST3 plugins (%d)", list->count);
     ImGui::SameLine();
     if (ImGui::SmallButton("Rescan")) app->rescan_request = true;
-    if (app->selected_plugin >= 0 && app->selected_plugin < app->plugins.count) {
+    if (*selected >= 0 && *selected < list->count) {
         ImGui::SameLine();
-        if (ImGui::SmallButton("Load selected")) app->load_request = app->selected_plugin;
+        if (ImGui::SmallButton("Load selected")) {
+            app->load_request = *selected;
+            app->load_request_format = format;
+        }
     }
     ImGui::Separator();
 
-    if (app->plugins.count == 0) {
-        ui_note("No plugins found. Add a folder in the Settings tab.");
+    if (list->count == 0) {
+        if (vsti) {
+            ui_note("No VST instruments found. Add the folder that holds the VST 2 DLLs in the Settings tab. "
+                    "Effects are left out; only instruments are listed.");
+        } else {
+            ui_note("No plugins found. Add a folder in the Settings tab.");
+        }
         return;
     }
 
     ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY |
                             ImGuiTableFlags_Resizable;
-    if (ImGui::BeginTable("##plugins", 2, flags)) {
+    if (ImGui::BeginTable(vsti ? "##vsti" : "##vst3", 2, flags)) {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("Plugin", ImGuiTableColumnFlags_WidthFixed, 260.0f * scale);
+        ImGui::TableSetupColumn(vsti ? "Instrument" : "Plugin", ImGuiTableColumnFlags_WidthFixed, 260.0f * scale);
         ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
-        for (int i = 0; i < app->plugins.count; ++i) {
-            const PluginEntry* e = &app->plugins.entries[i];
+        for (int i = 0; i < list->count; ++i) {
+            const PluginEntry* e = &list->entries[i];
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             char id[FR_PLUGIN_NAME_LEN + 16];
             snprintf(id, sizeof(id), "%s##plug%d", e->name, i);
             ImGuiSelectableFlags sel_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick;
-            if (ImGui::Selectable(id, app->selected_plugin == i, sel_flags)) {
-                app->selected_plugin = i;
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) app->load_request = i;
+            if (ImGui::Selectable(id, *selected == i, sel_flags)) {
+                *selected = i;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    app->load_request = i;
+                    app->load_request_format = format;
+                }
             }
             ImGui::TableSetColumnIndex(1);
             ImGui::TextDisabled("%s", e->path);
         }
         ImGui::EndTable();
     }
+}
+
+// The two lists under their tabs. The tab last shown is kept in the
+// settings; a load by path moves to the tab of its format.
+static void ui_draw_plugin_tabs(App* app, float scale) {
+    if (!ImGui::BeginTabBar("##formats")) return;
+    // The tab asked for is read once: on the tab bar's first frame ImGui
+    // shows the first tab's body, which would set the setting back before
+    // the second tab is submitted.
+    int wanted = app->plugin_tab_select_request ? app->settings.plugin_tab : -1;
+    app->plugin_tab_select_request = false;
+    for (int format = 0; format < HOST_FORMAT_COUNT; ++format) {
+        ImGuiTabItemFlags flags = wanted == format ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem(host_format_name(format), nullptr, flags)) {
+            app->settings.plugin_tab = format;
+            ui_draw_plugin_list(app, format, scale);
+            ImGui::EndTabItem();
+        }
+    }
+    ImGui::EndTabBar();
 }
 
 // The strip above the plugin editor: its name and a way out.
@@ -813,7 +887,7 @@ static void ui_draw_main_area(App* app, ImVec2 size, float scale) {
     if (app->plugin) {
         ui_draw_plugin_header(app, scale);
     } else {
-        ui_draw_plugin_list(app, scale);
+        ui_draw_plugin_tabs(app, scale);
     }
     ImGui::EndChild();
 }

@@ -68,6 +68,28 @@ void plat_module_dir(char* out_dir, size_t max_len);
 // The folder the platform installs VST3 plugins into by default.
 void plat_default_plugin_dir(char* out_dir, size_t max_len);
 
+// The folder VST 2 plugins are installed into, from the system's setting
+// or the usual places; empty when none exists.
+void plat_default_vst2_dir(char* out_dir, size_t max_len);
+
+// The size and the last write time of a file, the time in a unit that only
+// has to compare equal for the same file. False when the file is not there.
+bool plat_file_stat(const char* path, uint64_t* out_size, uint64_t* out_mtime);
+
+// ------------------------------------------------------ native libraries ----
+
+// Loads a native library (a DLL) so its exports can be called. The folder
+// of the file is searched first for the libraries it needs. Null, with err
+// filled in, when it does not load.
+void* plat_library_load(const char* path, char* err, size_t err_len);
+void* plat_library_symbol(void* library, const char* name);
+void  plat_library_unload(void* library);
+
+// True when the file is a native library of this process's architecture
+// that exports one of the names. Read from the file's headers: none of its
+// code runs, so a broken library cannot take the caller down.
+bool plat_library_exports(const char* path, const char* const* names, int name_count);
+
 // The system's folder picker, modal over the given window; starts in
 // start_dir when that exists. True with the chosen folder in out, false when
 // the user cancelled. UI thread, outside the ImGui frame.

@@ -6,8 +6,10 @@
 #include <stdio.h>
 #include <string>
 #include "fastresampler_host.h"
+#include "fastresampler_host_vst2.h"
 #include "fastresampler_helpers.h"
 #include "fastresampler_log.h"
+#include "platform/fastresampler_platform.h"
 
 namespace SV = Steinberg::Vst;
 
@@ -63,6 +65,10 @@ struct HostCallbacks : public SV::IComponentHandler, public Steinberg::IPlugFram
 };
 
 struct HostPlugin {
+    // A VST 2 plugin lives here; then the VST3 members below stay empty and
+    // every call is handed on.
+    Vst2Plugin*           vst2;
+
     VST3::Hosting::Module::Ptr module;
     SV::IComponent*       component;
     SV::IAudioProcessor*  processor;
@@ -131,6 +137,16 @@ Steinberg::tresult PLUGIN_API HostCallbacks::resizeView(Steinberg::IPlugView* vi
     }
     in_resize = false;
     return Steinberg::kResultTrue;
+}
+
+// --- Formats -------------------------------------------------------------------
+
+const char* host_format_name(int format) {
+    return format == HOST_FORMAT_VST2 ? "VSTi" : "VST3";
+}
+
+int host_format_of_path(const char* path) {
+    return plat_path_has_ext(path, ".dll") ? HOST_FORMAT_VST2 : HOST_FORMAT_VST3;
 }
 
 // --- Context -------------------------------------------------------------------
@@ -243,6 +259,15 @@ static bool host_pick_class(const VST3::Hosting::PluginFactory& factory, VST3::H
 HostPlugin* host_plugin_load(HostContext* ctx, const char* path, double sample_rate,
                              int block_size, char* err, size_t err_len) {
     err[0] = '\0';
+    if (host_format_of_path(path) == HOST_FORMAT_VST2) {
+        HostPlugin* p = new HostPlugin();
+        p->vst2 = vst2_plugin_load(path, sample_rate, block_size, &p->info, err, err_len);
+        if (!p->vst2) {
+            delete p;
+            return nullptr;
+        }
+        return p;
+    }
     std::string module_error;
     VST3::Hosting::Module::Ptr module = VST3::Hosting::Module::create(path, module_error);
     if (!module) {
@@ -311,6 +336,7 @@ HostPlugin* host_plugin_load(HostContext* ctx, const char* path, double sample_r
             }
         }
     }
+    p->info.format = HOST_FORMAT_VST3;
     p->info.has_controller = p->controller != nullptr;
     if (p->controller) {
         p->controller->setComponentHandler(&p->callbacks);
@@ -366,6 +392,11 @@ HostPlugin* host_plugin_load(HostContext* ctx, const char* path, double sample_r
 
 void host_plugin_unload(HostPlugin* p) {
     if (!p) return;
+    if (p->vst2) {
+        vst2_plugin_unload(p->vst2);
+        delete p;
+        return;
+    }
     host_plugin_editor_close(p);
 
     if (p->processor && p->processing) p->processor->setProcessing(false);
@@ -399,6 +430,7 @@ void host_plugin_unload(HostPlugin* p) {
 }
 
 bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_size, bool offline) {
+    if (p->vst2) return vst2_plugin_setup_processing(p->vst2, sample_rate, block_size, offline, &p->info);
     if (!p->processor || !p->component) return false;
     if (p->processing) {
         p->processor->setProcessing(false);
@@ -512,6 +544,10 @@ static void host_run_block(HostPlugin* p, float* const* outputs, int channel_cou
 
 void host_plugin_process(HostPlugin* p, MidiQueue* midi, float* const* outputs,
                          int channel_count, int frames) {
+    if (p->vst2) {
+        vst2_plugin_process(p->vst2, midi, outputs, channel_count, frames);
+        return;
+    }
     if (frames > p->block_size) frames = p->block_size;
     MidiEvent m;
     while (midi_queue_pop(midi, &m)) host_translate_midi(p, m, 0);
@@ -520,6 +556,10 @@ void host_plugin_process(HostPlugin* p, MidiQueue* midi, float* const* outputs,
 
 void host_plugin_process_events(HostPlugin* p, const MidiEvent* events, const int* sample_offsets,
                                 int count, float* const* outputs, int channel_count, int frames) {
+    if (p->vst2) {
+        vst2_plugin_process_events(p->vst2, events, sample_offsets, count, outputs, channel_count, frames);
+        return;
+    }
     if (frames > p->block_size) frames = p->block_size;
     for (int i = 0; i < count; ++i) {
         int offset = sample_offsets[i];
@@ -575,6 +615,7 @@ static void host_run_block(HostPlugin* p, float* const* outputs, int channel_cou
 bool host_plugin_editor_create(HostPlugin* p, float content_scale, int* width, int* height) {
     *width = 0;
     *height = 0;
+    if (p->vst2) return vst2_plugin_editor_create(p->vst2, width, height);
     if (!p->controller) return false;
     host_plugin_editor_close(p);
 
@@ -600,6 +641,7 @@ bool host_plugin_editor_create(HostPlugin* p, float content_scale, int* width, i
 }
 
 bool host_plugin_editor_attach(HostPlugin* p, void* parent_window, HostResizeFn resize_fn, void* user) {
+    if (p->vst2) return vst2_plugin_editor_attach(p->vst2, parent_window, resize_fn, user);
     if (!p->view) return false;
     p->callbacks.resize_fn = resize_fn;
     p->callbacks.resize_user = user;
@@ -616,6 +658,10 @@ bool host_plugin_editor_attach(HostPlugin* p, void* parent_window, HostResizeFn 
 }
 
 void host_plugin_editor_close(HostPlugin* p) {
+    if (p->vst2) {
+        vst2_plugin_editor_close(p->vst2);
+        return;
+    }
     if (!p->view) return;
     p->view->setFrame(nullptr);
     if (p->view_attached) p->view->removed();
@@ -627,7 +673,12 @@ void host_plugin_editor_close(HostPlugin* p) {
 }
 
 bool host_plugin_editor_is_open(const HostPlugin* p) {
+    if (p->vst2) return vst2_plugin_editor_is_open(p->vst2);
     return p->view != nullptr && p->view_attached;
+}
+
+void host_plugin_editor_idle(HostPlugin* p) {
+    if (p->vst2) vst2_plugin_editor_idle(p->vst2);
 }
 
 void host_plugin_editor_set_scale(HostPlugin* p, float content_scale) {
@@ -637,6 +688,12 @@ void host_plugin_editor_set_scale(HostPlugin* p, float content_scale) {
 }
 
 void host_plugin_editor_fit(HostPlugin* p, int avail_width, int avail_height, int* width, int* height) {
+    if (p->vst2) {
+        // A VST 2 editor has the one size it reports; it grows only when it
+        // asks to, through the resize callback.
+        vst2_plugin_editor_size(p->vst2, width, height);
+        return;
+    }
     Steinberg::ViewRect current;
     if (!p->view || p->view->getSize(&current) != Steinberg::kResultTrue) return;
     *width = current.getWidth();

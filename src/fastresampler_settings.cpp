@@ -14,6 +14,11 @@ void settings_defaults(Settings* s) {
     memset(s, 0, sizeof(*s));
     plat_default_plugin_dir(s->scan_paths[0], FR_MAX_PATH);
     s->scan_path_count = s->scan_paths[0][0] ? 1 : 0;
+    // The VST 2 folder as well, when the system has one.
+    char vst2_dir[FR_MAX_PATH];
+    plat_default_vst2_dir(vst2_dir, sizeof(vst2_dir));
+    if (vst2_dir[0]) settings_add_scan_path(s, vst2_dir);
+    s->plugin_tab = 0;
     s->audio_api = 0;
     s->audio_driver_name[0] = '\0';
     s->block_size = FR_DEFAULT_BLOCK_SIZE;
@@ -22,21 +27,6 @@ void settings_defaults(Settings* s) {
     s->window_width = WINDOW_DEFAULT_WIDTH;
     s->window_height = WINDOW_DEFAULT_HEIGHT;
     resample_config_defaults(&s->resample);
-}
-
-// Whitespace-separated numbers from text into out, at most max_count of
-// them. Returns how many were read.
-static int settings_parse_floats(const char* text, float* out, int max_count) {
-    int count = 0;
-    const char* s = text;
-    while (count < max_count) {
-        char* end = nullptr;
-        double v = strtod(s, &end);
-        if (end == s) break;
-        out[count++] = (float)v;
-        s = end;
-    }
-    return count;
 }
 
 bool settings_has_scan_path(const Settings* s, const char* path) {
@@ -126,6 +116,8 @@ bool settings_load(Settings* s, const char* path) {
                 saw_scan_path = true;
             }
             settings_add_scan_path(s, value);
+        } else if (strcmp(key, "plugin_tab") == 0) {
+            s->plugin_tab = fr_clampi(atoi(value), 0, 1);
         } else if (strcmp(key, "audio_api") == 0) {
             s->audio_api = fr_clampi(atoi(value), 0, 1);
         } else if (strcmp(key, "audio_driver") == 0) {
@@ -164,17 +156,9 @@ bool settings_load(Settings* s, const char* path) {
         } else if (strcmp(key, "resample_microphone") == 0) {
             fr_strcpy(s->resample.microphone, sizeof(s->resample.microphone), value);
         } else if (strcmp(key, "resample_sample_rate") == 0) {
-            int v = atoi(value);
-            s->resample.sample_rate = 0;
-            for (int i = 0; i < RESAMPLE_RATE_OPTION_COUNT; ++i) {
-                if (g_resample_rate_options[i] == v) s->resample.sample_rate = v;
-            }
+            s->resample.sample_rate = resample_valid_sample_rate(atoi(value));
         } else if (strcmp(key, "resample_render_speed") == 0) {
-            // A value off the list leaves the default in place.
-            int v = atoi(value);
-            for (int i = 0; i < RESAMPLE_SPEED_OPTION_COUNT; ++i) {
-                if (g_resample_speed_options[i] == v) s->resample.render_speed = v;
-            }
+            s->resample.render_speed = resample_valid_render_speed(atoi(value), s->resample.render_speed);
         } else if (strcmp(key, "resample_output_dir") == 0) {
             if (value[0]) fr_strcpy(s->resample.output_dir, sizeof(s->resample.output_dir), value);
         } else if (strcmp(key, "resample_export_dir") == 0) {
@@ -183,18 +167,16 @@ bool settings_load(Settings* s, const char* path) {
                 saw_export_dir = true;
             }
         } else if (strcmp(key, "resample_preload_frames") == 0) {
-            // A value off the list leaves the default in place.
-            int v = atoi(value);
-            for (int i = 0; i < RESAMPLE_PRELOAD_OPTION_COUNT; ++i) {
-                if (g_resample_preload_options[i] == v) s->resample.preload_frames = v;
-            }
+            s->resample.preload_frames = resample_valid_preload_frames(atoi(value), s->resample.preload_frames);
+        } else if (strcmp(key, "project_name") == 0) {
+            fr_strcpy(s->project_name, sizeof(s->project_name), value);
         } else if (strcmp(key, "show_tips") == 0) {
             s->show_tips = atoi(value) != 0;
         } else if (strcmp(key, "resample_cc") == 0) {
             // "index controller bezier constant"; the nodes and values follow
             // on their own lines, so the curve starts out flat at 127.
             float nums[4];
-            if (settings_parse_floats(value, nums, 4) == 4) {
+            if (fr_parse_floats(value, nums, 4) == 4) {
                 int i = (int)nums[0];
                 if (i >= 0 && i < RESAMPLE_MAX_CC_CURVES) {
                     ResampleCcCurve* c = &s->resample.cc_curves[i];
@@ -208,7 +190,7 @@ bool settings_load(Settings* s, const char* path) {
         } else if (strcmp(key, "resample_cc_nodes") == 0) {
             // "index count", then x y curvature per node.
             float nums[2 + 3 * RESAMPLE_CC_MAX_NODES];
-            int read = settings_parse_floats(value, nums, 2 + 3 * RESAMPLE_CC_MAX_NODES);
+            int read = fr_parse_floats(value, nums, 2 + 3 * RESAMPLE_CC_MAX_NODES);
             int i = read >= 2 ? (int)nums[0] : -1;
             int count = read >= 2 ? (int)nums[1] : 0;
             if (i >= 0 && i < RESAMPLE_MAX_CC_CURVES && count >= 2 && count <= RESAMPLE_CC_MAX_NODES && read >= 2 + 3 * count) {
@@ -223,7 +205,7 @@ bool settings_load(Settings* s, const char* path) {
         } else if (strcmp(key, "resample_cc_values") == 0) {
             // "index", then every point of the curve.
             float nums[1 + RESAMPLE_CC_CURVE_POINTS];
-            int read = settings_parse_floats(value, nums, 1 + RESAMPLE_CC_CURVE_POINTS);
+            int read = fr_parse_floats(value, nums, 1 + RESAMPLE_CC_CURVE_POINTS);
             int i = read >= 1 ? (int)nums[0] : -1;
             if (i >= 0 && i < RESAMPLE_MAX_CC_CURVES && read == 1 + RESAMPLE_CC_CURVE_POINTS) {
                 ResampleCcCurve* c = &s->resample.cc_curves[i];
@@ -250,6 +232,7 @@ bool settings_save(const Settings* s, const char* path) {
     for (int i = 0; i < s->scan_path_count; ++i) {
         fprintf(f, "scan_path \"%s\"\n", s->scan_paths[i]);
     }
+    fprintf(f, "plugin_tab %d\n", s->plugin_tab);
     fprintf(f, "audio_api %d\n", s->audio_api);
     fprintf(f, "audio_driver \"%s\"\n", s->audio_driver_name);
     fprintf(f, "block_size %d\n", s->block_size);
@@ -273,6 +256,7 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
     fprintf(f, "resample_export_dir \"%s\"\n", s->resample.export_dir);
     fprintf(f, "resample_preload_frames %d\n", s->resample.preload_frames);
+    fprintf(f, "project_name \"%s\"\n", s->project_name);
     fprintf(f, "show_tips %d\n", s->show_tips ? 1 : 0);
     for (int i = 0; i < s->resample.cc_curve_count; ++i) {
         const ResampleCcCurve* c = &s->resample.cc_curves[i];

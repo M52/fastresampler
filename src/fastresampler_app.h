@@ -12,6 +12,7 @@
 #include "fastresampler_midi.h"
 #include "fastresampler_resample.h"
 #include "fastresampler_instrument.h"
+#include "fastresampler_project.h"
 
 struct PlatView;
 
@@ -26,8 +27,13 @@ struct App {
     Settings   settings;
     char       settings_path[FR_MAX_PATH];
 
-    PluginList plugins;
-    int        selected_plugin;        // row highlighted in the list, -1 none
+    // One list per format, indexed by HostPluginFormat: the VST3 modules
+    // and the VST 2 instruments. The main area shows one at a time, under
+    // the VST3 and VSTi tabs; settings.plugin_tab says which.
+    PluginList plugins[HOST_FORMAT_COUNT];
+    int        selected_plugin[HOST_FORMAT_COUNT];   // row highlighted in each list, -1 none
+    bool       plugin_tab_select_request;            // the UI moves to settings.plugin_tab
+    ScanCache  vsti_cache;
 
     AudioDriverList drivers;
     int        selected_driver;        // index into drivers, -1 none
@@ -73,6 +79,7 @@ struct App {
 
     // Requests raised by the UI during a frame, served after it.
     int        load_request;           // plugin list index, -1 none
+    int        load_request_format;    // HostPluginFormat: the list the index is in
     bool       unload_request;
     bool       rescan_request;
     bool       audio_apply_request;
@@ -107,6 +114,16 @@ struct App {
     char           instrument_result_text[FR_STATUS_LEN];
     bool           instrument_result_is_error;
 
+    // The saved resampling projects: the names in the Projects folder next
+    // to the exe, and what the tab asked for this frame.
+    ProjectList projects;
+    bool        project_scan_request;
+    bool        project_save_request;
+    bool        project_load_request;
+    char        project_load_name[FR_PROJECT_NAME_LEN];
+    char        project_result_text[FR_STATUS_LEN];
+    bool        project_result_is_error;
+
     PlatView*  view;
 };
 
@@ -126,8 +143,8 @@ void app_start_audio(App* app);
 // UI thread, once per frame, outside the ImGui frame.
 void app_process_requests(App* app);
 
-// Asks for a plugin by path (the command line). A path not in the scanned
-// list is added to it.
+// Asks for a plugin by path (the command line), a VST3 module or a VST 2
+// DLL by its extension. A path not in the scanned list is added to it.
 void app_request_load_path(App* app, const char* path);
 
 // The audio device's render callback.

@@ -6,9 +6,11 @@
 
 struct Settings {
     ResampleConfig resample;
+    char project_name[FR_PROJECT_NAME_LEN];      // the project last saved or loaded
 
     char scan_paths[FR_MAX_SCAN_PATHS][FR_MAX_PATH];
     int  scan_path_count;
+    int  plugin_tab;                             // HostPluginFormat: the list shown, 0 VST3, 1 VSTi
 
     int  audio_api;                              // AudioApi: 0 WASAPI, 1 ASIO
     char audio_driver_name[FR_DRIVER_NAME_LEN];  // matched by name at startup
