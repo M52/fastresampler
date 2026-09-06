@@ -76,6 +76,10 @@ void plat_default_vst2_dir(char* out_dir, size_t max_len);
 // has to compare equal for the same file. False when the file is not there.
 bool plat_file_stat(const char* path, uint64_t* out_size, uint64_t* out_mtime);
 
+// Deletes a file. True when it is gone afterwards, so a path that was not
+// there to begin with counts as deleted.
+bool plat_file_delete(const char* path);
+
 // ------------------------------------------------------ native libraries ----
 
 // Loads a native library (a DLL) so its exports can be called. The folder

@@ -6,9 +6,10 @@
 #include "fastresampler_helpers.h"
 #include "platform/fastresampler_platform.h"
 
-// Largest settings file the loader reads. 16 paths, a few numbers and the
-// controller curves (about a kilobyte each) fit many times over.
-#define SETTINGS_FILE_MAX_BYTES 65536
+// Largest settings file the loader reads. 16 folders, 256 banned paths, a
+// few numbers and the controller curves (about a kilobyte each) fit with
+// room to spare.
+#define SETTINGS_FILE_MAX_BYTES 262144
 
 void settings_defaults(Settings* s) {
     memset(s, 0, sizeof(*s));
@@ -51,6 +52,36 @@ void settings_remove_scan_path(Settings* s, int index) {
         memcpy(s->scan_paths[i], s->scan_paths[i + 1], FR_MAX_PATH);
     }
     s->scan_path_count--;
+}
+
+static int settings_find_ban(const Settings* s, const char* path) {
+    for (int i = 0; i < s->banned_count; ++i) {
+        if (fr_stricmp(s->banned_paths[i], path) == 0) return i;
+    }
+    return -1;
+}
+
+bool settings_is_banned(const Settings* s, const char* path) {
+    return settings_find_ban(s, path) >= 0;
+}
+
+bool settings_ban(Settings* s, const char* path) {
+    if (path[0] == '\0') return false;
+    if (s->banned_count >= FR_MAX_BANNED_PLUGINS) return false;
+    if (settings_find_ban(s, path) >= 0) return false;
+    fr_strcpy(s->banned_paths[s->banned_count], FR_MAX_PATH, path);
+    s->banned_count++;
+    return true;
+}
+
+bool settings_unban(Settings* s, const char* path) {
+    int index = settings_find_ban(s, path);
+    if (index < 0) return false;
+    for (int i = index; i + 1 < s->banned_count; ++i) {
+        memcpy(s->banned_paths[i], s->banned_paths[i + 1], FR_MAX_PATH);
+    }
+    s->banned_count--;
+    return true;
 }
 
 // A quoted value loses its quotes; anything else is taken as written, with
@@ -116,6 +147,8 @@ bool settings_load(Settings* s, const char* path) {
                 saw_scan_path = true;
             }
             settings_add_scan_path(s, value);
+        } else if (strcmp(key, "banned_plugin") == 0) {
+            settings_ban(s, value);
         } else if (strcmp(key, "plugin_tab") == 0) {
             s->plugin_tab = fr_clampi(atoi(value), 0, 1);
         } else if (strcmp(key, "audio_api") == 0) {
@@ -159,6 +192,8 @@ bool settings_load(Settings* s, const char* path) {
             s->resample.sample_rate = resample_valid_sample_rate(atoi(value));
         } else if (strcmp(key, "resample_render_speed") == 0) {
             s->resample.render_speed = resample_valid_render_speed(atoi(value), s->resample.render_speed);
+        } else if (strcmp(key, "resample_delete_full_wav") == 0) {
+            s->resample.delete_full_wav = atoi(value) != 0;
         } else if (strcmp(key, "resample_output_dir") == 0) {
             if (value[0]) fr_strcpy(s->resample.output_dir, sizeof(s->resample.output_dir), value);
         } else if (strcmp(key, "resample_export_dir") == 0) {
@@ -232,6 +267,9 @@ bool settings_save(const Settings* s, const char* path) {
     for (int i = 0; i < s->scan_path_count; ++i) {
         fprintf(f, "scan_path \"%s\"\n", s->scan_paths[i]);
     }
+    for (int i = 0; i < s->banned_count; ++i) {
+        fprintf(f, "banned_plugin \"%s\"\n", s->banned_paths[i]);
+    }
     fprintf(f, "plugin_tab %d\n", s->plugin_tab);
     fprintf(f, "audio_api %d\n", s->audio_api);
     fprintf(f, "audio_driver \"%s\"\n", s->audio_driver_name);
@@ -253,6 +291,7 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_microphone \"%s\"\n", s->resample.microphone);
     fprintf(f, "resample_sample_rate %d\n", s->resample.sample_rate);
     fprintf(f, "resample_render_speed %d\n", s->resample.render_speed);
+    fprintf(f, "resample_delete_full_wav %d\n", s->resample.delete_full_wav ? 1 : 0);
     fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
     fprintf(f, "resample_export_dir \"%s\"\n", s->resample.export_dir);
     fprintf(f, "resample_preload_frames %d\n", s->resample.preload_frames);

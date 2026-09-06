@@ -111,6 +111,7 @@ struct App {
     InstrumentJob  instrument_job;
     bool           instrument_start_request;
     bool           resample_fsi_ready;
+    bool           resample_full_wav_removed;   // the bank build deleted it; why fsi_ready went false
     char           instrument_result_text[FR_STATUS_LEN];
     bool           instrument_result_is_error;
 

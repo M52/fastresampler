@@ -28,13 +28,15 @@ static void scan_add(PluginList* out, const char* path, const char* file_name) {
 
 // The VST3 modules go straight to their list. A DLL goes to the VST 2 list
 // when its export table names the entry point, which is read without running
-// it; the probe below then sorts the instruments from the rest.
-static void scan_dir(PluginList* vst3, PluginList* vsti, const char* dir, int depth) {
+// it; the probe below then sorts the instruments from the rest. A banned
+// path is passed over before either look.
+static void scan_dir(PluginList* vst3, PluginList* vsti, const Settings* settings, const char* dir, int depth) {
     PlatDirIter it;
     if (!plat_dir_open(&it, dir)) return;
     while (plat_dir_next(&it)) {
         char full[FR_MAX_PATH];
         plat_path_join(full, sizeof(full), dir, it.name);
+        if (settings_is_banned(settings, full)) continue;
         if (plat_path_has_ext(it.name, ".vst3")) {
             scan_add(vst3, full, it.name);
             continue;
@@ -43,7 +45,7 @@ static void scan_dir(PluginList* vst3, PluginList* vsti, const char* dir, int de
             if (plat_library_exports(full, g_vst2_entry_names, 2)) scan_add(vsti, full, it.name);
             continue;
         }
-        if (it.is_dir && depth < SCAN_MAX_DEPTH) scan_dir(vst3, vsti, full, depth + 1);
+        if (it.is_dir && depth < SCAN_MAX_DEPTH) scan_dir(vst3, vsti, settings, full, depth + 1);
     }
     plat_dir_close(&it);
 }
@@ -178,12 +180,12 @@ void scan_plugins(PluginList* vst3, PluginList* vsti, ScanCache* cache, const Se
             fr_log("scan: folder not found: %s", settings->scan_paths[i]);
             continue;
         }
-        scan_dir(vst3, vsti, settings->scan_paths[i], 0);
+        scan_dir(vst3, vsti, settings, settings->scan_paths[i], 0);
     }
     int candidates = vsti->count;
     scan_probe_vsti(vsti, cache);
     qsort(vst3->entries, (size_t)vst3->count, sizeof(PluginEntry), scan_compare);
     qsort(vsti->entries, (size_t)vsti->count, sizeof(PluginEntry), scan_compare);
-    fr_log("scan: %d VST3 plugins and %d VST 2 instruments (of %d DLLs) in %d folders",
-           vst3->count, vsti->count, candidates, settings->scan_path_count);
+    fr_log("scan: %d VST3 plugins and %d VST 2 instruments (of %d DLLs) in %d folders, %d banned",
+           vst3->count, vsti->count, candidates, settings->scan_path_count, settings->banned_count);
 }

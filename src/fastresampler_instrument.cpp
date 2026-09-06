@@ -488,11 +488,21 @@ static void instrument_thread_main(void* user) {
         fr_strcpy(job->result, sizeof(job->result), "Cancelled; the instrument files are incomplete.");
         job->result_is_error = true;
     } else if (ok) {
+        // The bank now holds every sample the full WAV was rendered for, and
+        // the reader is closed, so the file can go when the tab asked for it.
+        if (job->cfg.delete_full_wav) {
+            if (plat_file_delete(job->full_wav_path)) {
+                job->full_wav_removed = true;
+            } else {
+                fr_log("instrument: could not remove %s", job->full_wav_path);
+            }
+        }
         char preload[32];
         resample_preload_label(job->cfg.preload_frames, preload, sizeof(preload));
-        snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s%s, preload %s.",
+        snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s%s, preload %s.%s",
                  plat_path_basename(job->fsi_path), plat_path_basename(job->fsb_path), zone_count,
-                 rr_count, rr_count == 1 ? "" : "s", rr_count > 1 ? " linked by a round robin effect" : "", preload);
+                 rr_count, rr_count == 1 ? "" : "s", rr_count > 1 ? " linked by a round robin effect" : "", preload,
+                 job->full_wav_removed ? " The full WAV was removed." : "");
         job->result_is_error = false;
     } else {
         job->result_is_error = true;
@@ -520,6 +530,7 @@ bool instrument_start(InstrumentJob* job, const ResampleScript* script, const Re
 
     job->result[0] = '\0';
     job->result_is_error = false;
+    job->full_wav_removed = false;
     job->cancel.store(false);
     job->finished.store(false);
     job->progress.store(0);

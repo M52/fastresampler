@@ -185,6 +185,13 @@ bool plat_file_stat(const char* path, uint64_t* out_size, uint64_t* out_mtime) {
     return true;
 }
 
+bool plat_file_delete(const char* path) {
+    wchar_t wpath[FR_MAX_PATH];
+    if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) return false;
+    if (DeleteFileW(wpath)) return true;
+    return GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
+}
+
 // ------------------------------------------------------ native libraries ----
 
 void* plat_library_load(const char* path, char* err, size_t err_len) {

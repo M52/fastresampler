@@ -20,6 +20,7 @@
 // --- Sizes of the fixed arrays ----------------------------------------------
 #define FR_MAX_PATH             260
 #define FR_MAX_SCAN_PATHS       16
+#define FR_MAX_BANNED_PLUGINS   256
 #define FR_MAX_PLUGINS          512
 #define FR_PLUGIN_NAME_LEN      128
 #define FR_MAX_AUDIO_DRIVERS    64

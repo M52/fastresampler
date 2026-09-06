@@ -35,6 +35,7 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->gap_seconds = RESAMPLE_DEFAULT_GAP_SECONDS;
     cfg->sample_rate = RESAMPLE_DEFAULT_SAMPLE_RATE;
     cfg->render_speed = RESAMPLE_DEFAULT_RENDER_SPEED;
+    cfg->delete_full_wav = false;
     cfg->preload_frames = RESAMPLE_DEFAULT_PRELOAD_FRAMES;
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));

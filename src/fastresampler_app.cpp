@@ -101,6 +101,7 @@ void app_init(App* app) {
     app->instrument_job.progress.store(0);
     app->instrument_start_request = false;
     app->resample_fsi_ready = false;
+    app->resample_full_wav_removed = false;
     app->instrument_result_text[0] = '\0';
     app->instrument_result_is_error = false;
     app->project_scan_request = false;
@@ -317,6 +318,7 @@ void app_resample_build(App* app) {
     if (app_resample_running(app) || app_instrument_running(app)) return;
     // A new script means the files on disk no longer describe it.
     app->resample_fsi_ready = false;
+    app->resample_full_wav_removed = false;
     app->instrument_result_text[0] = '\0';
     char err[FR_STATUS_LEN];
     if (!resample_build(&app->resample_script, &app->settings.resample, app_resample_rate(app), err, sizeof(err))) {
@@ -393,6 +395,7 @@ static void app_resample_start(App* app) {
     app->resample_result_text[0] = '\0';
     app->resample_result_is_error = false;
     app->resample_fsi_ready = false;
+    app->resample_full_wav_removed = false;
     app->instrument_result_text[0] = '\0';
     app_set_status(app, false, "Rendering...");
 }
@@ -452,6 +455,10 @@ static void app_instrument_finish(App* app) {
     if (!instrument_collect(&app->instrument_job)) return;
     fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), app->instrument_job.result);
     app->instrument_result_is_error = app->instrument_job.result_is_error;
+    if (app->instrument_job.full_wav_removed) {
+        app->resample_full_wav_removed = true;
+        app->resample_fsi_ready = false;   // there is nothing left to cut a bank from
+    }
     app_set_status(app, app->instrument_job.result_is_error, "%s", app->instrument_job.result);
 }
 
@@ -501,6 +508,7 @@ static void app_process_project_requests(App* app) {
             // them, so the tab starts again at Build MIDI.
             app->resample_script.built = false;
             app->resample_fsi_ready = false;
+            app->resample_full_wav_removed = false;
             app->resample_build_text[0] = '\0';
             app->resample_result_text[0] = '\0';
             app->instrument_result_text[0] = '\0';
@@ -604,6 +612,10 @@ void app_process_requests(App* app) {
 
 void app_request_load_path(App* app, const char* path) {
     if (!path || !path[0]) return;
+    if (settings_is_banned(&app->settings, path)) {
+        app_set_status(app, true, "%s is banned. Unban it from the list's right-click menu.", plat_path_basename(path));
+        return;
+    }
     int format = host_format_of_path(path);
     PluginList* list = &app->plugins[format];
     // The list of that format comes to the front, so the row shows.

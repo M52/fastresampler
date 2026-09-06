@@ -606,6 +606,12 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ui_hint("How much of every sample the bank keeps in RAM; the rest streams from disk while it plays. RAM holds every sample whole.");
     ui_folder_row("Folder", cfg->export_dir, busy, &app->export_dir_pick_request, scale);
+    ui_label("Remove full WAV", scale);
+    ImGui::BeginDisabled(busy);
+    ImGui::Checkbox("##deletefullwav", &cfg->delete_full_wav);
+    ImGui::EndDisabled();
+    ui_hint("Deletes the one long WAV the samples and the bank are both cut from, once the bank has been built from it, "
+            "so the folder keeps only the samples and the instrument.");
     if (building) {
         int done = app->instrument_job.progress.load();
         int total = app->resample_script.segment_count;
@@ -619,6 +625,8 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::EndDisabled();
         if (app->resample_fsi_ready) {
             ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the output folder.");
+        } else if (app->resample_full_wav_removed) {
+            ui_hint("The bank was built and the full WAV removed with it. Render again to build another one.");
         } else {
             ui_hint("Available once the samples are rendered and split.");
         }
@@ -792,7 +800,35 @@ static void ui_draw_side_panel(App* app, ImVec2 size, float scale) {
 
 // --- Main area -----------------------------------------------------------------
 
-// The list of one format: the VST3 modules, or the VST 2 instruments.
+// The banned plugins of one format as menu items, named by their file. A
+// click puts one back and the lists are scanned again.
+static void ui_unban_items(App* app, int format) {
+    Settings* s = &app->settings;
+    char unban[FR_MAX_PATH];
+    unban[0] = '\0';
+    int shown = 0;
+    for (int i = 0; i < s->banned_count; ++i) {
+        const char* path = s->banned_paths[i];
+        if (host_format_of_path(path) != format) continue;
+        char name[FR_PLUGIN_NAME_LEN];
+        fr_strcpy(name, sizeof(name), plat_path_basename(path));
+        fr_strip_plugin_ext(name);
+        ImGui::PushID(i);
+        if (ImGui::MenuItem(name)) fr_strcpy(unban, sizeof(unban), path);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", path);
+        ImGui::PopID();
+        shown++;
+    }
+    if (shown == 0) ImGui::MenuItem("No banned plugins", nullptr, false, false);
+    if (unban[0]) {
+        settings_unban(s, unban);
+        app->rescan_request = true;
+    }
+}
+
+// The list of one format: the VST3 modules, or the VST 2 instruments. A
+// right-click on a row bans it, and lists the banned ones to unban; the
+// Banned button does the same for a list with nothing left in it.
 static void ui_draw_plugin_list(App* app, int format, float scale) {
     const PluginList* list = &app->plugins[format];
     int* selected = &app->selected_plugin[format];
@@ -800,6 +836,12 @@ static void ui_draw_plugin_list(App* app, int format, float scale) {
     ImGui::Text(vsti ? "Available VST instruments (%d)" : "Available VST3 plugins (%d)", list->count);
     ImGui::SameLine();
     if (ImGui::SmallButton("Rescan")) app->rescan_request = true;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Banned")) ImGui::OpenPopup("##banned");
+    if (ImGui::BeginPopup("##banned")) {
+        ui_unban_items(app, format);
+        ImGui::EndPopup();
+    }
     if (*selected >= 0 && *selected < list->count) {
         ImGui::SameLine();
         if (ImGui::SmallButton("Load selected")) {
@@ -816,6 +858,7 @@ static void ui_draw_plugin_list(App* app, int format, float scale) {
         } else {
             ui_note("No plugins found. Add a folder in the Settings tab.");
         }
+        ui_hint("A banned plugin is not listed; the Banned button puts one back.");
         return;
     }
 
@@ -839,6 +882,21 @@ static void ui_draw_plugin_list(App* app, int format, float scale) {
                     app->load_request = i;
                     app->load_request_format = format;
                 }
+            }
+            // The right-click menu of the row: ban it, or unban another.
+            if (ImGui::BeginPopupContextItem()) {
+                char ban_label[FR_PLUGIN_NAME_LEN + 16];
+                snprintf(ban_label, sizeof(ban_label), "Ban %s", e->name);
+                if (ImGui::MenuItem(ban_label)) {
+                    settings_ban(&app->settings, e->path);
+                    app->rescan_request = true;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Takes it off the list; it is not scanned or loaded again until unbanned.");
+                if (ImGui::BeginMenu("Unban")) {
+                    ui_unban_items(app, format);
+                    ImGui::EndMenu();
+                }
+                ImGui::EndPopup();
             }
             ImGui::TableSetColumnIndex(1);
             ImGui::TextDisabled("%s", e->path);

@@ -12,6 +12,11 @@ struct Settings {
     int  scan_path_count;
     int  plugin_tab;                             // HostPluginFormat: the list shown, 0 VST3, 1 VSTi
 
+    // Plugins kept out of the lists, by path. A banned path is neither
+    // scanned, nor opened by the VST 2 probe, nor loaded.
+    char banned_paths[FR_MAX_BANNED_PLUGINS][FR_MAX_PATH];
+    int  banned_count;
+
     int  audio_api;                              // AudioApi: 0 WASAPI, 1 ASIO
     char audio_driver_name[FR_DRIVER_NAME_LEN];  // matched by name at startup
     int  block_size;
@@ -32,3 +37,9 @@ bool settings_save(const Settings* s, const char* path);
 bool settings_has_scan_path(const Settings* s, const char* path);
 bool settings_add_scan_path(Settings* s, const char* path);
 void settings_remove_scan_path(Settings* s, int index);
+
+// The ban list, matched by path (case-insensitive). Ban is false when the
+// path is banned already or the list is full; unban when it was not banned.
+bool settings_is_banned(const Settings* s, const char* path);
+bool settings_ban(Settings* s, const char* path);
+bool settings_unban(Settings* s, const char* path);

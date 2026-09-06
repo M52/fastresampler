@@ -89,8 +89,10 @@ Layout of the window:
   sustain patch plays its loudest dynamic layer. The tab is laid out in
   sections under capitalised orange headings: the samples' folder and the
   numbered Build MIDI and Render to WAV buttons make up Output, and the
-  preload size, the instrument's own folder and the FSI + FSB build make up
-  Export to FastSampler. Both folders are picked with the system's dialog.
+  preload size, the instrument's own folder, Remove full WAV and the FSI + FSB
+  build make up Export to FastSampler. Remove full WAV deletes the one long
+  WAV the samples and the bank are both cut from, once the bank has been built
+  from it, so the folder keeps only the samples and the instrument. Both folders are picked with the system's dialog.
   Save resampling project, last of all, writes every setting of the tab to
   `Projects\<name>.yaml` next to the exe and loads one back from the list of
   what is in that folder; a load starts the tab again at Build MIDI.
@@ -101,7 +103,12 @@ Layout of the window:
   (the dim lines that explain a control) are shown.
 - Right: when nothing is loaded, two tabs: **VST3** lists the VST3 plugins
   and **VSTi** the VST 2 instruments found under the scanned folders
-  (double-click to load; the tab last shown is remembered). Otherwise the
+  (double-click to load; the tab last shown is remembered). A right-click on
+  a row bans that plugin: it leaves the list and is neither scanned, nor
+  opened by the VST 2 probe, nor loaded by path, until it is unbanned from
+  the Unban submenu of the same menu or from the Banned button in the
+  list's header. The bans are `banned_plugin` lines in the settings file,
+  so a DLL with a bad entry point stays out for good. Otherwise the
   plugin's editor under a header with its name and a close button. A plugin
   that wants more room than the window has grows the window to fit it, once,
   as far as the screen allows. A VST 2 editor has the one size it reports

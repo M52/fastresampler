@@ -79,6 +79,7 @@ struct ResampleConfig {
     int   sample_rate;                              // the render's rate; 0 = the audio device's
     int   render_speed;                             // realtime multiple the render is held to; 0 = unlimited
     char  output_dir[FR_MAX_PATH];                  // the full WAV and the sample files
+    bool  delete_full_wav;                          // remove the full WAV once the bank is built from it
     char  export_dir[FR_MAX_PATH];                  // the .fsi and .fsb
     int   preload_frames;                           // frames of each sample the bank keeps in RAM; 0 = whole samples
 

@@ -36,6 +36,7 @@ struct InstrumentJob {
 
     char result[FR_STATUS_LEN];
     bool result_is_error;
+    bool full_wav_removed;             // the build deleted it, as the configuration asked
 };
 
 // Starts the worker. The script is the one the full WAV was rendered from.
