@@ -140,6 +140,8 @@
 #include "ui/fastresampler_ui.h"
 #include "ui/fastresampler_ui_keyboard.cpp"
 #include "ui/fastresampler_ui_cc_curve.cpp"
+#include "ui/fastresampler_ui_dragslider.h"
+#include "ui/fastresampler_ui_dragslider.cpp"
 #include "ui/fastresampler_ui.cpp"
 #include "fastresampler_view_win32.cpp"
 

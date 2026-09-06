@@ -70,9 +70,13 @@ Layout of the window:
   audio device and block size, the ASIO control panel, and whether the tips
   (the dim lines that explain a control) are shown.
 - Right: the plugin list when nothing is loaded (double-click to load), or the
-  plugin's editor under a header with its name and a close button. Under
-  that, the 88-key GUI keyboard, as wide as the plugin area. Click to play;
-  lower on the key is louder.
+  plugin's editor under a header with its name and a close button. A plugin
+  that wants more room than the window has grows the window to fit it, once,
+  as far as the screen allows. Under that, the 88-key GUI keyboard, as wide
+  as the plugin area. Click to play; lower on the key is louder.
+- The timing sliders (hold, gap, pre-roll gap) are FastSampler's drag
+  sliders: a plain drag moves in 10 ms steps, a Shift drag 100 ms per pixel,
+  an Alt drag 1 ms per pixel, and they read in milliseconds below one second.
 
 Files:
 - `src/fastresampler_app.*` — the application state and the requests the UI raises.

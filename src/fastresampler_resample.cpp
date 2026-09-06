@@ -61,9 +61,9 @@ uint64_t resample_required_bytes(const ResampleScript* script) {
 
 const char* resample_step_label(int step) {
     static const char* labels[RESAMPLE_MAX_STEP] = {
-        "Every semitone", "Every wholetone", "Every minor third", "Every major third",
-        "Every fourth", "Every tritone", "Every fifth", "Every minor sixth",
-        "Every major sixth", "Every minor seventh", "Every major seventh", "Every octave"
+        "semitone", "wholetone", "minor third", "major third",
+        "fourth", "tritone", "fifth", "minor sixth",
+        "major sixth", "minor seventh", "major seventh", "octave"
     };
     if (step < 1 || step > RESAMPLE_MAX_STEP) return "?";
     return labels[step - 1];

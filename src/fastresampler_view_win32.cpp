@@ -26,6 +26,7 @@ struct PlatView {
     int   last_avail_w;      // editor area last offered to the plugin
     int   last_avail_h;
     bool  editor_fit_pending;
+    bool  editor_grow_pending;  // grow the window to the editor once it has a size
     bool  closed;            // app_shutdown has run
 };
 
@@ -131,6 +132,7 @@ void* view_editor_create(PlatView* v, int width, int height) {
                                      x, y, width, height, v->hwnd, NULL, GetModuleHandleW(NULL), NULL);
     if (!v->editor_hwnd) fr_log("view: editor child window failed (%lu)", (unsigned long)GetLastError());
     v->editor_fit_pending = true;
+    v->editor_grow_pending = true;
     return v->editor_hwnd;
 }
 
@@ -158,8 +160,50 @@ void view_editor_destroy(PlatView* v) {
     v->editor_hwnd = NULL;
 }
 
+// Grows the window until the editor fits beside the side panel and above
+// the keyboard, as far as the monitor's work area allows. A window that is
+// maximised or already large enough is left alone.
+static void view_grow_to_fit_editor(PlatView* v, int editor_w, int editor_h) {
+    if (IsZoomed(v->hwnd)) return;
+    int x, y;
+    view_editor_origin(v, &x, &y);
+    int kb_h = (int)(UI_KEYBOARD_HEIGHT * v->dpi_scale + 0.5f);
+    int want_w = x + editor_w;
+    int want_h = y + editor_h + kb_h;
+    if (want_w <= v->width && want_h <= v->height) return;
+    int client_w = want_w > v->width ? want_w : v->width;
+    int client_h = want_h > v->height ? want_h : v->height;
+
+    RECT r = { 0, 0, client_w, client_h };
+    DWORD style = (DWORD)GetWindowLongPtrW(v->hwnd, GWL_STYLE);
+    DWORD ex_style = (DWORD)GetWindowLongPtrW(v->hwnd, GWL_EXSTYLE);
+    AdjustWindowRectExForDpi(&r, style, FALSE, ex_style, (UINT)(v->dpi_scale * (float)WIN_BASE_DPI + 0.5f));
+    int win_w = r.right - r.left;
+    int win_h = r.bottom - r.top;
+
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    GetMonitorInfoW(MonitorFromWindow(v->hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    int work_w = mi.rcWork.right - mi.rcWork.left;
+    int work_h = mi.rcWork.bottom - mi.rcWork.top;
+    if (win_w > work_w) win_w = work_w;
+    if (win_h > work_h) win_h = work_h;
+
+    // Keep the window where it is unless it would run off the work area.
+    RECT now;
+    GetWindowRect(v->hwnd, &now);
+    int left = now.left, top = now.top;
+    if (left + win_w > mi.rcWork.right) left = mi.rcWork.right - win_w;
+    if (top + win_h > mi.rcWork.bottom) top = mi.rcWork.bottom - win_h;
+    if (left < mi.rcWork.left) left = mi.rcWork.left;
+    if (top < mi.rcWork.top) top = mi.rcWork.top;
+    SetWindowPos(v->hwnd, NULL, left, top, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+    fr_log("view: window grown to %dx%d for a %dx%d editor", win_w, win_h, editor_w, editor_h);
+}
+
 // Once per frame: offer the plugin the area it has when that area changed,
-// then place the child window at the size the plugin settled on.
+// then place the child window at the size the plugin settled on. A plugin
+// that wants more than the area grows the window once, when it opens.
 static void view_update_editor(PlatView* v) {
     App* app = v->app;
     if (!app->plugin || !app->editor_open || !v->editor_hwnd) return;
@@ -175,6 +219,10 @@ static void view_update_editor(PlatView* v) {
             app->editor_width = w;
             app->editor_height = h;
         }
+    }
+    if (v->editor_grow_pending) {
+        v->editor_grow_pending = false;
+        view_grow_to_fit_editor(v, app->editor_width, app->editor_height);
     }
     view_editor_place(v, app->editor_width, app->editor_height);
 }

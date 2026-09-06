@@ -3,6 +3,7 @@
 #include <math.h>
 #include "imgui.h"
 #include "ui/fastresampler_ui.h"
+#include "ui/fastresampler_ui_dragslider.h"
 #include "ui/fastresampler_palette.h"
 #include "fastresampler_app.h"
 #include "fastresampler_helpers.h"
@@ -10,6 +11,19 @@
 
 // Height of the status strip at the bottom of the side panel.
 #define UI_STATUS_HEIGHT 44.0f
+
+// Most folders a path is split into when it is shortened to fit a line.
+#define UI_PATH_MAX_PARTS 64
+
+// The timing sliders: their grid, what a Shift or Alt drag moves per
+// pixel, and their reach.
+#define UI_TIME_STEP_SECONDS         0.01f
+#define UI_TIME_STEP_SHIFT_SECONDS   0.1f
+#define UI_TIME_STEP_ALT_SECONDS     0.001f
+#define UI_TIME_MAX_SECONDS          60.0f
+#define UI_HOLD_MIN_SECONDS          0.01f
+#define UI_PREROLL_GAP_MIN_SECONDS   0.25f   // past the 0.2 s a pre-roll note is held
+#define UI_PREROLL_GAP_MAX_SECONDS   10.0f
 
 // Width of a modal message, like the disk space warning.
 #define UI_MODAL_WIDTH 420.0f
@@ -96,6 +110,66 @@ static void ui_folder_name(const char* path, char* out, size_t out_len) {
     while (len > 1 && (out[len - 1] == '\\' || out[len - 1] == '/')) out[--len] = '\0';
     const char* base = plat_path_basename(out);
     if (base[0]) memmove(out, base, strlen(base) + 1);
+}
+
+// A path shortened from the middle until it fits the width on one line,
+// the drive and the last folder being what matters: whole folders go first,
+// "D:\My files\...\samples", then characters when even that is too long.
+static void ui_fit_path(const char* path, float width, char* out, size_t out_len) {
+    fr_strcpy(out, out_len, path);
+    if (ImGui::CalcTextSize(out).x <= width) return;
+
+    // The folders as spans of the path; a trailing separator adds none.
+    const char* starts[UI_PATH_MAX_PARTS];
+    int lens[UI_PATH_MAX_PARTS];
+    int count = 0;
+    const char* p = path;
+    while (*p && count < UI_PATH_MAX_PARTS) {
+        const char* start = p;
+        while (*p && *p != '\\' && *p != '/') ++p;
+        if (p > start) {
+            starts[count] = start;
+            lens[count] = (int)(p - start);
+            count++;
+        }
+        if (*p) ++p;
+    }
+    if (count >= 3) {
+        const char* last = starts[count - 1];
+        for (int lead = count - 2; lead >= 1; --lead) {
+            int prefix_len = (int)(starts[lead - 1] + lens[lead - 1] - path);
+            snprintf(out, out_len, "%.*s%s...%s%s", prefix_len, path, PLAT_PATH_SEP_STR, PLAT_PATH_SEP_STR, last);
+            if (ImGui::CalcTextSize(out).x <= width) return;
+        }
+    }
+    // Characters: the head and the tail of the path, the dots between them.
+    size_t len = strlen(path);
+    for (size_t keep = len; keep >= 2; --keep) {
+        size_t head = (keep + 1) / 2;
+        size_t tail = keep - head;
+        snprintf(out, out_len, "%.*s...%s", (int)head, path, path + len - tail);
+        if (ImGui::CalcTextSize(out).x <= width) return;
+    }
+}
+
+// The timing sliders: a plain drag moves in steps of 10 ms, a Shift drag
+// 100 ms per pixel, an Alt drag 1 ms per pixel. Each keeps what its
+// modifier drag started from.
+static DragSliderState g_hold_drag;
+static DragSliderState g_gap_drag;
+static DragSliderState g_preroll_drag;
+
+// A time in seconds, read in seconds from one second up and in
+// milliseconds below it.
+static bool ui_time_slider(const char* id, float* seconds, float min_seconds, float max_seconds, DragSliderState* state) {
+    char text[32];
+    if (*seconds < 1.0f) {
+        snprintf(text, sizeof(text), "%.0f ms", *seconds * 1000.0f);
+    } else {
+        snprintf(text, sizeof(text), "%.2f s", *seconds);
+    }
+    return ui_slider_float_drag(id, seconds, min_seconds, max_seconds, text,
+                                UI_TIME_STEP_SECONDS, UI_TIME_STEP_SHIFT_SECONDS, UI_TIME_STEP_ALT_SECONDS, state);
 }
 
 static void ui_colored_wrapped(const char* text, ImVec4 color) {
@@ -313,22 +387,29 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ui_label("Pre-roll", scale);
     ImGui::Checkbox("##preroll", &cfg->preroll);
-    ui_label_inline("gap (s)");
-    ImGui::SetNextItemWidth(60.0f * scale);
+    ui_label_inline("gap");
+    ImGui::SetNextItemWidth(-1.0f);
     ImGui::BeginDisabled(!cfg->preroll);
-    ImGui::InputFloat("##prerollgap", &cfg->preroll_gap_seconds, 0.0f, 0.0f, "%.2f");
+    ui_time_slider("##prerollgap", &cfg->preroll_gap_seconds, UI_PREROLL_GAP_MIN_SECONDS, UI_PREROLL_GAP_MAX_SECONDS, &g_preroll_drag);
     ImGui::EndDisabled();
     ui_hint("Pre-roll plays n-1 short notes before round robin n, one per gap, so a sampler that resets its counter after silence lands on variation n. The split discards them.");
     ImGui::Separator();
 
     ImGui::Text("Timing");
-    ui_label("Hold (s)", scale);
-    ImGui::SetNextItemWidth(60.0f * scale);
-    ImGui::InputFloat("##hold", &cfg->hold_seconds, 0.0f, 0.0f, "%.2f");
-    ui_label_inline("Gap (s)");
-    ImGui::SetNextItemWidth(60.0f * scale);
-    ImGui::InputFloat("##gap", &cfg->gap_seconds, 0.0f, 0.0f, "%.2f");
-    ui_hint("Each note is held, then left to ring out for the gap; the sample file spans both.");
+    ui_label("Hold", scale);
+    {
+        // The two sliders share the row's width past their labels.
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float gap_label_w = ImGui::CalcTextSize("Gap").x;
+        float slider_w = (ImGui::GetContentRegionAvail().x - gap_label_w - 2.0f * spacing) * 0.5f;
+        ImGui::SetNextItemWidth(slider_w);
+        ui_time_slider("##hold", &cfg->hold_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS, &g_hold_drag);
+        ui_label_inline("Gap");
+        ImGui::SetNextItemWidth(-1.0f);
+        ui_time_slider("##gap", &cfg->gap_seconds, 0.0f, UI_TIME_MAX_SECONDS, &g_gap_drag);
+    }
+    ui_hint("Each note is held, then left to ring out for the gap; the sample file spans both. "
+            "Drag with Shift for coarse steps, with Alt for fine ones; Ctrl-click to type seconds.");
 
     ui_label("Sample rate", scale);
     char rate_label[48];
@@ -407,7 +488,6 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ImGui::Separator();
 
-    ImGui::Text("Output");
     {
         char label[FR_MAX_PATH + 32];
         if (cfg->output_dir[0]) {
@@ -417,10 +497,18 @@ static void ui_tab_resample(App* app, float scale) {
         } else {
             fr_strcpy(label, sizeof(label), "Choose an output folder##folder");
         }
+        ui_label("Output", scale);
         ImGui::BeginDisabled(busy);
         if (ImGui::Button(label, ImVec2(-1.0f, 0.0f))) app->output_dir_pick_request = true;
         ImGui::EndDisabled();
-        if (cfg->output_dir[0]) ui_colored_wrapped(cfg->output_dir, CODE_COLOR_SLOT_LABEL_TEXT);
+        if (cfg->output_dir[0]) {
+            // The full path on one line, shortened from the middle when it is too long.
+            char fitted[FR_MAX_PATH + 8];
+            ui_fit_path(cfg->output_dir, ImGui::GetContentRegionAvail().x, fitted, sizeof(fitted));
+            ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_SLOT_LABEL_TEXT);
+            ImGui::TextUnformatted(fitted);
+            ImGui::PopStyleColor();
+        }
     }
     ui_label("Preload", scale);
     char preload_label[32];
@@ -468,9 +556,9 @@ static void ui_tab_resample(App* app, float scale) {
         if (ui_green_button("Render to WAV", ImVec2(-1.0f, 0.0f))) app->resample_start_request = true;
         ImGui::EndDisabled();
         if (!app->plugin) {
-            ui_note("Load a plugin to render.");
+            ui_hint("Load a plugin to render.");
         } else if (!app->resample_script.built) {
-            ui_note("Build the MIDI to render.");
+            ui_hint("Build the MIDI to render.");
         } else {
             ui_hint("Renders faster than realtime with the speakers silent, then splits the file into one WAV per sample.");
         }
@@ -495,7 +583,7 @@ static void ui_tab_resample(App* app, float scale) {
         if (app->resample_fsi_ready) {
             ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the output folder.");
         } else {
-            ui_note("Available once the samples are rendered and split.");
+            ui_hint("Available once the samples are rendered and split.");
         }
     }
     if (app->instrument_result_text[0]) {
