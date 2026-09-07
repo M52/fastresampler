@@ -61,9 +61,11 @@ static void view_shutdown_d3d(PlatView* v) {
 }
 
 static bool view_init_d3d(PlatView* v) {
-    // The bitblt swap effect keeps the plugin editor's child window composited
-    // over our surface without surprises; flip model presents are for windows
-    // with no children.
+    // Flip model: DWM composes our buffer as the window's content and still
+    // draws the plugin editor's child window over it. The old bitblt model
+    // copied into the window's redirection surface, and that copy never
+    // showed when no monitor was attached (a remote desktop session with the
+    // screen off): the window stayed white while Present reported success.
     DXGI_SWAP_CHAIN_DESC sd = {};
     sd.BufferCount = 2;
     sd.BufferDesc.Width = (UINT)v->width;
@@ -76,7 +78,7 @@ static bool view_init_d3d(PlatView* v) {
     sd.SampleDesc.Count = 1;
     sd.SampleDesc.Quality = 0;
     sd.Windowed = TRUE;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
     D3D_FEATURE_LEVEL level;
     const D3D_FEATURE_LEVEL levels[2] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0 };
