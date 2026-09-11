@@ -550,6 +550,7 @@ static void instrument_fill_legato_fx(FSICollectionFX* fx, int collection_index,
     fx->params[CFX_LEGATO_VEL_SOURCE] = (float)(script->legato_velocity_count > 1 ? LEGATO_VEL_FROM_SPEED
                                                                                    : LEGATO_VEL_FROM_NOTE);
     fx->params[CFX_LEGATO_VEL_FIXED] = 1.0f;
+    fx->params[CFX_LEGATO_MATCH_DB] = LEGATO_DEFAULT_MATCH_DB;
 }
 
 // The intervals one link row answers for: its own, and nothing else.
