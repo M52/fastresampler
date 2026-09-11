@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 // Bounded copy that always terminates.
 inline void fr_strcpy(char* dst, size_t dst_size, const char* src) {
@@ -71,6 +72,16 @@ inline int fr_parse_floats(const char* text, float* out, int max_count) {
         s = end;
     }
     return count;
+}
+
+// The local time of a moment, into the caller's own struct. MSVC and POSIX
+// each have a safe call for it, with the arguments the other way round.
+inline bool fr_localtime(const time_t* when, struct tm* out) {
+#if defined(_WIN32)
+    return localtime_s(out, when) == 0;
+#else
+    return localtime_r(when, out) != nullptr;
+#endif
 }
 
 inline float fr_clampf(float v, float lo, float hi) {

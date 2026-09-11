@@ -8,6 +8,52 @@
 #include "fastresampler_log.h"
 #include "platform/fastresampler_platform.h"
 
+// One more line in the output log's ring. Full, the oldest line goes.
+static void app_log_add(App* app, bool is_error, const char* text) {
+    int at;
+    if (app->log_count < FR_LOG_LINES) {
+        at = (app->log_first + app->log_count) % FR_LOG_LINES;
+        app->log_count++;
+    } else {
+        at = app->log_first;
+        app->log_first = (app->log_first + 1) % FR_LOG_LINES;
+    }
+    AppLogLine* line = &app->log_lines[at];
+    fr_strcpy(line->text, sizeof(line->text), text);
+    line->is_error = is_error;
+    time_t now = time(nullptr);
+    struct tm local;
+    if (fr_localtime(&now, &local)) {
+        snprintf(line->time, sizeof(line->time), "%02d:%02d:%02d", local.tm_hour, local.tm_min, local.tm_sec);
+    } else {
+        line->time[0] = '\0';
+    }
+    app->log_written++;
+}
+
+const AppLogLine* app_log_line(const App* app, int index) {
+    if (index < 0 || index >= app->log_count) return nullptr;
+    return &app->log_lines[(app->log_first + index) % FR_LOG_LINES];
+}
+
+void app_log_clear(App* app) {
+    app->log_count = 0;
+    app->log_first = 0;
+    app->log_written++;
+}
+
+float app_log_strip_height(const App* app, float client_height, float scale) {
+    float bar = UI_LOG_HEADER_HEIGHT * scale;
+    if (!app->settings.log_expanded) return bar;
+    float strip = bar + (float)app->settings.log_height * scale;
+    // However far the grip was dragged, the plugin area and the keyboard
+    // keep room of their own.
+    float most = client_height - (UI_KEYBOARD_HEIGHT + UI_MAIN_MIN_HEIGHT) * scale;
+    if (strip > most) strip = most;
+    if (strip < bar) strip = bar;
+    return strip;
+}
+
 void app_set_status(App* app, bool is_error, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -15,6 +61,7 @@ void app_set_status(App* app, bool is_error, const char* fmt, ...) {
     va_end(args);
     app->status_is_error = is_error;
     fr_log("%s%s", is_error ? "error: " : "", app->status);
+    app_log_add(app, is_error, app->status);
 }
 
 // The driver the settings name, else the first one (the default WASAPI device).
@@ -77,8 +124,13 @@ void app_init(App* app) {
     app->rescan_request = false;
     app->audio_apply_request = false;
     app->audio_refresh_request = false;
+    app->root_dir_pick_request = false;
     app->output_dir_pick_request = false;
     app->export_dir_pick_request = false;
+    app->log_count = 0;
+    app->log_first = 0;
+    app->log_written = 0;
+    app->log_clear_request = false;
     app->disk_warning[0] = '\0';
     app->disk_warning_open = false;
     app->editor_open = false;
@@ -285,12 +337,35 @@ static void app_format_bytes(uint64_t bytes, char* out, size_t out_len) {
     }
 }
 
+// The Resample tab's own result lines. Each stays under the section it
+// belongs to and goes through the status line, which is what the output log
+// keeps, so what a step reported is still readable after the next one.
+static void app_resample_build_result(App* app, bool is_error, const char* text) {
+    fr_strcpy(app->resample_build_text, sizeof(app->resample_build_text), text);
+    app->resample_build_is_error = is_error;
+    app_set_status(app, is_error, "%s", text);
+}
+
+static void app_resample_result(App* app, bool is_error, const char* text) {
+    fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), text);
+    app->resample_result_is_error = is_error;
+    app_set_status(app, is_error, "%s", text);
+}
+
+static void app_instrument_result(App* app, bool is_error, const char* text) {
+    fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), text);
+    app->instrument_result_is_error = is_error;
+    app_set_status(app, is_error, "%s", text);
+}
+
 // Whether the disk of the output folder has room for the built script's
 // files. True with no script. False raises the warning the UI shows as a
 // modal, and the caller must not render.
 static bool app_check_disk_space(App* app) {
     if (!app->resample_script.built) return true;
-    const char* dir = app->settings.resample.output_dir;
+    char dir[FR_MAX_PATH];
+    char dir_err[FR_STATUS_LEN];
+    if (!resample_output_dir(&app->settings.resample, dir, sizeof(dir), dir_err, sizeof(dir_err))) return true;
     uint64_t needed = resample_required_bytes(&app->resample_script, app->settings.resample.split_samples);
     uint64_t free_bytes = 0;
     char needed_text[32], free_text[32];
@@ -299,7 +374,7 @@ static bool app_check_disk_space(App* app) {
         snprintf(app->disk_warning, sizeof(app->disk_warning),
                  "The free space of the disk that holds %s could not be read. The render writes %s.", dir, needed_text);
         app->disk_warning_open = true;
-        fr_log("disk: %s", app->disk_warning);
+        app_set_status(app, true, "%s", app->disk_warning);
         return false;
     }
     if (free_bytes < needed) {
@@ -314,7 +389,7 @@ static bool app_check_disk_space(App* app) {
                      needed_text, dir, free_text);
         }
         app->disk_warning_open = true;
-        fr_log("disk: %s", app->disk_warning);
+        app_set_status(app, true, "%s", app->disk_warning);
         return false;
     }
     return true;
@@ -328,8 +403,7 @@ void app_resample_build(App* app) {
     app->instrument_result_text[0] = '\0';
     char err[FR_STATUS_LEN];
     if (!resample_build(&app->resample_script, &app->settings.resample, app_resample_rate(app), err, sizeof(err))) {
-        fr_strcpy(app->resample_build_text, sizeof(app->resample_build_text), err);
-        app->resample_build_is_error = true;
+        app_resample_build_result(app, true, err);
         return;
     }
     const ResampleScript* s = &app->resample_script;
@@ -344,43 +418,45 @@ void app_resample_build(App* app) {
         snprintf(transitions, sizeof(transitions), " and %d transitions over %d interval%s",
                  s->transition_count, s->interval_count, s->interval_count == 1 ? "" : "s");
     }
-    snprintf(app->resample_build_text, sizeof(app->resample_build_text),
+    char built[FR_STATUS_LEN];
+    snprintf(built, sizeof(built),
              "%d samples: %d notes x %d velocities x %d %s%s%s, %d events, %d:%02d of audio at %.0f Hz. First file: %s",
              s->segment_count, s->note_count, s->velocity_count, s->round_robin_count,
              s->dynamic_layers ? "dynamic layers" : "round robins", transitions, curves, s->count,
              (int)seconds / 60, (int)seconds % 60, s->sample_rate, example);
-    app->resample_build_is_error = false;
+    app_resample_build_result(app, false, built);
     settings_save(&app->settings, app->settings_path);
     app_check_disk_space(app);
 }
 
 static void app_resample_start(App* app) {
     if (!app->plugin) {
-        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "Load a plugin first.");
-        app->resample_result_is_error = true;
+        app_resample_result(app, true, "Load a plugin first.");
         return;
     }
     if (!app->resample_script.built) {
-        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "Build the MIDI first.");
-        app->resample_result_is_error = true;
+        app_resample_result(app, true, "Build the MIDI first.");
         return;
     }
     if (app->resample_script.sample_rate != app_resample_rate(app)) {
-        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text),
-                  "The sample rate changed since the build. Build the MIDI again.");
-        app->resample_result_is_error = true;
+        app_resample_result(app, true, "The sample rate changed since the build. Build the MIDI again.");
         return;
     }
-    if (!plat_dir_create(app->settings.resample.output_dir)) {
-        snprintf(app->resample_result_text, sizeof(app->resample_result_text),
-                 "Could not create the output folder %s", app->settings.resample.output_dir);
-        app->resample_result_is_error = true;
+    char output_dir[FR_MAX_PATH];
+    char dir_err[FR_STATUS_LEN];
+    if (!resample_output_dir(&app->settings.resample, output_dir, sizeof(output_dir), dir_err, sizeof(dir_err))) {
+        app_resample_result(app, true, dir_err);
+        return;
+    }
+    if (!plat_dir_create_all(output_dir)) {
+        char text[FR_STATUS_LEN];
+        snprintf(text, sizeof(text), "Could not create the output folder %s", output_dir);
+        app_resample_result(app, true, text);
         return;
     }
     // Checked again here: the disk may have filled up since the build.
     if (!app_check_disk_space(app)) {
-        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "Not enough disk space; the render did not start.");
-        app->resample_result_is_error = true;
+        app_resample_result(app, true, "Not enough disk space; the render did not start.");
         return;
     }
     // The worker owns the plugin until it is done; the device plays silence.
@@ -390,16 +466,15 @@ static void app_resample_start(App* app) {
     int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
     double export_rate = app->resample_script.sample_rate;
     if (!host_plugin_setup_processing(app->plugin, export_rate, block_size, true)) {
-        snprintf(app->resample_result_text, sizeof(app->resample_result_text),
-                 "The plugin refused %.0f Hz. Pick another export rate.", export_rate);
-        app->resample_result_is_error = true;
+        char text[FR_STATUS_LEN];
+        snprintf(text, sizeof(text), "The plugin refused %.0f Hz. Pick another export rate.", export_rate);
+        app_resample_result(app, true, text);
         host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false);
         app_resume_plugin(app);
         return;
     }
     if (!resample_start(&app->resample_job, app->plugin, &app->resample_script, block_size, &app->settings.resample)) {
-        fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), "The render could not start.");
-        app->resample_result_is_error = true;
+        app_resample_result(app, true, "The render could not start.");
         host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false);
         app_resume_plugin(app);
         return;
@@ -415,9 +490,7 @@ static void app_resample_start(App* app) {
 static void app_resample_finish(App* app) {
     if (!resample_collect(&app->resample_job)) return;
     ResampleJob* job = &app->resample_job;
-    fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), job->result);
-    app->resample_result_is_error = job->result_is_error;
-    app_set_status(app, job->result_is_error, "%s", job->result);
+    app_resample_result(app, job->result_is_error, job->result);
     bool samples_ok = !job->split_samples || job->files_written == app->resample_script.segment_count;
     app->resample_fsi_ready = !job->result_is_error && !job->cancel.load() && samples_ok;
     // Back to the device's rate and realtime mode.
@@ -432,30 +505,30 @@ static void app_resample_finish(App* app) {
 
 static void app_instrument_start(App* app) {
     if (!app->resample_fsi_ready || !app->resample_script.built) {
-        fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), "Render the samples first.");
-        app->instrument_result_is_error = true;
+        app_instrument_result(app, true, "Render the samples first.");
         return;
     }
     char prefix[RESAMPLE_FILE_NAME_LEN];
     char err[FR_STATUS_LEN];
     if (!resample_prefix(&app->settings.resample, prefix, sizeof(prefix), err, sizeof(err))) {
-        fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), err);
-        app->instrument_result_is_error = true;
+        app_instrument_result(app, true, err);
         return;
     }
-    const char* export_dir = app->settings.resample.export_dir;
-    if (export_dir[0] == '\0') export_dir = app->resample_job.out_dir;
-    if (!plat_dir_create(export_dir)) {
-        snprintf(app->instrument_result_text, sizeof(app->instrument_result_text),
-                 "Could not create the export folder %s", export_dir);
-        app->instrument_result_is_error = true;
+    char export_dir[FR_MAX_PATH];
+    if (!resample_export_dir(&app->settings.resample, export_dir, sizeof(export_dir), err, sizeof(err))) {
+        app_instrument_result(app, true, err);
+        return;
+    }
+    if (!plat_dir_create_all(export_dir)) {
+        char text[FR_STATUS_LEN];
+        snprintf(text, sizeof(text), "Could not create the export folder %s", export_dir);
+        app_instrument_result(app, true, text);
         return;
     }
     // The bank is cut from the same full WAV the samples came from.
     if (!instrument_start(&app->instrument_job, &app->resample_script, &app->settings.resample,
                           app->resample_job.full_path, export_dir, prefix)) {
-        fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), "The instrument build could not start.");
-        app->instrument_result_is_error = true;
+        app_instrument_result(app, true, "The instrument build could not start.");
         return;
     }
     app->instrument_result_text[0] = '\0';
@@ -465,13 +538,11 @@ static void app_instrument_start(App* app) {
 
 static void app_instrument_finish(App* app) {
     if (!instrument_collect(&app->instrument_job)) return;
-    fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), app->instrument_job.result);
-    app->instrument_result_is_error = app->instrument_job.result_is_error;
     if (app->instrument_job.full_wav_removed) {
         app->resample_full_wav_removed = true;
         app->resample_fsi_ready = false;   // there is nothing left to cut a bank from
     }
-    app_set_status(app, app->instrument_job.result_is_error, "%s", app->instrument_job.result);
+    app_instrument_result(app, app->instrument_job.result_is_error, app->instrument_job.result);
 }
 
 // What the tab shows under the project buttons, and the status line with it.
@@ -533,6 +604,10 @@ static void app_process_project_requests(App* app) {
 }
 
 void app_process_requests(App* app) {
+    if (app->log_clear_request) {
+        app->log_clear_request = false;
+        app_log_clear(app);
+    }
     app_process_project_requests(app);
 
     // A VST 2 editor repaints on this call, on the UI thread, a render in
@@ -541,6 +616,16 @@ void app_process_requests(App* app) {
 
     // The folder pickers are modal and pump messages; they run here, outside
     // the ImGui frame, so a repaint meanwhile cannot re-enter the UI.
+    if (app->root_dir_pick_request) {
+        app->root_dir_pick_request = false;
+        char dir[FR_MAX_PATH];
+        if (plat_pick_folder(view_native_window(app->view), app->settings.resample.root_dir, dir, sizeof(dir))) {
+            fr_strcpy(app->settings.resample.root_dir, sizeof(app->settings.resample.root_dir), dir);
+            settings_save(&app->settings, app->settings_path);
+            app_set_status(app, false, "The root project folder is %s", dir);
+            app_check_disk_space(app);
+        }
+    }
     if (app->output_dir_pick_request) {
         app->output_dir_pick_request = false;
         char dir[FR_MAX_PATH];

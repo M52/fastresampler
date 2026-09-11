@@ -1006,6 +1006,13 @@ static bool instrument_write_rzc(InstrumentJob* job, const InstrumentZoneMap* ma
         return false;
     }
 
+    // The split samples the zones name are in the folder the render wrote to.
+    char sample_dir[FR_MAX_PATH];
+    char dir_err[FR_STATUS_LEN];
+    if (!resample_output_dir(&job->cfg, sample_dir, sizeof(sample_dir), dir_err, sizeof(dir_err))) {
+        sample_dir[0] = '\0';
+    }
+
     bool ok = true;
     bool ignore_velocity = script->dynamic_layers || script->legato;
     for (int c = 0; c < collection_count && ok; ++c) {
@@ -1017,7 +1024,7 @@ static bool instrument_write_rzc(InstrumentJob* job, const InstrumentZoneMap* ma
             instrument_fill_zone(&zones[count], names[z], &map[z], offset, ignore_velocity);
             char file_name[RESAMPLE_FILE_NAME_LEN];
             resample_sample_file_name(job->prefix, script->dynamic_layers, seg, file_name, sizeof(file_name));
-            plat_path_join(paths[count], FR_MAX_PATH, job->cfg.output_dir, file_name);
+            plat_path_join(paths[count], FR_MAX_PATH, sample_dir, file_name);
             count++;
         }
         if (count == 0) continue;

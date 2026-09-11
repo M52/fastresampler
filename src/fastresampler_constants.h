@@ -29,6 +29,11 @@
 #define FR_STATUS_LEN           256
 #define FR_ERROR_LEN            512
 
+// The output log over the keyboard: the lines it keeps, and the "14:03:22"
+// each of them is stamped with.
+#define FR_LOG_LINES            512
+#define FR_LOG_TIME_LEN         12
+
 // --- Audio ------------------------------------------------------------------
 // The device is driven as stereo. A plugin with more channels on its main
 // output is folded down to the first two, a mono plugin is copied to both.
@@ -94,6 +99,17 @@ static const int g_block_size_options[FR_BLOCK_SIZE_OPTION_COUNT] = { 32, 64, 12
 #define UI_KEYBOARD_RAIL_HEIGHT 18.0f    // the readout strip above the keys
 #define UI_LABEL_COLUMN_WIDTH   100.0f   // labels sit left of their fields
 #define UI_MAIN_HEADER_HEIGHT   34.0f
+
+// The output log, a strip over the keyboard: the bar that is always there
+// and holds the grip and the fold arrow, how far the ledger opens over it,
+// and how far a drag on the grip may take that. The plugin area keeps its
+// own least height whatever the drag asks for.
+#define UI_LOG_HEADER_HEIGHT    40.0f
+#define UI_LOG_BODY_HEIGHT      160.0f
+#define UI_LOG_MIN_BODY_HEIGHT  40.0f
+#define UI_LOG_MAX_BODY_HEIGHT  2000.0f
+#define UI_LOG_GRIP_HEIGHT      6.0f
+#define UI_MAIN_MIN_HEIGHT      120.0f
 #define UI_PANEL_PADDING        8.0f
 #define UI_ITEM_SPACING         4.0f
 #define UI_BASE_FONT_SIZE       13.0f

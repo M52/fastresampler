@@ -117,11 +117,21 @@ static void view_editor_origin(PlatView* v, int* x, int* y) {
     *y = (int)(UI_MAIN_HEADER_HEIGHT * v->dpi_scale + 0.5f);
 }
 
+// The output log and the keyboard sit under the editor, and the editor is a
+// child window, which the compositor always draws over the frame this code
+// renders. So the editor is not given their room: the strip and the keys
+// are outside it, and both stay in sight whatever plugin is loaded.
+static int view_below_editor(PlatView* v) {
+    int kb_h = (int)(UI_KEYBOARD_HEIGHT * v->dpi_scale + 0.5f);
+    int log_h = (int)(app_log_strip_height(v->app, (float)v->height, v->dpi_scale) + 0.5f);
+    return kb_h + log_h;
+}
+
 static void view_editor_available(PlatView* v, int* w, int* h) {
     int x, y;
     view_editor_origin(v, &x, &y);
     *w = v->width - x;
-    *h = v->height - y - (int)(UI_KEYBOARD_HEIGHT * v->dpi_scale + 0.5f);
+    *h = v->height - y - view_below_editor(v);
     if (*w < 1) *w = 1;
     if (*h < 1) *h = 1;
 }
@@ -169,9 +179,8 @@ static void view_grow_to_fit_editor(PlatView* v, int editor_w, int editor_h) {
     if (IsZoomed(v->hwnd)) return;
     int x, y;
     view_editor_origin(v, &x, &y);
-    int kb_h = (int)(UI_KEYBOARD_HEIGHT * v->dpi_scale + 0.5f);
     int want_w = x + editor_w;
-    int want_h = y + editor_h + kb_h;
+    int want_h = y + editor_h + view_below_editor(v);
     if (want_w <= v->width && want_h <= v->height) return;
     int client_w = want_w > v->width ? want_w : v->width;
     int client_h = want_h > v->height ? want_h : v->height;

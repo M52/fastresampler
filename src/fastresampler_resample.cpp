@@ -80,9 +80,14 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->bit_depth = RESAMPLE_DEFAULT_BIT_DEPTH;
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));
-    plat_path_join(cfg->output_dir, sizeof(cfg->output_dir), dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);
-    // The instrument goes with its samples until told otherwise.
-    fr_strcpy(cfg->export_dir, sizeof(cfg->export_dir), cfg->output_dir);
+    // The samples and the instrument both go under the root, in a folder
+    // named after the take, until a box says otherwise; the picked folders
+    // start at the root as well, so a box that is ticked has a folder.
+    plat_path_join(cfg->root_dir, sizeof(cfg->root_dir), dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);
+    cfg->output_dir_override = false;
+    cfg->export_dir_override = false;
+    fr_strcpy(cfg->output_dir, sizeof(cfg->output_dir), cfg->root_dir);
+    fr_strcpy(cfg->export_dir, sizeof(cfg->export_dir), cfg->root_dir);
 }
 
 int resample_valid_sample_rate(int value) {
@@ -387,6 +392,97 @@ bool resample_prefix(const ResampleConfig* cfg, char* out, size_t out_len, char*
     return true;
 }
 
+bool resample_root_target_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
+    char mic[RESAMPLE_NAME_LEN], instrument[RESAMPLE_NAME_LEN], articulation[RESAMPLE_NAME_LEN];
+    if (cfg->root_dir[0] == '\0') {
+        fr_strcpy(err, err_len, "Choose a root project folder");
+        return false;
+    }
+    if (!resample_sanitize_name(instrument, sizeof(instrument), cfg->instrument)) {
+        fr_strcpy(err, err_len, "Fill in the Instrument field");
+        return false;
+    }
+    if (!resample_sanitize_name(articulation, sizeof(articulation), cfg->articulation)) {
+        fr_strcpy(err, err_len, "Fill in the Articulation field");
+        return false;
+    }
+    if (!resample_sanitize_name(mic, sizeof(mic), cfg->microphone)) {
+        fr_strcpy(err, err_len, "Fill in the Microphone field");
+        return false;
+    }
+    char path[FR_MAX_PATH];
+    plat_path_join(path, sizeof(path), cfg->root_dir, instrument);
+    plat_path_join(out, out_len, path, articulation);
+    fr_strcpy(path, sizeof(path), out);
+    plat_path_join(out, out_len, path, mic);
+    return true;
+}
+
+// The root a folder implies: the part of it above
+// <Instrument>\<Articulation>\<Microphone>. False when it does not end in
+// those three names.
+static bool resample_root_of_dir(const ResampleConfig* cfg, const char* dir, char* out, size_t out_len) {
+    char names[3][RESAMPLE_NAME_LEN];
+    if (!resample_sanitize_name(names[0], sizeof(names[0]), cfg->microphone)) return false;
+    if (!resample_sanitize_name(names[1], sizeof(names[1]), cfg->articulation)) return false;
+    if (!resample_sanitize_name(names[2], sizeof(names[2]), cfg->instrument)) return false;
+
+    char work[FR_MAX_PATH];
+    fr_strcpy(work, sizeof(work), dir);
+    for (int i = 0; i < 3; ++i) {
+        size_t len = strlen(work);
+        while (len > 0 && (work[len - 1] == '\\' || work[len - 1] == '/')) work[--len] = '\0';
+        const char* base = plat_path_basename(work);
+        if (base == work) return false;             // nothing left above it
+        if (fr_stricmp(base, names[i]) != 0) return false;
+        work[base - work] = '\0';                   // the folder goes, its separator with it
+    }
+    size_t len = strlen(work);
+    while (len > 1 && (work[len - 1] == '\\' || work[len - 1] == '/') && !(len == 3 && work[1] == ':')) {
+        work[--len] = '\0';
+    }
+    if (work[0] == '\0') return false;
+    fr_strcpy(out, out_len, work);
+    return true;
+}
+
+void resample_config_root_from_dirs(ResampleConfig* cfg) {
+    char root[FR_MAX_PATH];
+    if (resample_root_of_dir(cfg, cfg->output_dir, root, sizeof(root))) {
+        fr_strcpy(cfg->root_dir, sizeof(cfg->root_dir), root);
+        cfg->output_dir_override = false;
+        // The instrument follows the samples when it went with them.
+        cfg->export_dir_override = fr_stricmp(cfg->output_dir, cfg->export_dir) != 0;
+    } else {
+        cfg->output_dir_override = true;
+        cfg->export_dir_override = true;
+    }
+}
+
+bool resample_output_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
+    if (cfg->output_dir_override) {
+        if (cfg->output_dir[0] == '\0') {
+            fr_strcpy(err, err_len, "Choose an output folder");
+            return false;
+        }
+        fr_strcpy(out, out_len, cfg->output_dir);
+        return true;
+    }
+    return resample_root_target_dir(cfg, out, out_len, err, err_len);
+}
+
+bool resample_export_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
+    if (cfg->export_dir_override) {
+        if (cfg->export_dir[0] == '\0') {
+            fr_strcpy(err, err_len, "Choose a folder for the instrument");
+            return false;
+        }
+        fr_strcpy(out, out_len, cfg->export_dir);
+        return true;
+    }
+    return resample_root_target_dir(cfg, out, out_len, err, err_len);
+}
+
 void resample_segment_file_name(const ResampleConfig* cfg, const ResampleSegment* seg,
                                 char* out, size_t out_len) {
     char prefix[RESAMPLE_FILE_NAME_LEN];
@@ -631,10 +727,8 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         fr_strcpy(err, err_len, "No sample rate: open an audio device first");
         return false;
     }
-    if (cfg->output_dir[0] == '\0') {
-        fr_strcpy(err, err_len, "Choose an output folder");
-        return false;
-    }
+    char target_dir[FR_MAX_PATH];
+    if (!resample_output_dir(cfg, target_dir, sizeof(target_dir), err, err_len)) return false;
     if (cfg->cc_curve_count < 0 || cfg->cc_curve_count > RESAMPLE_MAX_CC_CURVES) {
         snprintf(err, err_len, "CC curves: at most %d", RESAMPLE_MAX_CC_CURVES);
         return false;
@@ -1033,6 +1127,7 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
     if (!plugin || !script || !script->built || block_size <= 0) return false;
     char err[FR_STATUS_LEN];
     if (!resample_prefix(cfg, job->prefix, sizeof(job->prefix), err, sizeof(err))) return false;
+    if (!resample_output_dir(cfg, job->out_dir, sizeof(job->out_dir), err, sizeof(err))) return false;
 
     job->plugin = plugin;
     job->script = script;
@@ -1041,7 +1136,6 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
     job->split_samples = cfg->split_samples;
     // The script's, not the tab's: the files must say what was rendered.
     job->dynamic_layers = script->dynamic_layers;
-    fr_strcpy(job->out_dir, sizeof(job->out_dir), cfg->output_dir);
     char full_name[RESAMPLE_FILE_NAME_LEN];
     snprintf(full_name, sizeof(full_name), "%s%s", job->prefix, RESAMPLE_FULL_FILE_SUFFIX);
     plat_path_join(job->full_path, sizeof(job->full_path), job->out_dir, full_name);

@@ -137,6 +137,27 @@ inline bool plat_path_has_ext(const char* path, const char* ext) {
     return true;
 }
 
+// Every level of a path, so a folder several deep is made in one call. The
+// drive and the leading separators are stepped over: a root is never made.
+// True when the whole chain is there afterwards.
+inline bool plat_dir_create_all(const char* path) {
+    char work[FR_MAX_PATH];
+    size_t len = strlen(path);
+    if (len == 0 || len >= sizeof(work)) return false;
+    memcpy(work, path, len + 1);
+    size_t i = (work[0] && work[1] == ':') ? 2 : 0;
+    while (work[i] == '\\' || work[i] == '/') ++i;
+    for (; work[i]; ++i) {
+        if (work[i] != '\\' && work[i] != '/') continue;
+        char sep = work[i];
+        work[i] = '\0';
+        if (!plat_dir_create(work)) return false;
+        work[i] = sep;
+        while (work[i + 1] == '\\' || work[i + 1] == '/') ++i;
+    }
+    return plat_dir_create(work);
+}
+
 // dir + separator + name, with the separator added only when dir lacks one.
 inline void plat_path_join(char* out, size_t out_size, const char* dir, const char* name) {
     size_t dir_len = strlen(dir);

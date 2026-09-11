@@ -101,7 +101,8 @@ Layout of the window:
   through the layers at a steady level. The curves share FastSampler's first
   curve group, so its editor draws them over one another.
   Capture legato transitions, in the Legato section, adds the moves between
-  the notes to the run. After every note has been sampled, each capture
+  the notes to the run; the rest of that section is only there while the box
+  is on. After every note has been sampled, each capture
   holds one note, presses the next one over it, lets the first go after the
   overlap, and holds the second; whatever the plugin plays between them --
   a slur, a re-bow, a portamento -- is what the sample keeps. The
@@ -168,7 +169,19 @@ Layout of the window:
   split samples and the numbered Build MIDI and Render to WAV buttons make up
   Output, and the preload size, the bit depth, the instrument's own folder,
   Export .rzc files, Remove full WAV and the FSI + FSB build make up Export
-  to FastSampler. Generate split samples and Remove full WAV both follow from
+  to FastSampler. Where a run writes comes from Naming: under the root
+  project folder, the first row of that section, a run makes
+  `<root>\<Instrument>\<Articulation>\<Microphone>` and puts the full WAV,
+  the sample files and the instrument there, so every take gets a folder of
+  its own and the naming fields name it. Output and Export to FastSampler
+  each show that folder and each carry a Choose another folder box that
+  overrides it with a folder of their own, one for the samples and one for
+  the instrument. The whole chain is made at the render, however deep it is.
+  A settings file or a project from before the root existed names only the
+  two folders it wrote to: when the samples already went to a folder that
+  ends in those three names, that root is read back off it and nothing
+  moves; otherwise both boxes go on, which also keeps the folders as they
+  were. Generate split samples and Remove full WAV both follow from
   the bank being cut from the full WAV, not from the sample files: the first,
   on by default, cuts that WAV into one file per sample and can be turned off
   by a run that only exports to FastSampler; the second deletes the WAV once
@@ -181,7 +194,7 @@ Layout of the window:
   The format is FastSampler's own, mirrored from `rzc_save_file` off the zone
   records the `.fsi` is built from -- its own writer cannot be compiled in
   here, as it is built against the YAML parser and platform layer this
-  project deliberately forked. Both folders are picked with the system's dialog.
+  project deliberately forked. All three folders are picked with the system's dialog.
   Save resampling project, last of all, writes every setting of the tab to
   `Projects\<name>.yaml` next to the exe and loads one back from the list of
   what is in that folder; a load starts the tab again at Build MIDI.
@@ -201,8 +214,25 @@ Layout of the window:
   plugin's editor under a header with its name and a close button. A plugin
   that wants more room than the window has grows the window to fit it, once,
   as far as the screen allows. A VST 2 editor has the one size it reports
-  and is given an idle call every frame. Under that, the 88-key GUI keyboard, as wide
-  as the plugin area. Click to play; lower on the key is louder.
+  and is given an idle call every frame. Under that the output log, and
+  under the log the 88-key GUI keyboard, both as wide as the plugin area.
+  Click a key to play it; lower on the key is louder.
+- The output log is a ledger of every status message, each stamped with the
+  time of day and errors in red: what a render wrote and how fast, what a
+  build made of the settings, a project saved or loaded, a folder picked, a
+  disk too small. The arrow on its bar folds it down to that bar alone and
+  opens it up again, and the grip along its top edge is dragged up or down
+  to set how tall it is; both are kept in the settings. Clear empties it.
+  The newest line is the one the side panel's own status strip shows, so
+  the log is that line's history. It holds the last 512 and drops the
+  oldest past that; `fastresampler.log` next to the exe keeps them all.
+  A plugin editor is a child window, which the compositor draws over
+  everything this program renders itself, so the editor is never given the
+  room the log and the keyboard have: it is clipped above the log's top
+  edge and the ledger stays in sight whatever is loaded. Dragging the grip
+  therefore offers the plugin a shorter area, and a plugin that can shrink
+  does. The plugin area keeps a floor of its own, so the ledger cannot be
+  dragged over the whole window.
 - The timing sliders (hold, gap, pre-roll gap) are FastSampler's drag
   sliders: a plain drag moves in 10 ms steps, a Shift drag 100 ms per pixel,
   an Alt drag 1 ms per pixel, and they read in milliseconds below one second.

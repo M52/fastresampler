@@ -23,6 +23,14 @@ enum AppTab {
     APP_TAB_SETTINGS
 };
 
+// One line of the output log: what a status message said, and the time of
+// day it was written at.
+struct AppLogLine {
+    char text[FR_STATUS_LEN];
+    char time[FR_LOG_TIME_LEN];
+    bool is_error;
+};
+
 struct App {
     Settings   settings;
     char       settings_path[FR_MAX_PATH];
@@ -72,6 +80,15 @@ struct App {
     char       status[FR_STATUS_LEN];
     bool       status_is_error;
 
+    // The output log: every status line kept, so what a run reported stays
+    // readable after the next line replaces it. A ring, oldest dropped
+    // first, drawn over the keyboard as a ledger that folds away.
+    AppLogLine log_lines[FR_LOG_LINES];
+    int        log_count;                // lines held, up to FR_LOG_LINES
+    int        log_first;                // where the oldest one sits in the ring
+    int        log_written;              // lines ever added; the UI scrolls on a change
+    bool       log_clear_request;
+
     // The disk space warning: raised when the output folder's disk cannot
     // hold the run, shown by the UI as a modal until dismissed.
     char       disk_warning[FR_STATUS_LEN];
@@ -84,6 +101,7 @@ struct App {
     bool       rescan_request;
     bool       audio_apply_request;
     bool       audio_refresh_request;
+    bool       root_dir_pick_request;   // the folder picker for the root project folder
     bool       output_dir_pick_request; // the folder picker for the samples
     bool       export_dir_pick_request; // the folder picker for the instrument
 
@@ -159,3 +177,15 @@ void app_pitch_bend(App* app, int value);
 void app_all_notes_off(App* app);
 
 void app_set_status(App* app, bool is_error, const char* fmt, ...);
+
+// The output log, oldest line first: index 0 to app->log_count - 1.
+const AppLogLine* app_log_line(const App* app, int index);
+void app_log_clear(App* app);
+
+// How tall the output log's strip over the keyboard is: the bar alone when
+// it is folded, the bar and the ledger when it is open. The UI lays the
+// strip out and the plugin editor's child window is kept clear of it, so
+// both ask here. client_height is the window's, in the same pixels the
+// answer comes back in; the plugin area and the keyboard keep room of their
+// own in it whatever the grip was dragged to.
+float app_log_strip_height(const App* app, float client_height, float scale);

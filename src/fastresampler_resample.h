@@ -116,6 +116,11 @@ struct ResampleConfig {
     char  instrument[RESAMPLE_NAME_LEN];
     char  articulation[RESAMPLE_NAME_LEN];
     char  microphone[RESAMPLE_NAME_LEN];
+    // The root of the whole set of projects. Under it, a run writes to
+    // <root>\<Instrument>\<Articulation>\<Microphone>, so the naming fields
+    // put every take in a folder of its own. The samples and the instrument
+    // both go there unless the box of their section overrides it.
+    char  root_dir[FR_MAX_PATH];
 
     char  low_note[RESAMPLE_NOTE_TEXT_LEN];        // "C3" style, C3 = middle C
     char  high_note[RESAMPLE_NOTE_TEXT_LEN];
@@ -143,11 +148,13 @@ struct ResampleConfig {
 
     int   sample_rate;                              // the render's rate; 0 = the audio device's
     int   render_speed;                             // realtime multiple the render is held to; 0 = unlimited
-    char  output_dir[FR_MAX_PATH];                  // the full WAV and the sample files
+    char  output_dir[FR_MAX_PATH];                  // the full WAV and the sample files, when the box below overrides the root
+    bool  output_dir_override;                      // write them there rather than under the root
     bool  split_samples;                            // cut the full WAV into one file per sample
     bool  export_rzc;                               // one FastSampler .rzc per round robin, beside the bank
     bool  delete_full_wav;                          // remove the full WAV once the bank is built from it
-    char  export_dir[FR_MAX_PATH];                  // the .fsi and .fsb
+    char  export_dir[FR_MAX_PATH];                  // the .fsi and .fsb, when the box below overrides the root
+    bool  export_dir_override;                      // write them there rather than under the root
     int   preload_frames;                           // frames of each sample the bank keeps in RAM; 0 = whole samples
     int   bit_depth;                                // bits the bank stores every sample at, 16 or 24
 
@@ -347,6 +354,23 @@ void resample_segment_file_name(const ResampleConfig* cfg, const ResampleSegment
 // "Microphone_Instrument_Articulation" from the naming fields, cleaned for a
 // file name. False, with the reason in err, when a field is empty.
 bool resample_prefix(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
+
+// <root>\<Instrument>\<Articulation>\<Microphone>: the folder a run writes to
+// when it follows the root project folder. False, with the reason in err,
+// when the root or one of the naming fields is empty.
+bool resample_root_target_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
+
+// A configuration read from a file written before the root project folder
+// existed: it names the two folders it wrote to and no root. When the
+// samples already went to <root>\<Instrument>\<Articulation>\<Microphone>,
+// that root is taken; otherwise the boxes that override the root go on. A
+// run keeps writing exactly where it did either way.
+void resample_config_root_from_dirs(ResampleConfig* cfg);
+
+// Where the samples and where the instrument go: the folder above, or the
+// one picked in the tab when that section's box overrides the root.
+bool resample_output_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
+bool resample_export_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
 
 // Starts the worker. The caller has taken the plugin away from the audio
 // thread first and gives it back after resample_collect(). The output folder

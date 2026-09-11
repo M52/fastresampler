@@ -25,6 +25,8 @@ void settings_defaults(Settings* s) {
     s->block_size = FR_DEFAULT_BLOCK_SIZE;
     s->midi_channel = 0;
     s->show_tips = true;
+    s->log_expanded = true;
+    s->log_height = (int)UI_LOG_BODY_HEIGHT;
     s->window_width = WINDOW_DEFAULT_WIDTH;
     s->window_height = WINDOW_DEFAULT_HEIGHT;
     resample_config_defaults(&s->resample);
@@ -122,6 +124,9 @@ bool settings_load(Settings* s, const char* path) {
     // A file from before the export folder existed puts the instrument with
     // its samples, wherever those go.
     bool saw_export_dir = false;
+    // A file from before the root project folder existed names the two
+    // folders it wrote to and no root; the root is read back off them.
+    bool saw_root_dir = false;
 
     char* line = text;
     while (line && *line) {
@@ -220,13 +225,22 @@ bool settings_load(Settings* s, const char* path) {
             s->resample.split_samples = atoi(value) != 0;
         } else if (strcmp(key, "resample_delete_full_wav") == 0) {
             s->resample.delete_full_wav = atoi(value) != 0;
+        } else if (strcmp(key, "resample_root_dir") == 0) {
+            if (value[0]) {
+                fr_strcpy(s->resample.root_dir, sizeof(s->resample.root_dir), value);
+                saw_root_dir = true;
+            }
         } else if (strcmp(key, "resample_output_dir") == 0) {
             if (value[0]) fr_strcpy(s->resample.output_dir, sizeof(s->resample.output_dir), value);
+        } else if (strcmp(key, "resample_output_dir_override") == 0) {
+            s->resample.output_dir_override = atoi(value) != 0;
         } else if (strcmp(key, "resample_export_dir") == 0) {
             if (value[0]) {
                 fr_strcpy(s->resample.export_dir, sizeof(s->resample.export_dir), value);
                 saw_export_dir = true;
             }
+        } else if (strcmp(key, "resample_export_dir_override") == 0) {
+            s->resample.export_dir_override = atoi(value) != 0;
         } else if (strcmp(key, "resample_preload_frames") == 0) {
             s->resample.preload_frames = resample_valid_preload_frames(atoi(value), s->resample.preload_frames);
         } else if (strcmp(key, "resample_bit_depth") == 0) {
@@ -235,6 +249,10 @@ bool settings_load(Settings* s, const char* path) {
             fr_strcpy(s->project_name, sizeof(s->project_name), value);
         } else if (strcmp(key, "show_tips") == 0) {
             s->show_tips = atoi(value) != 0;
+        } else if (strcmp(key, "log_expanded") == 0) {
+            s->log_expanded = atoi(value) != 0;
+        } else if (strcmp(key, "log_height") == 0) {
+            s->log_height = fr_clampi(atoi(value), (int)UI_LOG_MIN_BODY_HEIGHT, (int)UI_LOG_MAX_BODY_HEIGHT);
         } else if (strcmp(key, "resample_cc") == 0) {
             // "index controller bezier constant layer"; the nodes and values
             // follow on their own lines, so the curve starts out flat at 127.
@@ -281,6 +299,7 @@ bool settings_load(Settings* s, const char* path) {
         line = next;
     }
     if (!saw_export_dir) fr_strcpy(s->resample.export_dir, sizeof(s->resample.export_dir), s->resample.output_dir);
+    if (!saw_root_dir) resample_config_root_from_dirs(&s->resample);
     // A curve the file skipped over still has to be a curve.
     for (int i = 0; i < s->resample.cc_curve_count; ++i) {
         ResampleCcCurve* c = &s->resample.cc_curves[i];
@@ -336,12 +355,17 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_split_samples %d\n", s->resample.split_samples ? 1 : 0);
     fprintf(f, "resample_export_rzc %d\n", s->resample.export_rzc ? 1 : 0);
     fprintf(f, "resample_delete_full_wav %d\n", s->resample.delete_full_wav ? 1 : 0);
+    fprintf(f, "resample_root_dir \"%s\"\n", s->resample.root_dir);
     fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
+    fprintf(f, "resample_output_dir_override %d\n", s->resample.output_dir_override ? 1 : 0);
     fprintf(f, "resample_export_dir \"%s\"\n", s->resample.export_dir);
+    fprintf(f, "resample_export_dir_override %d\n", s->resample.export_dir_override ? 1 : 0);
     fprintf(f, "resample_preload_frames %d\n", s->resample.preload_frames);
     fprintf(f, "resample_bit_depth %d\n", s->resample.bit_depth);
     fprintf(f, "project_name \"%s\"\n", s->project_name);
     fprintf(f, "show_tips %d\n", s->show_tips ? 1 : 0);
+    fprintf(f, "log_expanded %d\n", s->log_expanded ? 1 : 0);
+    fprintf(f, "log_height %d\n", s->log_height);
     for (int i = 0; i < s->resample.cc_curve_count; ++i) {
         const ResampleCcCurve* c = &s->resample.cc_curves[i];
         fprintf(f, "resample_cc %d %d %d %d %d\n", i, c->controller, c->is_bezier ? 1 : 0, c->constant, c->layer);

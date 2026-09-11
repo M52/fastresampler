@@ -259,6 +259,24 @@ static void ui_folder_row(const char* label, const char* dir, bool disabled, boo
     ImGui::PopID();
 }
 
+// The folder a section writes to. With its box off the row shows the folder
+// built from the root and the naming fields and cannot be picked; with the
+// box on it shows the folder that was picked for this section.
+static void ui_target_folder_row(const char* label, const ResampleConfig* cfg, const char* picked_dir,
+                                 bool* override_flag, bool busy, bool* pick_request, float scale) {
+    ImGui::PushID((const void*)override_flag);
+    char derived[FR_MAX_PATH];
+    char err[FR_STATUS_LEN];
+    bool from_root = !*override_flag;
+    bool have_derived = resample_root_target_dir(cfg, derived, sizeof(derived), err, sizeof(err));
+    ui_folder_row(label, from_root ? (have_derived ? derived : "") : picked_dir, busy || from_root, pick_request, scale);
+    if (from_root && !have_derived) ui_colored_wrapped(err, CODE_COLOR_WARNING_VEC4);
+    ImGui::BeginDisabled(busy);
+    ImGui::Checkbox("Choose another folder", override_flag);
+    ImGui::EndDisabled();
+    ImGui::PopID();
+}
+
 // A CC slider: shows the last value sent, sends on change.
 static void ui_cc_slider(App* app, const char* label, int controller, float scale) {
     char text[64];
@@ -395,6 +413,9 @@ static void ui_tab_resample(App* app, float scale) {
     bool busy = rendering || building;
 
     ui_section("Naming", scale);
+    ui_folder_row("Project root", cfg->root_dir, busy, &app->root_dir_pick_request, scale);
+    ui_hint("The root of every project. A run writes under it, into Instrument\\Articulation\\Microphone, "
+            "so each take gets a folder of its own. The Output and Export sections each have a box to write somewhere else.");
     ui_label("Instrument", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##instrument", cfg->instrument, sizeof(cfg->instrument));
@@ -408,6 +429,12 @@ static void ui_tab_resample(App* app, float scale) {
         char prefix[RESAMPLE_FILE_NAME_LEN];
         char err[FR_STATUS_LEN];
         char preview[RESAMPLE_FILE_NAME_LEN + 32];
+        char target[FR_MAX_PATH];
+        if (resample_root_target_dir(cfg, target, sizeof(target), err, sizeof(err))) {
+            char fitted[FR_MAX_PATH + 8];
+            ui_fit_path(target, ImGui::GetContentRegionAvail().x, fitted, sizeof(fitted));
+            ui_note(fitted);
+        }
         if (resample_prefix(cfg, prefix, sizeof(prefix), err, sizeof(err))) {
             snprintf(preview, sizeof(preview), "Files: %s_<Note>_<Velocity>_%s<n>.wav", prefix, cfg->dynamic_layers ? "dyn" : "RR");
             ui_note(preview);
@@ -549,84 +576,87 @@ static void ui_tab_resample(App* app, float scale) {
     ui_hint("After every note has been sampled, the run holds one note, presses the next over it and lets the first go, "
             "so whatever the plugin plays between them is captured. The instrument maps those transitions to FastSampler's "
             "legato effect, which plays one whenever a key goes down while another is held.");
-    ImGui::BeginDisabled(!cfg->legato || busy);
+    // The rest of the section is only there when the transitions are.
+    if (cfg->legato) {
+        ImGui::BeginDisabled(busy);
 
-    ui_label("Intervals", scale);
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##legato_intervals", cfg->legato_intervals, sizeof(cfg->legato_intervals));
-    ui_hint("Widths in semitones, each captured up and down: \"1, 2\" is four transitions from every note. Only these "
-            "widths get a transition: a slur of any other width changes note without one, because a transition of the "
-            "wrong width would land on the wrong note. Leave no gaps, and note that the notes below need no matching "
-            "step -- a transition keeps its width when it is transposed, so spend the run on widths rather than on notes.");
-
-    ui_label("From every", scale);
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::BeginCombo("##legato_step", resample_step_label(cfg->legato_step))) {
-        for (int step = 1; step <= RESAMPLE_MAX_STEP; ++step) {
-            if (ImGui::Selectable(resample_step_label(step), step == cfg->legato_step)) cfg->legato_step = step;
-        }
-        ImGui::EndCombo();
-    }
-    ui_hint("The notes the transitions start from, which need not follow the notes above: transitions are often sampled "
-            "every semitone where the sustains are sampled every wholetone. A key between two of them plays the transition "
-            "of the nearer one.");
-
-    ui_label("Velocities", scale);
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##legato_velocities", cfg->legato_velocities, sizeof(cfg->legato_velocities));
-    ui_hint("What the note landed on is pressed at, which many libraries read as the speed of the transition. Cinematic Studio "
-            "Strings has three zones, 0-64, 65-100 and 101-127, so \"30, 80, 110\" captures its slow, medium and fast slur. "
-            "The note left is pressed at the same velocity.");
-
-    ui_label("Arrival", scale);
-    {
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
-        float detect_w = ImGui::CalcTextSize("Detect").x + 40.0f * scale;
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - detect_w - spacing);
-        ImGui::InputText("##legato_arrivals", cfg->legato_arrivals, sizeof(cfg->legato_arrivals));
-        ImGui::SameLine();
-        ImGui::Checkbox("Detect", &cfg->legato_detect_arrival);
-    }
-    ui_hint("How long after the note landed on is pressed the transition gets there, in milliseconds: one time, or one "
-            "per velocity. Detect reads the real one out of the audio, by following both pitches, and reads where the "
-            "transition leaves the first note with it, so the instrument carries both ends of every transition. It keeps "
-            "these times for a transition it cannot hear apart.");
-
-    ui_label("Note left", scale);
-    {
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
-        float overlap_label_w = ImGui::CalcTextSize("Overlap").x;
-        float slider_w = (ImGui::GetContentRegionAvail().x - overlap_label_w - 2.0f * spacing) * 0.5f;
-        ImGui::SetNextItemWidth(slider_w);
-        ui_time_slider("##legato_source_hold", &cfg->legato_source_hold_seconds, UI_HOLD_MIN_SECONDS,
-                       UI_TIME_MAX_SECONDS, &g_legato_source_hold_drag);
-        ui_label_inline("Overlap");
+        ui_label("Intervals", scale);
         ImGui::SetNextItemWidth(-1.0f);
-        ui_time_slider("##legato_overlap", &cfg->legato_overlap_seconds, 0.0f, UI_TIME_MAX_SECONDS,
-                       &g_legato_overlap_drag);
-    }
-    ui_hint("How long the note that is left sounds before the next one is pressed, and how long it stays down after that. "
-            "The overlap is what makes a plugin play a move at all.");
+        ImGui::InputText("##legato_intervals", cfg->legato_intervals, sizeof(cfg->legato_intervals));
+        ui_hint("Widths in semitones, each captured up and down: \"1, 2\" is four transitions from every note. Only these "
+                "widths get a transition: a slur of any other width changes note without one, because a transition of the "
+                "wrong width would land on the wrong note. Leave no gaps, and note that the notes below need no matching "
+                "step -- a transition keeps its width when it is transposed, so spend the run on widths rather than on notes.");
 
-    ui_label("Note landed on", scale);
-    ImGui::SetNextItemWidth(-1.0f);
-    ui_time_slider("##legato_hold", &cfg->legato_hold_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
-                   &g_legato_hold_drag);
-    ui_hint("How long it is held. It has to reach past the arrival and the blend, so a slow slur needs a longer hold.");
+        ui_label("From every", scale);
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##legato_step", resample_step_label(cfg->legato_step))) {
+            for (int step = 1; step <= RESAMPLE_MAX_STEP; ++step) {
+                if (ImGui::Selectable(resample_step_label(step), step == cfg->legato_step)) cfg->legato_step = step;
+            }
+            ImGui::EndCombo();
+        }
+        ui_hint("The notes the transitions start from, which need not follow the notes above: transitions are often sampled "
+                "every semitone where the sustains are sampled every wholetone. A key between two of them plays the transition "
+                "of the nearer one.");
 
-    ui_label("Sustain either side", scale);
-    ImGui::SetNextItemWidth(-1.0f);
-    ui_time_slider("##legato_margin", &cfg->legato_margin_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
-                   &g_legato_margin_drag);
-    ui_hint("How much of the note being left each move keeps in front of its departure, and how much of the note landed "
-            "on past its arrival. Room for FastSampler's two crossfades rather than something that is played as such: the "
-            "sampler starts the move one fade before the departure and ends it one fade past the arrival, so this only "
-            "sets how long those fades may be. Half a second lets a slow line blend over a long crossfade; a fast run "
-            "never reaches most of it. The part in front of the departure is held in RAM, so a longer margin costs "
-            "memory per move.");
-    ImGui::EndDisabled();
-    if (cfg->legato && cfg->round_robins > 1 && !cfg->dynamic_layers) {
-        ui_note("The moves are captured once and shared by every round robin.");
+        ui_label("Velocities", scale);
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("##legato_velocities", cfg->legato_velocities, sizeof(cfg->legato_velocities));
+        ui_hint("What the note landed on is pressed at, which many libraries read as the speed of the transition. Cinematic Studio "
+                "Strings has three zones, 0-64, 65-100 and 101-127, so \"30, 80, 110\" captures its slow, medium and fast slur. "
+                "The note left is pressed at the same velocity.");
+
+        ui_label("Arrival", scale);
+        {
+            float spacing = ImGui::GetStyle().ItemSpacing.x;
+            float detect_w = ImGui::CalcTextSize("Detect").x + 40.0f * scale;
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - detect_w - spacing);
+            ImGui::InputText("##legato_arrivals", cfg->legato_arrivals, sizeof(cfg->legato_arrivals));
+            ImGui::SameLine();
+            ImGui::Checkbox("Detect", &cfg->legato_detect_arrival);
+        }
+        ui_hint("How long after the note landed on is pressed the transition gets there, in milliseconds: one time, or one "
+                "per velocity. Detect reads the real one out of the audio, by following both pitches, and reads where the "
+                "transition leaves the first note with it, so the instrument carries both ends of every transition. It keeps "
+                "these times for a transition it cannot hear apart.");
+
+        ui_label("Note left", scale);
+        {
+            float spacing = ImGui::GetStyle().ItemSpacing.x;
+            float overlap_label_w = ImGui::CalcTextSize("Overlap").x;
+            float slider_w = (ImGui::GetContentRegionAvail().x - overlap_label_w - 2.0f * spacing) * 0.5f;
+            ImGui::SetNextItemWidth(slider_w);
+            ui_time_slider("##legato_source_hold", &cfg->legato_source_hold_seconds, UI_HOLD_MIN_SECONDS,
+                           UI_TIME_MAX_SECONDS, &g_legato_source_hold_drag);
+            ui_label_inline("Overlap");
+            ImGui::SetNextItemWidth(-1.0f);
+            ui_time_slider("##legato_overlap", &cfg->legato_overlap_seconds, 0.0f, UI_TIME_MAX_SECONDS,
+                           &g_legato_overlap_drag);
+        }
+        ui_hint("How long the note that is left sounds before the next one is pressed, and how long it stays down after that. "
+                "The overlap is what makes a plugin play a move at all.");
+
+        ui_label("Note landed on", scale);
+        ImGui::SetNextItemWidth(-1.0f);
+        ui_time_slider("##legato_hold", &cfg->legato_hold_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
+                       &g_legato_hold_drag);
+        ui_hint("How long it is held. It has to reach past the arrival and the blend, so a slow slur needs a longer hold.");
+
+        ui_label("Sustain either side", scale);
+        ImGui::SetNextItemWidth(-1.0f);
+        ui_time_slider("##legato_margin", &cfg->legato_margin_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
+                       &g_legato_margin_drag);
+        ui_hint("How much of the note being left each move keeps in front of its departure, and how much of the note landed "
+                "on past its arrival. Room for FastSampler's two crossfades rather than something that is played as such: the "
+                "sampler starts the move one fade before the departure and ends it one fade past the arrival, so this only "
+                "sets how long those fades may be. Half a second lets a slow line blend over a long crossfade; a fast run "
+                "never reaches most of it. The part in front of the departure is held in RAM, so a longer margin costs "
+                "memory per move.");
+        ImGui::EndDisabled();
+        if (cfg->round_robins > 1 && !cfg->dynamic_layers) {
+            ui_note("The moves are captured once and shared by every round robin.");
+        }
     }
     ui_section_end(scale);
 
@@ -691,7 +721,10 @@ static void ui_tab_resample(App* app, float scale) {
 
     // The samples: where they go, the script, the render.
     ui_section("Output", scale);
-    ui_folder_row("Folder", cfg->output_dir, busy, &app->output_dir_pick_request, scale);
+    ui_target_folder_row("Folder", cfg, cfg->output_dir, &cfg->output_dir_override, busy,
+                         &app->output_dir_pick_request, scale);
+    ui_hint("The full WAV and the sample files go under the root project folder, in Instrument\\Articulation\\Microphone. "
+            "Tick the box to put them somewhere else.");
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Generate split samples", &cfg->split_samples);
     ImGui::EndDisabled();
@@ -771,7 +804,10 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ui_hint("What every sample is stored at, in the preload block and in the streams both. "
             "16-bit halves the bank; 24-bit keeps the render's own depth.");
-    ui_folder_row("Folder", cfg->export_dir, busy, &app->export_dir_pick_request, scale);
+    ui_target_folder_row("Folder", cfg, cfg->export_dir, &cfg->export_dir_override, busy,
+                         &app->export_dir_pick_request, scale);
+    ui_hint("The .fsi and .fsb go under the root project folder as well, beside the samples. "
+            "Tick the box to put the instrument somewhere else.");
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Export .rzc files", &cfg->export_rzc);
     ImGui::EndDisabled();
@@ -984,6 +1020,101 @@ static void ui_draw_side_panel(App* app, ImVec2 size, float scale) {
     ImGui::EndChild();
 }
 
+// --- Output log ----------------------------------------------------------------
+
+// The line count the ledger last scrolled for. A new line takes it to the
+// bottom; nothing else moves it, so the user can read back through a run.
+static int g_ui_log_written = -1;
+
+// What a drag on the grip has moved that the whole pixels did not take yet.
+// Kept between frames so a slow drag at a fractional scale still moves.
+static float g_ui_log_grip_carry = 0.0f;
+
+// The grip along the top edge of the strip: a drag on it makes the ledger
+// taller or shorter. It only grips while the ledger is open, as a folded one
+// has no height to set.
+static void ui_log_grip(App* app, float scale) {
+    float grip_h = UI_LOG_GRIP_HEIGHT * scale;
+    ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
+    ImGui::InvisibleButton("##loggrip", ImVec2(ImGui::GetWindowWidth(), grip_h));
+    bool live = app->settings.log_expanded;
+    if (live && (ImGui::IsItemHovered() || ImGui::IsItemActive())) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    if (ImGui::IsItemActivated()) g_ui_log_grip_carry = 0.0f;
+    if (live && ImGui::IsItemActive()) {
+        // Up is taller: the strip keeps its bottom edge and takes room from
+        // the plugin area above it.
+        float want = g_ui_log_grip_carry - ImGui::GetIO().MouseDelta.y / scale;
+        int step = (int)want;
+        g_ui_log_grip_carry = want - (float)step;
+        if (step != 0) {
+            app->settings.log_height = fr_clampi(app->settings.log_height + step,
+                                                 (int)UI_LOG_MIN_BODY_HEIGHT, (int)UI_LOG_MAX_BODY_HEIGHT);
+        }
+    }
+    // A short bar in the middle of the edge says the strip can be dragged.
+    if (live) {
+        ImU32 color = ImGui::IsItemActive() ? CODE_COLOR_SECTION_U32
+                    : ImGui::IsItemHovered() ? ImGui::GetColorU32(CODE_COLOR_SLOT_LABEL_TEXT)
+                                             : CODE_COLOR_BORDER_U32;
+        ImVec2 lo = ImGui::GetItemRectMin();
+        ImVec2 hi = ImGui::GetItemRectMax();
+        float middle = (lo.x + hi.x) * 0.5f;
+        float half = 20.0f * scale;
+        float y = (lo.y + hi.y) * 0.5f;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(middle - half, y), ImVec2(middle + half, y), color, 2.0f * scale);
+    }
+    ImGui::SetCursorPos(ImVec2(ImGui::GetStyle().WindowPadding.x, grip_h));
+}
+
+// The output log: every status message, oldest first, over the keyboard. The
+// arrow folds the ledger down and opens it up again, the grip on the top
+// edge sets how tall it is.
+static void ui_draw_log(App* app, ImVec2 size, float scale) {
+    ImGui::BeginChild("##log", size, ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
+
+    ui_log_grip(app, scale);
+    bool expanded = app->settings.log_expanded;
+    if (ImGui::ArrowButton("##logfold", expanded ? ImGuiDir_Down : ImGuiDir_Up)) {
+        app->settings.log_expanded = !expanded;
+    }
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(CODE_COLOR_SECTION_VEC4, "OUTPUT LOG");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%d)", app->log_count);
+    float clear_w = 56.0f * scale;
+    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x - clear_w);
+    ImGui::BeginDisabled(app->log_count == 0);
+    if (ImGui::Button("Clear", ImVec2(clear_w, 0.0f))) app->log_clear_request = true;
+    ImGui::EndDisabled();
+
+    if (app->settings.log_expanded) {
+        ImGui::BeginChild("##loglines", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
+        if (app->log_count == 0) {
+            ui_note("Nothing yet. What a render, a build or a save reports comes here.");
+        }
+        for (int i = 0; i < app->log_count; ++i) {
+            const AppLogLine* line = app_log_line(app, i);
+            ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_SLOT_LABEL_TEXT);
+            ImGui::TextUnformatted(line->time);
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            if (line->is_error) {
+                ImGui::TextColored(CODE_COLOR_RED_VEC4, "%s", line->text);
+            } else {
+                ImGui::TextUnformatted(line->text);
+            }
+        }
+        if (g_ui_log_written != app->log_written) {
+            g_ui_log_written = app->log_written;
+            ImGui::SetScrollHereY(1.0f);
+        }
+        ImGui::EndChild();
+    }
+
+    ImGui::EndChild();
+}
+
 // --- Main area -----------------------------------------------------------------
 
 // The banned plugins of one format as menu items, named by their file. A
@@ -1141,12 +1272,13 @@ static void ui_draw_main_area(App* app, ImVec2 size, float scale) {
 void ui_draw_frame(App* app, float width, float height, float scale) {
     g_ui_show_tips = app->settings.show_tips;
     // The side panel is one column down the whole left edge; the main area
-    // and, under it, the keyboard share the rest.
+    // and, under it, the output log and the keyboard share the rest.
     float side_w = UI_SIDEPANEL_WIDTH * scale;
     float kb_h = UI_KEYBOARD_HEIGHT * scale;
+    float log_h = app_log_strip_height(app, height, scale);
     float main_w = width - side_w;
     if (main_w < 1.0f) main_w = 1.0f;
-    float main_h = height - kb_h;
+    float main_h = height - kb_h - log_h;
     if (main_h < 1.0f) main_h = 1.0f;
 
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
@@ -1167,6 +1299,9 @@ void ui_draw_frame(App* app, float width, float height, float scale) {
     ui_draw_main_area(app, ImVec2(main_w, main_h), scale);
 
     ImGui::SetCursorPos(ImVec2(side_w, main_h));
+    ui_draw_log(app, ImVec2(main_w, log_h), scale);
+
+    ImGui::SetCursorPos(ImVec2(side_w, main_h + log_h));
     ImGui::BeginChild("##keyboard", ImVec2(main_w, kb_h), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
     float pad = UI_PANEL_PADDING * scale;
     ImVec2 kb_pos = ImGui::GetWindowPos();

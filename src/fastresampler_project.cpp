@@ -138,8 +138,11 @@ bool project_save(const ResampleConfig* cfg, const char* name, char* err, size_t
     fprintf(f, "split_samples: %s\n", cfg->split_samples ? "true" : "false");
     fprintf(f, "export_rzc: %s\n", cfg->export_rzc ? "true" : "false");
     fprintf(f, "delete_full_wav: %s\n", cfg->delete_full_wav ? "true" : "false");
+    project_write_string(f, "root_dir", cfg->root_dir);
     project_write_string(f, "output_dir", cfg->output_dir);
+    fprintf(f, "output_dir_override: %s\n", cfg->output_dir_override ? "true" : "false");
     project_write_string(f, "export_dir", cfg->export_dir);
+    fprintf(f, "export_dir_override: %s\n", cfg->export_dir_override ? "true" : "false");
     fprintf(f, "preload_frames: %d\n", cfg->preload_frames);
     fprintf(f, "bit_depth: %d\n", cfg->bit_depth);
 
@@ -253,8 +256,17 @@ bool project_load(ResampleConfig* cfg, const char* name, char* err, size_t err_l
     out.split_samples = yaml_get_bool(root, "split_samples", out.split_samples);
     out.export_rzc = yaml_get_bool(root, "export_rzc", out.export_rzc);
     out.delete_full_wav = yaml_get_bool(root, "delete_full_wav", out.delete_full_wav);
+    fr_strcpy(out.root_dir, sizeof(out.root_dir), yaml_get_string(root, "root_dir", out.root_dir));
     fr_strcpy(out.output_dir, sizeof(out.output_dir), yaml_get_string(root, "output_dir", out.output_dir));
     fr_strcpy(out.export_dir, sizeof(out.export_dir), yaml_get_string(root, "export_dir", out.export_dir));
+    // A project from before the root project folder existed names the two
+    // folders it wrote to and no root; the root is read back off them.
+    if (yaml_find_child(root, "root_dir")) {
+        out.output_dir_override = yaml_get_bool(root, "output_dir_override", out.output_dir_override);
+        out.export_dir_override = yaml_get_bool(root, "export_dir_override", out.export_dir_override);
+    } else {
+        resample_config_root_from_dirs(&out);
+    }
     out.preload_frames = resample_valid_preload_frames(yaml_get_int(root, "preload_frames", out.preload_frames), out.preload_frames);
     out.bit_depth = resample_valid_bit_depth(yaml_get_int(root, "bit_depth", out.bit_depth), out.bit_depth);
 
