@@ -117,28 +117,26 @@ Layout of the window:
   reads its legato speed off the velocity needs -- Cinematic Studio Strings
   has three zones, 0-64, 65-100 and 101-127, so "30, 80, 110" captures its
   slow, medium and fast slur -- and the note left is pressed at the same
-  velocity. The sample runs from the lead before the second note-on to where
-  that note is released, and the instrument cuts it at the blend past the
-  arrival. Every move carries two frames: the departure, where it leaves the
+  velocity. Every move carries two frames: the departure, where it leaves the
   note it is played from, and the arrival, where it has reached the note it
   goes to. Both take a nominal time per velocity; with Detect on, the build
   reads the real pair out of the audio instead (see
   `src/fastresampler_legato.h`) and keeps the nominal for a move it cannot
-  hear apart. The instrument puts the moves in one collection per interval,
-  mapped and rooted on the note each was left from, and gives every
-  collection of notes FastSampler's legato effect with one link row per
-  interval, each row answering for its own width and no other. The two
-  crossfades come out of the capture, and the two frames place them: the
-  note being left finishes fading at the departure, over the lead, which is
-  how much of itself the transition sample carries in front of the move, and
-  the sustain of the note landed on starts at the arrival and rises over the
-  blend, which is what the transition fades out across. Both are equal
-  power, and between the two frames neither sustain sounds, so nothing but
-  the move itself is heard while the pitch is on its way. The move's own
-  zone envelope carries its rise, as nothing in the legato effect fades a
-  transition in. The lead is
-  short because it plays before the move even starts, so it is added to the
-  wait between the key and the new note. A looped sustain needs no way out of its
+  hear apart. The sample is then cut one margin before the departure and one
+  margin past the arrival, so every move keeps the same amount of the note
+  being left in front of it and of the note landed on behind it, whatever the
+  library's own delay was. The instrument puts the moves in one collection
+  per interval, mapped and rooted on the note each was left from, and gives
+  every collection of notes FastSampler's legato effect with one link row per
+  interval, each row answering for its own width and no other. The
+  crossfades are the sampler's: it starts a move one fade-in before the
+  departure, fading the note being left across that same time, and fades the
+  move out at the arrival while the sustain of the note landed on rises, so
+  between the two frames nothing but the move itself is heard. The margin is
+  room for those fades, not something that is played as such, and a
+  transition zone carries no envelope of its own. The part in front of the
+  departure is held in RAM, so a longer margin costs memory per move. A
+  looped sustain needs no way out of its
   loop: the legato effect fades the voice it leaves, and the voice keeps
   looping under that fade. With dynamic layers every layer gets its own
   moves and its own links, and its releases stay in the collection of their

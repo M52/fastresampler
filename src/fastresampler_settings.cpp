@@ -202,10 +202,8 @@ bool settings_load(Settings* s, const char* path) {
             s->resample.legato_overlap_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
         } else if (strcmp(key, "resample_legato_hold_ms") == 0) {
             s->resample.legato_hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
-        } else if (strcmp(key, "resample_legato_lead_ms") == 0) {
-            s->resample.legato_lead_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
-        } else if (strcmp(key, "resample_legato_blend_ms") == 0) {
-            s->resample.legato_blend_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+        } else if (strcmp(key, "resample_legato_margin_ms") == 0) {
+            s->resample.legato_margin_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
         } else if (strcmp(key, "resample_instrument") == 0) {
             fr_strcpy(s->resample.instrument, sizeof(s->resample.instrument), value);
         } else if (strcmp(key, "resample_articulation") == 0) {
@@ -329,8 +327,7 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_legato_source_hold_ms %d\n", (int)(s->resample.legato_source_hold_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_legato_overlap_ms %d\n", (int)(s->resample.legato_overlap_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_legato_hold_ms %d\n", (int)(s->resample.legato_hold_seconds * 1000.0f + 0.5f));
-    fprintf(f, "resample_legato_lead_ms %d\n", (int)(s->resample.legato_lead_seconds * 1000.0f + 0.5f));
-    fprintf(f, "resample_legato_blend_ms %d\n", (int)(s->resample.legato_blend_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_legato_margin_ms %d\n", (int)(s->resample.legato_margin_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_instrument \"%s\"\n", s->resample.instrument);
     fprintf(f, "resample_articulation \"%s\"\n", s->resample.articulation);
     fprintf(f, "resample_microphone \"%s\"\n", s->resample.microphone);

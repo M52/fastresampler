@@ -29,18 +29,18 @@
 // makes the plugin play a move at all: the note landed on goes down while
 // the note left is still held.
 //
-// The lead and the blend are the two crossfades. The lead is short: it is
-// played back before the move even begins, so every millisecond of it is
-// added to the wait between the key and the new note, and it holds plain
-// sustain rather than anything the player did. 80 ms is five periods of a
-// cello's C and ten of a violin's, which is long enough to come in without
-// a click. The blend costs nothing, as it runs while the note landed on is
-// already sounding, so it takes the time a bowed note needs to settle.
+// The margin is the sustain a transition sample keeps either side of its
+// move: the note being left in front of the departure, the note landed on
+// past the arrival. It is room for FastSampler's two crossfades, not
+// something that is played as such: the sampler starts the transition one
+// fade-in before the departure and ends it one fade-out past the arrival,
+// so the margin only sets how long those fades are allowed to be. Half a
+// second lets a slow line blend over a long crossfade; a fast run never
+// reaches most of it.
 #define RESAMPLE_DEFAULT_LEGATO_SOURCE_HOLD_SECONDS 1.5f
 #define RESAMPLE_DEFAULT_LEGATO_OVERLAP_SECONDS     0.1f
 #define RESAMPLE_DEFAULT_LEGATO_HOLD_SECONDS        2.0f
-#define RESAMPLE_DEFAULT_LEGATO_LEAD_SECONDS        0.08f
-#define RESAMPLE_DEFAULT_LEGATO_BLEND_SECONDS       0.15f
+#define RESAMPLE_DEFAULT_LEGATO_MARGIN_SECONDS      0.5f
 // What a library takes to land on the note, when nothing says otherwise.
 #define RESAMPLE_LEGATO_ARRIVAL_MS                  120
 #define RESAMPLE_DEFAULT_LEGATO_ARRIVAL_MS          "120"
@@ -70,8 +70,7 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->legato_source_hold_seconds = RESAMPLE_DEFAULT_LEGATO_SOURCE_HOLD_SECONDS;
     cfg->legato_overlap_seconds = RESAMPLE_DEFAULT_LEGATO_OVERLAP_SECONDS;
     cfg->legato_hold_seconds = RESAMPLE_DEFAULT_LEGATO_HOLD_SECONDS;
-    cfg->legato_lead_seconds = RESAMPLE_DEFAULT_LEGATO_LEAD_SECONDS;
-    cfg->legato_blend_seconds = RESAMPLE_DEFAULT_LEGATO_BLEND_SECONDS;
+    cfg->legato_margin_seconds = RESAMPLE_DEFAULT_LEGATO_MARGIN_SECONDS;
     cfg->sample_rate = RESAMPLE_DEFAULT_SAMPLE_RATE;
     cfg->render_speed = RESAMPLE_DEFAULT_RENDER_SPEED;
     cfg->split_samples = true;
@@ -709,21 +708,21 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             fr_strcpy(err, err_len, "Legato: the overlap must be shorter than the hold of the note landed on");
             return false;
         }
-        if (cfg->legato_lead_seconds < 0.0f || cfg->legato_lead_seconds > cfg->legato_source_hold_seconds) {
-            fr_strcpy(err, err_len, "Legato: the lead must fit inside the hold of the note left");
+        if (cfg->legato_margin_seconds <= 0.0f) {
+            fr_strcpy(err, err_len, "Legato: the sustain either side must be longer than 0 seconds");
             return false;
         }
-        if (cfg->legato_blend_seconds <= 0.0f) {
-            fr_strcpy(err, err_len, "Legato: the blend must be longer than 0 seconds");
+        if (cfg->legato_margin_seconds > cfg->legato_source_hold_seconds) {
+            fr_strcpy(err, err_len, "Legato: the sustain either side must fit inside the hold of the note left");
             return false;
         }
-        // Every capture has to reach past the landing, or the sample the
-        // instrument cuts from it stops before the note it lands on.
+        // Every capture has to reach one margin past the landing, or the
+        // sample the instrument cuts from it stops before the note it lands on.
         for (int i = 0; i < legato_velocity_count; ++i) {
-            float needed = (float)arrivals[i] / 1000.0f + cfg->legato_blend_seconds;
+            float needed = (float)arrivals[i] / 1000.0f + cfg->legato_margin_seconds;
             if (needed > cfg->legato_hold_seconds) {
-                snprintf(err, err_len, "Legato: a %d ms arrival and a %.0f ms blend need a hold of at least %.2f s",
-                         arrivals[i], cfg->legato_blend_seconds * 1000.0f, (double)needed);
+                snprintf(err, err_len, "Legato: a %d ms arrival and %.0f ms of sustain either side need a hold of at least %.2f s",
+                         arrivals[i], cfg->legato_margin_seconds * 1000.0f, (double)needed);
                 return false;
             }
         }
@@ -810,13 +809,14 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
 
     // The moves, after every note has been sampled. One capture holds the
     // note it leaves, puts the note it lands on down over it, and lets the
-    // first go; the sample runs from the lead before that second note-on to
-    // where the second note is released.
+    // first go; the sample runs from one margin before that second note-on
+    // to where the second note is released, and the instrument build cuts
+    // it to one margin either side of the move it finds inside.
     if (cfg->legato) {
         int64_t source_hold_frames = (int64_t)((double)cfg->legato_source_hold_seconds * sample_rate + 0.5);
         int64_t overlap_frames = (int64_t)((double)cfg->legato_overlap_seconds * sample_rate + 0.5);
         int64_t target_hold_frames = (int64_t)((double)cfg->legato_hold_seconds * sample_rate + 0.5);
-        int64_t lead_frames = (int64_t)((double)cfg->legato_lead_seconds * sample_rate + 0.5);
+        int64_t margin_frames = (int64_t)((double)cfg->legato_margin_seconds * sample_rate + 0.5);
         float legato_span = cfg->legato_source_hold_seconds + cfg->legato_hold_seconds + cfg->gap_seconds;
         for (int source = low; source <= high; source += cfg->legato_step) {
             for (int i = 0; i < interval_count; ++i) {
@@ -835,7 +835,7 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
                         ResampleSegment* seg = &script->segments[script->segment_count++];
                         memset(seg, 0, sizeof(*seg));
                         seg->kind = RESAMPLE_SEG_TRANSITION;
-                        seg->start_frame = target_on - lead_frames;
+                        seg->start_frame = target_on - margin_frames;
                         seg->off_frame = target_on;
                         seg->end_frame = target_off;
                         seg->note = (uint8_t)target;
@@ -847,8 +847,8 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
                         // the instrument build reads both out of the audio.
                         // Nothing moves before the key that asked for it went
                         // down, so the note-on is the nominal departure.
-                        seg->departure_frame = lead_frames;
-                        seg->arrival_frame = lead_frames + (int64_t)((double)arrivals[v] * sample_rate / 1000.0 + 0.5);
+                        seg->departure_frame = margin_frames;
+                        seg->arrival_frame = margin_frames + (int64_t)((double)arrivals[v] * sample_rate / 1000.0 + 0.5);
                         fits = fits && resample_add(script, source_on, midi_make(MIDI_STATUS_NOTE_ON, 0, source, velocity));
                         fits = fits && resample_add(script, target_on, midi_make(MIDI_STATUS_NOTE_ON, 0, target, velocity));
                         fits = fits && resample_add(script, source_off, midi_make(MIDI_STATUS_NOTE_OFF, 0, source, 0));
@@ -885,18 +885,17 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     for (int i = 0; i < interval_count; ++i) script->intervals[i] = intervals[i];
     script->legato_velocity_count = legato_velocity_count;
     script->transition_count = transition_total;
-    script->lead_seconds = cfg->legato_lead_seconds;
-    script->blend_seconds = cfg->legato_blend_seconds;
+    script->margin_seconds = cfg->legato_margin_seconds;
     script->built = true;
     fr_log("resample: %d notes x %d velocities x %d %s = %d samples, %d CC curves, %d events, %.1f s at %.0f Hz, pre-roll %s",
            note_count, velocity_count, cfg->round_robins, cfg->dynamic_layers ? "dynamic layers" : "round robins",
            sustain_total, cfg->cc_curve_count, script->count,
            (double)t / sample_rate, sample_rate, preroll ? "on" : "off");
     if (cfg->legato) {
-        fr_log("resample: plus %d moves: %d intervals from every %s x %d velocities x %d layer%s, lead %.0f ms, blend %.0f ms",
+        fr_log("resample: plus %d moves: %d intervals from every %s x %d velocities x %d layer%s, %.0f ms of sustain either side",
                transition_total, interval_count, resample_step_label(cfg->legato_step),
                legato_velocity_count, layer_count, layer_count == 1 ? "" : "s",
-               (double)cfg->legato_lead_seconds * 1000.0, (double)cfg->legato_blend_seconds * 1000.0);
+               (double)cfg->legato_margin_seconds * 1000.0);
     }
     return true;
 }

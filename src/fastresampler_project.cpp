@@ -132,8 +132,7 @@ bool project_save(const ResampleConfig* cfg, const char* name, char* err, size_t
     fprintf(f, "legato_source_hold_ms: %d\n", project_ms(cfg->legato_source_hold_seconds));
     fprintf(f, "legato_overlap_ms: %d\n", project_ms(cfg->legato_overlap_seconds));
     fprintf(f, "legato_hold_ms: %d\n", project_ms(cfg->legato_hold_seconds));
-    fprintf(f, "legato_lead_ms: %d\n", project_ms(cfg->legato_lead_seconds));
-    fprintf(f, "legato_blend_ms: %d\n", project_ms(cfg->legato_blend_seconds));
+    fprintf(f, "legato_margin_ms: %d\n", project_ms(cfg->legato_margin_seconds));
     fprintf(f, "sample_rate: %d\n", cfg->sample_rate);
     fprintf(f, "render_speed: %d\n", cfg->render_speed);
     fprintf(f, "split_samples: %s\n", cfg->split_samples ? "true" : "false");
@@ -248,8 +247,7 @@ bool project_load(ResampleConfig* cfg, const char* name, char* err, size_t err_l
     out.legato_source_hold_seconds = project_seconds(root, "legato_source_hold_ms", out.legato_source_hold_seconds, 1);
     out.legato_overlap_seconds = project_seconds(root, "legato_overlap_ms", out.legato_overlap_seconds, 0);
     out.legato_hold_seconds = project_seconds(root, "legato_hold_ms", out.legato_hold_seconds, 1);
-    out.legato_lead_seconds = project_seconds(root, "legato_lead_ms", out.legato_lead_seconds, 0);
-    out.legato_blend_seconds = project_seconds(root, "legato_blend_ms", out.legato_blend_seconds, 1);
+    out.legato_margin_seconds = project_seconds(root, "legato_margin_ms", out.legato_margin_seconds, 1);
     out.sample_rate = resample_valid_sample_rate(yaml_get_int(root, "sample_rate", out.sample_rate));
     out.render_speed = resample_valid_render_speed(yaml_get_int(root, "render_speed", out.render_speed), out.render_speed);
     out.split_samples = yaml_get_bool(root, "split_samples", out.split_samples);

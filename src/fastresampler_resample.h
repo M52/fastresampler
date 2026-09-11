@@ -139,8 +139,7 @@ struct ResampleConfig {
     float legato_source_hold_seconds;               // source note-on to target note-on
     float legato_overlap_seconds;                   // target note-on to source note-off
     float legato_hold_seconds;                      // target note-on to target note-off
-    float legato_lead_seconds;                      // source sustain kept before the target note-on
-    float legato_blend_seconds;                     // target sustain kept past the landing
+    float legato_margin_seconds;                    // sustain kept either side of the move: before its departure, past its arrival
 
     int   sample_rate;                              // the render's rate; 0 = the audio device's
     int   render_speed;                             // realtime multiple the render is held to; 0 = unlimited
@@ -188,10 +187,11 @@ struct ResampleEvent {
 // One wanted sample: its span in the full file and what to call it.
 //
 // A transition reads the same fields differently: note is the note landed
-// on, start_frame is the lead before its note-on and off_frame that note-on
-// itself, and end_frame is where it is released. arrival_frame, from
-// start_frame, is where the move lands on the note -- the nominal one until
-// the instrument build reads it out of the audio.
+// on, start_frame is one margin before its note-on and off_frame that
+// note-on itself, and end_frame is where it is released. departure_frame and
+// arrival_frame, from start_frame, are where the move leaves the first note
+// and lands on the second -- the nominal ones until the instrument build
+// reads them out of the audio.
 struct ResampleSegment {
     int64_t start_frame;     // the real note-on
     int64_t off_frame;       // the note-off, hold later: where a release sample starts
@@ -229,8 +229,7 @@ struct ResampleScript {
     int             interval_count;
     int             legato_velocity_count;
     int             transition_count;   // segments of RESAMPLE_SEG_TRANSITION
-    float           lead_seconds;       // what the transition samples keep either side of the move
-    float           blend_seconds;
+    float           margin_seconds;     // what the transition samples keep either side of the move
 
     bool            built;
 };

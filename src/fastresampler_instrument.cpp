@@ -76,8 +76,6 @@ struct InstrumentZoneMap {
     uint32_t xfade_frames;
     uint32_t departure;      // a transition: where the move leaves, from first_frame
     uint32_t arrival;        // a transition: where the move lands, from first_frame
-    float    head_seconds;   // a transition: the fade it comes in over, the lead
-    float    tail_seconds;   // a transition: the fade its last moments take, the blend
 };
 
 // --- The collections of a run -----------------------------------------------------
@@ -302,7 +300,7 @@ static int instrument_map_transitions(const ResampleScript* script, InstrumentZo
                                            INSTRUMENT_FIELD_SOURCE, sources, MIDI_NOTE_COUNT);
     int velocity_count = instrument_distinct(script, RESAMPLE_SEG_TRANSITION, layer, interval,
                                              INSTRUMENT_FIELD_VELOCITY, velocities, RESAMPLE_MAX_LEGATO_VELOCITIES);
-    int64_t blend = (int64_t)((double)script->blend_seconds * script->sample_rate + 0.5);
+    int64_t margin = (int64_t)((double)script->margin_seconds * script->sample_rate + 0.5);
 
     int count = 0;
     for (int n = 0; n < source_count; ++n) {
@@ -330,10 +328,8 @@ static int instrument_map_transitions(const ResampleScript* script, InstrumentZo
             z->departure = (uint32_t)s->departure_frame;
             z->arrival = (uint32_t)s->arrival_frame;
             int64_t captured = s->end_frame - s->start_frame;
-            int64_t wanted = s->arrival_frame + blend;
+            int64_t wanted = s->arrival_frame + margin;
             z->frame_count = wanted < captured ? wanted : captured;
-            z->head_seconds = script->lead_seconds;
-            z->tail_seconds = script->blend_seconds;
             if (z->frame_count <= 0) continue;
             count++;
         }
@@ -390,19 +386,14 @@ static void instrument_zone_name(const char* prefix, const ResampleScript* scrip
 // note-off of a note that was still sounding and would otherwise step from
 // silence to that level on every key-up.
 //
-// A transition carries four more things. attack is the lead: a transition
-// sample starts in the middle of the note being left, at whatever level that
-// note was at, and nothing else fades it in -- the legato effect ducks the
-// note being left and raises the note landed on, but the move itself has
-// only its own envelope. Without this the move begins with a step from
-// silence to a sounding note, which clicks on every one of them.
-// departureframe and arrivalframe are the two bounds of the move, and each
-// places one half of the handover: FastSampler finishes fading the note
-// being left at the departure and starts the sustain of the note landed on
-// at the arrival, so neither sustain sounds while the pitch is on its way
-// between them. release is the blend, and a transition voice takes no key
-// release, so FastSampler reads it as the fade the sample ends on -- the
-// other half of the crossfade the sustain rises through.
+// A transition carries no envelope of its own and two more frames.
+// departureframe and arrivalframe are the two bounds of the move, and
+// FastSampler's legato effect shapes every edge from them: it starts the
+// voice one fade-in before the departure, fading the note being left across
+// that same time, and fades the voice out at the arrival while the sustain
+// of the note landed on rises, so neither sustain sounds while the pitch is
+// on its way between them. A zone attack or release here would double one
+// of those fades with a curve that is not its complement.
 static void instrument_fill_zone(FSIZone* dst, const char* name, const InstrumentZoneMap* map, uint32_t offset,
                                  bool ignore_velocity) {
     uint32_t frames = (uint32_t)map->frame_count;
@@ -410,12 +401,10 @@ static void instrument_fill_zone(FSIZone* dst, const char* name, const Instrumen
     if (map->transition) ignore_velocity = true;
     memset(dst, 0, sizeof(*dst));
     fr_strcpy(dst->name, sizeof(dst->name), name);
-    dst->attack = map->transition ? map->head_seconds
-                : map->release ? INSTRUMENT_RELEASE_ATTACK_SECONDS
-                : 0.0f;
+    dst->attack = map->release ? INSTRUMENT_RELEASE_ATTACK_SECONDS : 0.0f;
     dst->decay = 0.0f;
     dst->sustain = 1.0f;
-    dst->release = map->transition ? map->tail_seconds : INSTRUMENT_ZONE_RELEASE_SECONDS;
+    dst->release = map->transition ? 0.0f : INSTRUMENT_ZONE_RELEASE_SECONDS;
     dst->startframe = offset;
     dst->endframe = offset + frames;
     dst->loopstart = offset + (loop ? map->loop_start : 0);
@@ -526,62 +515,40 @@ static void instrument_fill_layer_fx(FSICollectionFX* fx, int collection_index, 
 // forked, and the two collide. Compare the pair when it changes.
 #define INSTRUMENT_COLLECTION_FLAG_REFERENCED (1 << 3)
 
-// The shape both handovers take, as the legato effect numbers them: 2 is
-// Equal Power. The two sides of a move are the same players in the same
-// room, so they are partly correlated, and a linear crossfade of correlated
-// material dips in the middle.
-#define INSTRUMENT_LEGATO_EQUAL_POWER  2
-
-// The time the effect falls back to when a zone carries no arrival, which is
-// the mean of the arrivals the zones do carry.
-static float instrument_mean_arrival_ms(const ResampleScript* script, const InstrumentZoneMap* map, int zone_count) {
-    int64_t lead = (int64_t)((double)script->lead_seconds * script->sample_rate + 0.5);
-    double sum = 0.0;
-    int count = 0;
-    for (int z = 0; z < zone_count; ++z) {
-        if (!map[z].transition) continue;
-        sum += (double)((int64_t)map[z].arrival - lead);
-        count++;
-    }
-    if (count == 0) return 0.0f;
-    double ms = sum / (double)count / script->sample_rate * 1000.0;
-    return (float)(ms > 0.0 ? ms : 0.0);
-}
-
-// FastSampler's legato effect on one sustain collection. Both handovers come
-// out of the capture. The note being left fades over the lead, which is
-// exactly the length of itself the transition sample carries in front of the
-// move and the same time that sample's own attack rises over, so the two
-// copies of the note cross rather than double. The note landed on rises over
-// the blend, which is what the transition fades out across past the arrival,
-// so those two cross as well.
+// FastSampler's legato effect on one sustain collection, with the sampler's
+// own defaults for every fade and the two things this run knows better.
+// The fades are clamped to the margin, which is all the room a move has for
+// them. When the run captured the moves at more than one velocity, those
+// layers are the library's legato speeds, and the sampler's own reading of
+// the playing speed is what should pick between them; a single layer is
+// played at the velocity of the note, as any zone is.
 //
-// Both shapes are equal power. The arrival needs it: the two sides there are
-// separate takes of the same note, which add as power rather than as
-// amplitude. The departure crosses an equal power fall against the zone
-// envelope's straight attack, as the .fsi carries no bend for it, and that
-// pair dips 1.5 dB at worst over a lead of a few tens of milliseconds --
-// less than the 3 dB two straight ramps would lose.
+// The shape is equal power: the two sides of each crossfade are separate
+// takes of the same note, which add as power rather than as amplitude.
 static void instrument_fill_legato_fx(FSICollectionFX* fx, int collection_index, const ResampleScript* script,
-                                      float arrival_ms, float overlap_ms) {
+                                      float window_ms) {
     memset(fx, 0, sizeof(*fx));
     fx->type = (uint32_t)COLLECTION_FX_LEGATO;
     fx->collection_index = (uint32_t)collection_index;
-    fx->params_count = CFX_LEGATO_VEL_FIXED + 1;
+    fx->params_count = CFX_LEGATO_PARAM_COUNT;
+    float margin_ms = script->margin_seconds * 1000.0f;
+    float in_slow = LEGATO_DEFAULT_FADE_IN_SLOW_MS < margin_ms ? LEGATO_DEFAULT_FADE_IN_SLOW_MS : margin_ms;
+    float in_fast = LEGATO_DEFAULT_FADE_IN_FAST_MS < margin_ms ? LEGATO_DEFAULT_FADE_IN_FAST_MS : margin_ms;
+    float out = LEGATO_DEFAULT_FADE_OUT_MS < margin_ms ? LEGATO_DEFAULT_FADE_OUT_MS : margin_ms;
     fx->params[CFX_STRENGTH] = 1.0f;
-    fx->params[CFX_LEGATO_ARRIVAL_MS] = arrival_ms;
-    fx->params[CFX_LEGATO_SRC_DELAY_MS] = 0.0f;
-    fx->params[CFX_LEGATO_SRC_FADE_MS] = script->lead_seconds * 1000.0f;
-    fx->params[CFX_LEGATO_SRC_SHAPE] = (float)INSTRUMENT_LEGATO_EQUAL_POWER;
-    fx->params[CFX_LEGATO_TGT_DELAY_MS] = 0.0f;
-    fx->params[CFX_LEGATO_TGT_FADE_MS] = script->blend_seconds * 1000.0f;
-    fx->params[CFX_LEGATO_TGT_SHAPE] = (float)INSTRUMENT_LEGATO_EQUAL_POWER;
-    fx->params[CFX_LEGATO_OVERLAP_MS] = overlap_ms;
-    fx->params[CFX_LEGATO_MONO] = 1.0f;
+    fx->params[CFX_LEGATO_FADE_IN_SLOW] = in_slow;
+    fx->params[CFX_LEGATO_FADE_IN_FAST] = in_fast;
+    fx->params[CFX_LEGATO_FADE_OUT] = out;
+    fx->params[CFX_LEGATO_SLOW_AT_MS] = LEGATO_DEFAULT_SLOW_AT_MS;
+    fx->params[CFX_LEGATO_FAST_AT_MS] = LEGATO_DEFAULT_FAST_AT_MS;
+    fx->params[CFX_LEGATO_FASTEST_MS] = 0.0f;
+    fx->params[CFX_LEGATO_LAND_OFFSET] = 0.0f;
+    fx->params[CFX_LEGATO_LAND_START] = LEGATO_DEFAULT_START_MS;
+    fx->params[CFX_LEGATO_SHAPE] = (float)LEGATO_SHAPE_EQUAL_POWER;
+    fx->params[CFX_LEGATO_WINDOW_MS] = window_ms;
     fx->params[CFX_LEGATO_RETURN] = 1.0f;
-    // The note pressed picks the move, which is what a library that reads
-    // its legato speed off the velocity needs.
-    fx->params[CFX_LEGATO_VEL_SOURCE] = (float)LEGATO_VEL_FROM_NOTE;
+    fx->params[CFX_LEGATO_VEL_SOURCE] = (float)(script->legato_velocity_count > 1 ? LEGATO_VEL_FROM_SPEED
+                                                                                   : LEGATO_VEL_FROM_NOTE);
     fx->params[CFX_LEGATO_VEL_FIXED] = 1.0f;
 }
 
@@ -760,11 +727,26 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
     ok = ok && fwrite(rows, sizeof(FSBZoneEntry), (size_t)zone_count, f) == (size_t)zone_count;
 
     // The preload block: the resident head of every sample, one after the other.
+    //
+    // A legato voice starts deep inside its sample: a transition one fade-in
+    // before its departure, a sustain landed on past its attack, at the
+    // legato effect's landing start. Both keep the same resident headroom
+    // ahead of them that any note has at its start, or their first block
+    // waits on the disk. FastSampler's own exporter applies the same rule.
+    const ResampleScript* script = job->script;
+    int64_t land_start = (int64_t)((double)LEGATO_DEFAULT_START_MS * wav->sample_rate / 1000.0 + 0.5);
     uint64_t preload_frame = 0;
     for (int z = 0; z < zone_count && ok; ++z) {
         if (job->cancel.load()) break;
         int64_t frames = map[z].frame_count;
         int64_t preload = ram_only || frames < (int64_t)job->cfg.preload_frames ? frames : (int64_t)job->cfg.preload_frames;
+        if (!ram_only && script->legato) {
+            int64_t reach = 0;
+            if (map[z].transition) reach = (int64_t)map[z].departure + (int64_t)job->cfg.preload_frames;
+            else if (!map[z].release) reach = land_start + (int64_t)job->cfg.preload_frames;
+            if (reach > frames) reach = frames;
+            if (reach > preload) preload = reach;
+        }
         size_t samples = (size_t)preload * (size_t)channels;
         float* pcm = (float*)malloc(samples * sizeof(float));
         uint8_t* packed = (uint8_t*)malloc(samples * (size_t)bytes_per_sample);
@@ -934,12 +916,14 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
     // run shares the one set.
     msg->collection_links_count = 0;
     if (script->legato) {
-        float arrival_ms = instrument_mean_arrival_ms(script, map, zone_count);
-        float overlap_ms = job->cfg.legato_overlap_seconds * 1000.0f;
+        // The capture's overlap is how long the note left stayed down after
+        // the next went down, so a key that comes up that soon before the
+        // next goes down still counts as the note a move leaves from.
+        float window_ms = job->cfg.legato_overlap_seconds * 1000.0f;
         for (int c = 0; c < collection_count; ++c) {
             if (fsi_index[c] < 0 || plan[c].kind != INSTRUMENT_COL_SUSTAIN) continue;
             instrument_fill_legato_fx(&msg->collection_fx[msg->collection_fx_count++], fsi_index[c],
-                                      script, arrival_ms, overlap_ms);
+                                      script, window_ms);
             int layer = script->dynamic_layers ? plan[c].layer : 1;
             for (int i = 0; i < script->interval_count; ++i) {
                 int target = instrument_find_transition(plan, collection_count, layer, script->intervals[i]);
@@ -1128,7 +1112,7 @@ static void instrument_refine_arrivals(InstrumentJob* job, WavReader* wav, Instr
         fr_log("instrument: no room to read the arrivals; keeping the times the tab gave them");
         return;
     }
-    int64_t blend = (int64_t)((double)script->blend_seconds * script->sample_rate + 0.5);
+    int64_t margin = (int64_t)((double)script->margin_seconds * script->sample_rate + 0.5);
 
     int read = 0, moved = 0;
     double score_sum = 0.0;
@@ -1152,17 +1136,21 @@ static void instrument_refine_arrivals(InstrumentJob* job, WavReader* wav, Instr
         int64_t arrival = r.arrival;
         if (arrival < departure) arrival = departure;
         if (arrival > captured - 1) arrival = captured - 1;
-        // The sample keeps a blend past the landing, which is the half of the
-        // crossfade the sustain of the note landed on rises through. Cutting
-        // it at the departure instead would end it in the middle of the move,
-        // before the pitch has arrived anywhere.
-        int64_t wanted = arrival + blend;
+        // The sample keeps one margin either side of the move: the note
+        // being left in front of the departure, the note landed on past the
+        // arrival. The departure is never before the key that asked for the
+        // move, which is one margin into the capture, so the cut never
+        // reaches before what was analysed.
+        int64_t first = departure - margin;
+        if (first < 0) first = 0;
+        int64_t wanted = arrival + margin;
         if (wanted > captured) wanted = captured;
         shift_sum += arrival - (int64_t)map[z].arrival;
         moved++;
-        map[z].departure = (uint32_t)departure;
-        map[z].arrival = (uint32_t)arrival;
-        map[z].frame_count = wanted;
+        map[z].first_frame = seg->start_frame + first;
+        map[z].departure = (uint32_t)(departure - first);
+        map[z].arrival = (uint32_t)(arrival - first);
+        map[z].frame_count = wanted - first;
     }
     legato_analyzer_free(&analyzer);
 

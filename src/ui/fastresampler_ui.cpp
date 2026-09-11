@@ -169,8 +169,7 @@ static DragSliderState g_preroll_drag;
 static DragSliderState g_legato_source_hold_drag;
 static DragSliderState g_legato_overlap_drag;
 static DragSliderState g_legato_hold_drag;
-static DragSliderState g_legato_lead_drag;
-static DragSliderState g_legato_blend_drag;
+static DragSliderState g_legato_margin_drag;
 
 // A time in seconds, read in seconds from one second up and in
 // milliseconds below it.
@@ -614,23 +613,16 @@ static void ui_tab_resample(App* app, float scale) {
                    &g_legato_hold_drag);
     ui_hint("How long it is held. It has to reach past the arrival and the blend, so a slow slur needs a longer hold.");
 
-    ui_label("Lead", scale);
-    {
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
-        float blend_label_w = ImGui::CalcTextSize("Blend").x;
-        float slider_w = (ImGui::GetContentRegionAvail().x - blend_label_w - 2.0f * spacing) * 0.5f;
-        ImGui::SetNextItemWidth(slider_w);
-        ui_time_slider("##legato_lead", &cfg->legato_lead_seconds, 0.0f, UI_TIME_MAX_SECONDS, &g_legato_lead_drag);
-        ui_label_inline("Blend");
-        ImGui::SetNextItemWidth(-1.0f);
-        ui_time_slider("##legato_blend", &cfg->legato_blend_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
-                       &g_legato_blend_drag);
-    }
-    ui_hint("The two crossfades. The lead is how much of the note being left the move keeps in front of it: the move comes "
-            "in over that time and the instrument fades that note out over it, so the two copies cross instead of doubling. "
-            "It plays before the move starts, so it is also added to the wait between the key and the new note; keep it "
-            "short, and long enough not to click on a low note. The blend is how much of the note landed on the move keeps "
-            "past the arrival, and its sustain rises over the same time, which costs no delay at all.");
+    ui_label("Sustain either side", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ui_time_slider("##legato_margin", &cfg->legato_margin_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
+                   &g_legato_margin_drag);
+    ui_hint("How much of the note being left each move keeps in front of its departure, and how much of the note landed "
+            "on past its arrival. Room for FastSampler's two crossfades rather than something that is played as such: the "
+            "sampler starts the move one fade before the departure and ends it one fade past the arrival, so this only "
+            "sets how long those fades may be. Half a second lets a slow line blend over a long crossfade; a fast run "
+            "never reaches most of it. The part in front of the departure is held in RAM, so a longer margin costs "
+            "memory per move.");
     ImGui::EndDisabled();
     if (cfg->legato && cfg->round_robins > 1 && !cfg->dynamic_layers) {
         ui_note("The moves are captured once and shared by every round robin.");
@@ -806,10 +798,10 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::EndDisabled();
         if (app->resample_fsi_ready && app->resample_script.legato) {
             ui_hint("Maps the samples across keys and velocities in the folder above, and the moves with them: one collection "
-                    "per interval, reached from the notes through FastSampler's legato effect, each move cut at the blend past "
-                    "where it lands on its note. Every move carries the two frames it leaves and lands on, so the note being "
-                    "left finishes fading at the first and the note landed on starts at the second. Both come off the clock, "
-                    "or out of the audio when Detect is on.");
+                    "per interval, reached from the notes through FastSampler's legato effect, each move cut one margin "
+                    "before it leaves its note and one margin past where it lands on the next. Every move carries those "
+                    "two frames, and the sampler places its crossfades from them. Both come off the clock, or out of the "
+                    "audio when Detect is on.");
         } else if (app->resample_fsi_ready && app->resample_script.dynamic_layers) {
             ui_hint("Maps the samples across keys and velocities into a FastSampler instrument in the folder above: one looped zone "
                     "collection per dynamic layer and one of release samples for each, every collection's gain driven by the "
