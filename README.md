@@ -44,10 +44,12 @@ Details about the project:
   project's own format, so FastSampler's parser is copied into
   `src/fastresampler_yaml.*` and nothing about the projects depends on that
   checkout.
-- WavPack comes from the same checkout (`3rdparty/wavpack-4.80.0-dll`): the
-  import library is linked and `build.bat` copies `wavpackdll.dll` next to
-  the exe. The bank builder compresses the streamed part of every sample with
-  it, the way FastSampler's own export does.
+- WavPack comes from the same checkout (`3rdparty/wavpack-5.9.0-dll`), built
+  from source: `build.bat` calls FastSampler's `scripts/build-wavpack.bat`
+  into `build/wavpack/`, links that import library and copies that DLL next to
+  the exe. This project therefore gets FastSampler's fast entropy decoder. The
+  bank builder compresses the streamed part of every sample with it, the way
+  FastSampler's own export does.
 - Platform calls go through `src/platform/fastresampler_platform.h`. The audio
   backends (`src/platform/fastresampler_audio_*.cpp`) and the window glue
   (`src/fastresampler_view_win32.cpp`) are the only other files that may

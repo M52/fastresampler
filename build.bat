@@ -44,12 +44,18 @@ if not exist "%FASTSAMPLER_DIR%\src\fileformats\fastsampler.pb.h" (
 )
 
 rem WavPack, the DLL FastSampler ships, compresses the streamed part of a bank.
-rem The import library is linked and the DLL is copied next to the exe.
+rem It is built here from the sources FastSampler vendors, with FastSampler's
+rem own script and so with its fast entropy decoder, into this checkout's build
+rem directory. The import library is linked and the DLL is copied next to the exe.
 set WAVPACK_DIR=%FASTSAMPLER_DIR%\3rdparty\wavpack-5.9.0-dll
-if not exist "%WAVPACK_DIR%\x64\wavpackdll.dll" (
-    echo Error: WavPack not found at "%WAVPACK_DIR%\x64".
-    exit /b 1
+set WAVPACK_BUILD=%~dp0build\wavpack
+call "%FASTSAMPLER_DIR%\scripts\build-wavpack.bat" "%WAVPACK_BUILD%"
+if %ERRORLEVEL% neq 0 (
+    echo Error: Failed to build WavPack from "%FASTSAMPLER_DIR%".
+    exit /b %ERRORLEVEL%
 )
+rem That script runs from the FastSampler checkout; come back here.
+cd /d "%~dp0"
 
 rem The VST3 SDK, version 3.8.1: the first under the MIT licence.
 if "%VST3_SDK_DIR%"=="" set VST3_SDK_DIR=W:\vst-sdk_3.8.1\VST_SDK\vst3sdk
@@ -60,7 +66,7 @@ if not exist "%VST3_SDK_DIR%\pluginterfaces\base\funknown.h" (
 
 set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "%VST3_SDK_DIR%" /I "%FASTSAMPLER_DIR%\src" /I "%FASTSAMPLER_DIR%\src\fileformats" /I "%FASTSAMPLER_DIR%\3rdparty\nanopb" /I "%WAVPACK_DIR%"
 set DEFINES=/DUNICODE /D_UNICODE /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /DPB_FIELD_32BIT /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
-set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib shell32.lib dwmapi.lib "%WAVPACK_DIR%\x64\wavpackdll.lib"
+set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib shell32.lib dwmapi.lib "%WAVPACK_BUILD%\wavpackdll.lib"
 
 echo Compiling fastresampler.exe (build %BUILD_NUM%)...
 cl.exe %WARN_FLAGS% %OPT_FLAGS% /MT /EHsc /std:c++17 %DEFINES% %INCLUDES% src\fastresampler_win32.cpp /Fe"build\fastresampler.exe" /Fo"build/" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS%
@@ -70,6 +76,6 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 
-copy /y "%WAVPACK_DIR%\x64\wavpackdll.dll" build\ >nul
+copy /y "%WAVPACK_BUILD%\wavpackdll.dll" build\ >nul
 
 echo fastresampler.exe compiled successfully.
