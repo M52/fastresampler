@@ -61,21 +61,21 @@
 // the full WAV it plays. A round robin run maps every segment once, whole.
 // A dynamic layer run maps a sustain twice: the held note as a looped
 // sustain, and what rings out past the note-off as a release sample. A
-// transition is one zone, cut at the blend past where the move lands.
+// transition is one zone, cut at the blend past where it lands.
 struct InstrumentZoneMap {
     int segment;             // index into the script's segments
     int low_note, high_note, root_note;
     int low_velocity, high_velocity;
     int collection;          // 0-based; the zones of one collection are contiguous
     bool release;            // the release half: from the note-off to the end
-    bool transition;         // a move between two notes; root_note is the one it leaves
+    bool transition;         // a transition between two notes; root_note is the one it leaves
     int64_t first_frame;     // in the full WAV
     int64_t frame_count;
     uint32_t loop_start;     // a looped sustain, relative to first_frame; both 0 without a loop
     uint32_t loop_end;
     uint32_t xfade_frames;
-    uint32_t departure;      // a transition: where the move leaves, from first_frame
-    uint32_t arrival;        // a transition: where the move lands, from first_frame
+    uint32_t departure;      // a transition: where it departs, from first_frame
+    uint32_t arrival;        // a transition: where it lands, from first_frame
 };
 
 // --- The collections of a run -----------------------------------------------------
@@ -93,10 +93,10 @@ enum InstrumentCollectionKind {
 struct InstrumentCollectionPlan {
     int kind;
     int layer;       // 1-based
-    int interval;    // a transition: the move it holds
+    int interval;    // a transition: the interval it holds
 };
 
-// The moves are captured once per dynamic layer, and once for every other
+// The transitions are captured once per dynamic layer, and once for every other
 // run: a round robin run gives all its sustain collections the same
 // transitions.
 static int instrument_transition_layers(const ResampleScript* script) {
@@ -120,7 +120,7 @@ static int instrument_plan(const ResampleScript* script, InstrumentCollectionPla
     // sample map does not lay them under the notes they belong to, where they
     // are hard to even pick out. A legato run too: the collection names its
     // layer as the one whose releases it holds, which is how FastSampler
-    // still knows to hold a release back for a note a move has taken over --
+    // still knows to hold a release back for a note a transition has taken over --
     // the mark that says so is on the layer, not on the releases.
     if (script->dynamic_layers) {
         for (int k = 1; k <= script->round_robin_count; ++k) {
@@ -286,10 +286,10 @@ static int instrument_map_sustains(const ResampleScript* script, InstrumentZoneM
     return count;
 }
 
-// The transition zones of one collection: every note a move of this
+// The transition zones of one collection: every note a transition of this
 // interval was captured from, at every legato velocity. The key that plays
-// one is the note the move is left from, so that is the zone's root and what
-// its span covers. The zone stops a blend past where the move lands: what
+// one is the note it is left from, so that is the zone's root and what its
+// span covers. The zone stops a blend past where the transition lands: what
 // follows in the capture is the note landed on, which the sustain plays from
 // there.
 static int instrument_map_transitions(const ResampleScript* script, InstrumentZoneMap* out, int collection,
@@ -378,16 +378,16 @@ static void instrument_zone_name(const char* prefix, const ResampleScript* scrip
 // split file for a release in an .rzc. A dynamic layer run's zones ignore
 // velocity for their level, as the layers carry the dynamics, and so do a
 // legato run's: there the key is pressed at whatever velocity picks the
-// move, and a slur played softly to make it slow must not come out quiet as
-// well. A transition always does, as its level belongs to the move that was
-// captured.
+// transition, and a slur played softly to make it slow must not come out
+// quiet as well. A transition always does, as its level belongs to the one
+// that was captured.
 //
 // A release carries an attack of its own, short, because it starts at the
 // note-off of a note that was still sounding and would otherwise step from
 // silence to that level on every key-up.
 //
 // A transition carries no envelope of its own and two more frames.
-// departureframe and arrivalframe are the two bounds of the move, and
+// departureframe and arrivalframe are the two bounds of the transition, and
 // FastSampler's legato effect shapes every edge from them: it starts the
 // voice one fade-in before the departure, fading the note being left across
 // that same time, and fades the voice out at the arrival while the sustain
@@ -517,8 +517,9 @@ static void instrument_fill_layer_fx(FSICollectionFX* fx, int collection_index, 
 
 // FastSampler's legato effect on one sustain collection, with the sampler's
 // own defaults for every fade and the two things this run knows better.
-// The fades are clamped to the margin, which is all the room a move has for
-// them. When the run captured the moves at more than one velocity, those
+// The fades are clamped to the margin, which is all the room a transition
+// has for them. When the run captured the transitions at more than one
+// velocity, those
 // layers are the library's legato speeds, and the sampler's own reading of
 // the playing speed is what should pick between them; a single layer is
 // played at the velocity of the note, as any zone is.
@@ -552,6 +553,10 @@ static void instrument_fill_legato_fx(FSICollectionFX* fx, int collection_index,
     fx->params[CFX_LEGATO_VEL_FIXED] = 1.0f;
     fx->params[CFX_LEGATO_MATCH_DB] = LEGATO_DEFAULT_MATCH_DB;
     fx->params[CFX_LEGATO_MATCH_AMOUNT] = 100.0f;
+    fx->params[CFX_LEGATO_LENGTH_SLOW] = 100.0f;
+    fx->params[CFX_LEGATO_LENGTH_FAST] = 100.0f;
+    fx->params[CFX_LEGATO_RETURN_LENGTH_SLOW] = 100.0f;
+    fx->params[CFX_LEGATO_RETURN_LENGTH_FAST] = 100.0f;
 }
 
 // The intervals one link row answers for: its own, and nothing else.
@@ -863,7 +868,7 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
         col->zone_count = (uint32_t)count;
         col->modulator_count = 0;
         col->first_zone_index = (uint32_t)first;
-        // A collection of moves is only ever reached through a link, never
+        // A collection of transitions is only ever reached through a link, never
         // from the keyboard.
         col->has_flags = true;
         col->flags = plan[c].kind == INSTRUMENT_COL_TRANSITION ? INSTRUMENT_COLLECTION_FLAG_REFERENCED : 0;

@@ -339,15 +339,15 @@ void app_resample_build(App* app) {
     char curves[32] = "";
     int curve_count = app->settings.resample.cc_curve_count;
     if (curve_count > 0) snprintf(curves, sizeof(curves), ", %d CC curve%s", curve_count, curve_count == 1 ? "" : "s");
-    char moves[64] = "";
+    char transitions[64] = "";
     if (s->legato) {
-        snprintf(moves, sizeof(moves), " and %d moves over %d interval%s",
+        snprintf(transitions, sizeof(transitions), " and %d transitions over %d interval%s",
                  s->transition_count, s->interval_count, s->interval_count == 1 ? "" : "s");
     }
     snprintf(app->resample_build_text, sizeof(app->resample_build_text),
              "%d samples: %d notes x %d velocities x %d %s%s%s, %d events, %d:%02d of audio at %.0f Hz. First file: %s",
              s->segment_count, s->note_count, s->velocity_count, s->round_robin_count,
-             s->dynamic_layers ? "dynamic layers" : "round robins", moves, curves, s->count,
+             s->dynamic_layers ? "dynamic layers" : "round robins", transitions, curves, s->count,
              (int)seconds / 60, (int)seconds % 60, s->sample_rate, example);
     app->resample_build_is_error = false;
     settings_save(&app->settings, app->settings_path);

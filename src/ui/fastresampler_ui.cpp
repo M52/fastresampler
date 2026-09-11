@@ -412,7 +412,7 @@ static void ui_tab_resample(App* app, float scale) {
             snprintf(preview, sizeof(preview), "Files: %s_<Note>_<Velocity>_%s<n>.wav", prefix, cfg->dynamic_layers ? "dyn" : "RR");
             ui_note(preview);
             if (cfg->legato) {
-                snprintf(preview, sizeof(preview), "Moves: %s_<From>-<To>_<Velocity>_%sleg.wav", prefix,
+                snprintf(preview, sizeof(preview), "Transitions: %s_<From>-<To>_<Velocity>_%sleg.wav", prefix,
                          cfg->dynamic_layers ? "dyn<n>-" : "");
                 ui_note(preview);
             }
@@ -540,24 +540,24 @@ static void ui_tab_resample(App* app, float scale) {
 
     ui_section_end(scale);
 
-    // The moves between the notes: which ones are captured, and how each
-    // capture is laid out in time.
+    // The transitions between the notes: which ones are captured, and how
+    // each capture is laid out in time.
     ui_section("Legato", scale);
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Capture legato transitions", &cfg->legato);
     ImGui::EndDisabled();
     ui_hint("After every note has been sampled, the run holds one note, presses the next over it and lets the first go, "
-            "so whatever the plugin plays between them is captured. The instrument maps those moves to FastSampler's "
+            "so whatever the plugin plays between them is captured. The instrument maps those transitions to FastSampler's "
             "legato effect, which plays one whenever a key goes down while another is held.");
     ImGui::BeginDisabled(!cfg->legato || busy);
 
     ui_label("Intervals", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##legato_intervals", cfg->legato_intervals, sizeof(cfg->legato_intervals));
-    ui_hint("Widths in semitones, each captured up and down: \"1, 2\" is four moves from every note. Only these widths get "
-            "a move: a slur of any other width changes note without one, because a move of the wrong width would land on "
-            "the wrong note. Leave no gaps, and note that the notes below need no matching step -- a move keeps its width "
-            "when it is transposed, so spend the run on widths rather than on notes.");
+    ui_hint("Widths in semitones, each captured up and down: \"1, 2\" is four transitions from every note. Only these "
+            "widths get a transition: a slur of any other width changes note without one, because a transition of the "
+            "wrong width would land on the wrong note. Leave no gaps, and note that the notes below need no matching "
+            "step -- a transition keeps its width when it is transposed, so spend the run on widths rather than on notes.");
 
     ui_label("From every", scale);
     ImGui::SetNextItemWidth(-1.0f);
@@ -567,13 +567,14 @@ static void ui_tab_resample(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ui_hint("The notes the moves start from, which need not follow the notes above: moves are often sampled every semitone "
-            "where the sustains are sampled every wholetone. A key between two of them plays the move of the nearer one.");
+    ui_hint("The notes the transitions start from, which need not follow the notes above: transitions are often sampled "
+            "every semitone where the sustains are sampled every wholetone. A key between two of them plays the transition "
+            "of the nearer one.");
 
     ui_label("Velocities", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##legato_velocities", cfg->legato_velocities, sizeof(cfg->legato_velocities));
-    ui_hint("What the note landed on is pressed at, which many libraries read as the speed of the move. Cinematic Studio "
+    ui_hint("What the note landed on is pressed at, which many libraries read as the speed of the transition. Cinematic Studio "
             "Strings has three zones, 0-64, 65-100 and 101-127, so \"30, 80, 110\" captures its slow, medium and fast slur. "
             "The note left is pressed at the same velocity.");
 
@@ -586,10 +587,10 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::SameLine();
         ImGui::Checkbox("Detect", &cfg->legato_detect_arrival);
     }
-    ui_hint("How long after the note landed on is pressed the move gets there, in milliseconds: one time, or one per "
-            "velocity. Detect reads the real one out of the audio, by following both pitches, and reads where the move "
-            "leaves the first note with it, so the instrument carries both ends of every move. It keeps these times for "
-            "a move it cannot hear apart.");
+    ui_hint("How long after the note landed on is pressed the transition gets there, in milliseconds: one time, or one "
+            "per velocity. Detect reads the real one out of the audio, by following both pitches, and reads where the "
+            "transition leaves the first note with it, so the instrument carries both ends of every transition. It keeps "
+            "these times for a transition it cannot hear apart.");
 
     ui_label("Note left", scale);
     {
