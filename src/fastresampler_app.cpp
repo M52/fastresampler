@@ -143,10 +143,6 @@ void app_init(App* app) {
     app->resample_job.finished.store(false);
     app->resample_job.progress_frames.store(0);
     app->resample_start_request = false;
-    app->resample_build_text[0] = '\0';
-    app->resample_build_is_error = false;
-    app->resample_result_text[0] = '\0';
-    app->resample_result_is_error = false;
     app->instrument_job.running.store(false);
     app->instrument_job.cancel.store(false);
     app->instrument_job.finished.store(false);
@@ -154,14 +150,10 @@ void app_init(App* app) {
     app->instrument_start_request = false;
     app->resample_fsi_ready = false;
     app->resample_full_wav_removed = false;
-    app->instrument_result_text[0] = '\0';
-    app->instrument_result_is_error = false;
     app->project_scan_request = false;
     app->project_save_request = false;
     app->project_load_request = false;
     app->project_load_name[0] = '\0';
-    app->project_result_text[0] = '\0';
-    app->project_result_is_error = false;
     project_scan(&app->projects);
 
     app->host = host_create();
@@ -337,27 +329,6 @@ static void app_format_bytes(uint64_t bytes, char* out, size_t out_len) {
     }
 }
 
-// The Resample tab's own result lines. Each stays under the section it
-// belongs to and goes through the status line, which is what the output log
-// keeps, so what a step reported is still readable after the next one.
-static void app_resample_build_result(App* app, bool is_error, const char* text) {
-    fr_strcpy(app->resample_build_text, sizeof(app->resample_build_text), text);
-    app->resample_build_is_error = is_error;
-    app_set_status(app, is_error, "%s", text);
-}
-
-static void app_resample_result(App* app, bool is_error, const char* text) {
-    fr_strcpy(app->resample_result_text, sizeof(app->resample_result_text), text);
-    app->resample_result_is_error = is_error;
-    app_set_status(app, is_error, "%s", text);
-}
-
-static void app_instrument_result(App* app, bool is_error, const char* text) {
-    fr_strcpy(app->instrument_result_text, sizeof(app->instrument_result_text), text);
-    app->instrument_result_is_error = is_error;
-    app_set_status(app, is_error, "%s", text);
-}
-
 // Whether the disk of the output folder has room for the built script's
 // files. True with no script. False raises the warning the UI shows as a
 // modal, and the caller must not render.
@@ -400,10 +371,9 @@ void app_resample_build(App* app) {
     // A new script means the files on disk no longer describe it.
     app->resample_fsi_ready = false;
     app->resample_full_wav_removed = false;
-    app->instrument_result_text[0] = '\0';
     char err[FR_STATUS_LEN];
     if (!resample_build(&app->resample_script, &app->settings.resample, app_resample_rate(app), err, sizeof(err))) {
-        app_resample_build_result(app, true, err);
+        app_set_status(app, true, "%s", err);
         return;
     }
     const ResampleScript* s = &app->resample_script;
@@ -418,45 +388,41 @@ void app_resample_build(App* app) {
         snprintf(transitions, sizeof(transitions), " and %d transitions over %d interval%s",
                  s->transition_count, s->interval_count, s->interval_count == 1 ? "" : "s");
     }
-    char built[FR_STATUS_LEN];
-    snprintf(built, sizeof(built),
-             "%d samples: %d notes x %d velocities x %d %s%s%s, %d events, %d:%02d of audio at %.0f Hz. First file: %s",
-             s->segment_count, s->note_count, s->velocity_count, s->round_robin_count,
-             s->dynamic_layers ? "dynamic layers" : "round robins", transitions, curves, s->count,
-             (int)seconds / 60, (int)seconds % 60, s->sample_rate, example);
-    app_resample_build_result(app, false, built);
+    app_set_status(app, false,
+                   "%d samples: %d notes x %d velocities x %d %s%s%s, %d events, %d:%02d of audio at %.0f Hz. First file: %s",
+                   s->segment_count, s->note_count, s->velocity_count, s->round_robin_count,
+                   s->dynamic_layers ? "dynamic layers" : "round robins", transitions, curves, s->count,
+                   (int)seconds / 60, (int)seconds % 60, s->sample_rate, example);
     settings_save(&app->settings, app->settings_path);
     app_check_disk_space(app);
 }
 
 static void app_resample_start(App* app) {
     if (!app->plugin) {
-        app_resample_result(app, true, "Load a plugin first.");
+        app_set_status(app, true, "Load a plugin first.");
         return;
     }
     if (!app->resample_script.built) {
-        app_resample_result(app, true, "Build the MIDI first.");
+        app_set_status(app, true, "Build the MIDI first.");
         return;
     }
     if (app->resample_script.sample_rate != app_resample_rate(app)) {
-        app_resample_result(app, true, "The sample rate changed since the build. Build the MIDI again.");
+        app_set_status(app, true, "The sample rate changed since the build. Build the MIDI again.");
         return;
     }
     char output_dir[FR_MAX_PATH];
     char dir_err[FR_STATUS_LEN];
     if (!resample_output_dir(&app->settings.resample, output_dir, sizeof(output_dir), dir_err, sizeof(dir_err))) {
-        app_resample_result(app, true, dir_err);
+        app_set_status(app, true, "%s", dir_err);
         return;
     }
     if (!plat_dir_create_all(output_dir)) {
-        char text[FR_STATUS_LEN];
-        snprintf(text, sizeof(text), "Could not create the output folder %s", output_dir);
-        app_resample_result(app, true, text);
+        app_set_status(app, true, "Could not create the output folder %s", output_dir);
         return;
     }
     // Checked again here: the disk may have filled up since the build.
     if (!app_check_disk_space(app)) {
-        app_resample_result(app, true, "Not enough disk space; the render did not start.");
+        app_set_status(app, true, "Not enough disk space; the render did not start.");
         return;
     }
     // The worker owns the plugin until it is done; the device plays silence.
@@ -466,31 +432,26 @@ static void app_resample_start(App* app) {
     int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
     double export_rate = app->resample_script.sample_rate;
     if (!host_plugin_setup_processing(app->plugin, export_rate, block_size, true)) {
-        char text[FR_STATUS_LEN];
-        snprintf(text, sizeof(text), "The plugin refused %.0f Hz. Pick another export rate.", export_rate);
-        app_resample_result(app, true, text);
+        app_set_status(app, true, "The plugin refused %.0f Hz. Pick another export rate.", export_rate);
         host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false);
         app_resume_plugin(app);
         return;
     }
     if (!resample_start(&app->resample_job, app->plugin, &app->resample_script, block_size, &app->settings.resample)) {
-        app_resample_result(app, true, "The render could not start.");
+        app_set_status(app, true, "The render could not start.");
         host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false);
         app_resume_plugin(app);
         return;
     }
-    app->resample_result_text[0] = '\0';
-    app->resample_result_is_error = false;
     app->resample_fsi_ready = false;
     app->resample_full_wav_removed = false;
-    app->instrument_result_text[0] = '\0';
     app_set_status(app, false, "Rendering...");
 }
 
 static void app_resample_finish(App* app) {
     if (!resample_collect(&app->resample_job)) return;
     ResampleJob* job = &app->resample_job;
-    app_resample_result(app, job->result_is_error, job->result);
+    app_set_status(app, job->result_is_error, "%s", job->result);
     bool samples_ok = !job->split_samples || job->files_written == app->resample_script.segment_count;
     app->resample_fsi_ready = !job->result_is_error && !job->cancel.load() && samples_ok;
     // Back to the device's rate and realtime mode.
@@ -505,34 +466,30 @@ static void app_resample_finish(App* app) {
 
 static void app_instrument_start(App* app) {
     if (!app->resample_fsi_ready || !app->resample_script.built) {
-        app_instrument_result(app, true, "Render the samples first.");
+        app_set_status(app, true, "Render the samples first.");
         return;
     }
     char prefix[RESAMPLE_FILE_NAME_LEN];
     char err[FR_STATUS_LEN];
     if (!resample_prefix(&app->settings.resample, prefix, sizeof(prefix), err, sizeof(err))) {
-        app_instrument_result(app, true, err);
+        app_set_status(app, true, "%s", err);
         return;
     }
     char export_dir[FR_MAX_PATH];
     if (!resample_export_dir(&app->settings.resample, export_dir, sizeof(export_dir), err, sizeof(err))) {
-        app_instrument_result(app, true, err);
+        app_set_status(app, true, "%s", err);
         return;
     }
     if (!plat_dir_create_all(export_dir)) {
-        char text[FR_STATUS_LEN];
-        snprintf(text, sizeof(text), "Could not create the export folder %s", export_dir);
-        app_instrument_result(app, true, text);
+        app_set_status(app, true, "Could not create the export folder %s", export_dir);
         return;
     }
     // The bank is cut from the same full WAV the samples came from.
     if (!instrument_start(&app->instrument_job, &app->resample_script, &app->settings.resample,
                           app->resample_job.full_path, export_dir, prefix)) {
-        app_instrument_result(app, true, "The instrument build could not start.");
+        app_set_status(app, true, "The instrument build could not start.");
         return;
     }
-    app->instrument_result_text[0] = '\0';
-    app->instrument_result_is_error = false;
     app_set_status(app, false, "Building the instrument...");
 }
 
@@ -542,14 +499,7 @@ static void app_instrument_finish(App* app) {
         app->resample_full_wav_removed = true;
         app->resample_fsi_ready = false;   // there is nothing left to cut a bank from
     }
-    app_instrument_result(app, app->instrument_job.result_is_error, app->instrument_job.result);
-}
-
-// What the tab shows under the project buttons, and the status line with it.
-static void app_project_result(App* app, bool is_error, const char* text) {
-    fr_strcpy(app->project_result_text, sizeof(app->project_result_text), text);
-    app->project_result_is_error = is_error;
-    app_set_status(app, is_error, "%s", text);
+    app_set_status(app, app->instrument_job.result_is_error, "%s", app->instrument_job.result);
 }
 
 // The saved projects: the list, and the save and load the tab asked for.
@@ -564,26 +514,24 @@ static void app_process_project_requests(App* app) {
 
     bool busy = app_resample_running(app) || app_instrument_running(app);
     char err[FR_STATUS_LEN];
-    char text[FR_STATUS_LEN];
 
     if (app->project_save_request) {
         app->project_save_request = false;
         if (busy) {
-            app_project_result(app, true, "Wait for the render to finish, or cancel it.");
+            app_set_status(app, true, "Wait for the render to finish, or cancel it.");
         } else if (project_save(&app->settings.resample, app->settings.project_name, err, sizeof(err))) {
-            snprintf(text, sizeof(text), "Project %s saved.", app->settings.project_name);
-            app_project_result(app, false, text);
+            app_set_status(app, false, "Project %s saved.", app->settings.project_name);
             settings_save(&app->settings, app->settings_path);
             project_scan(&app->projects);
         } else {
-            app_project_result(app, true, err);
+            app_set_status(app, true, "%s", err);
         }
     }
 
     if (app->project_load_request) {
         app->project_load_request = false;
         if (busy) {
-            app_project_result(app, true, "Wait for the render to finish, or cancel it.");
+            app_set_status(app, true, "Wait for the render to finish, or cancel it.");
         } else if (project_load(&app->settings.resample, app->project_load_name, err, sizeof(err))) {
             fr_strcpy(app->settings.project_name, sizeof(app->settings.project_name), app->project_load_name);
             settings_save(&app->settings, app->settings_path);
@@ -592,13 +540,9 @@ static void app_process_project_requests(App* app) {
             app->resample_script.built = false;
             app->resample_fsi_ready = false;
             app->resample_full_wav_removed = false;
-            app->resample_build_text[0] = '\0';
-            app->resample_result_text[0] = '\0';
-            app->instrument_result_text[0] = '\0';
-            snprintf(text, sizeof(text), "Project %s loaded.", app->settings.project_name);
-            app_project_result(app, false, text);
+            app_set_status(app, false, "Project %s loaded.", app->settings.project_name);
         } else {
-            app_project_result(app, true, err);
+            app_set_status(app, true, "%s", err);
         }
     }
 }

@@ -496,7 +496,7 @@ static void ui_tab_resample(App* app, float scale) {
     ui_hint("With the box on, the number is one of dynamic layers: every note is played once per layer, a curve below can be "
             "tied to one layer (three CC1 curves at three levels, say), the files end in dyn<n>, and the instrument crossfades "
             "the layers on that controller, every sustain looped and its ring-out mapped as a release sample.");
-    // Pre-roll advances a round robin counter; dynamic layers have none.
+    // Pre-roll is the run-up before a capture; dynamic layers take none.
     ui_label("Pre-roll", scale);
     ImGui::BeginDisabled(cfg->dynamic_layers);
     ImGui::Checkbox("##preroll", &cfg->preroll);
@@ -507,9 +507,9 @@ static void ui_tab_resample(App* app, float scale) {
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (cfg->dynamic_layers) {
-        ui_hint("Pre-roll advances a sampler's round robin counter, which dynamic layers do not use, so it is off.");
+        ui_hint("Pre-roll is the run-up a round robin capture is given, which dynamic layers do not use, so it is off.");
     } else {
-        ui_hint("Pre-roll plays n-1 short notes before round robin n, one per gap, so a sampler that resets its counter after silence lands on variation n. The split discards them.");
+        ui_hint("Pre-roll is the run-up before every capture: n-1 gaps, so a painted curve is read the same way into each note. It is only spent when there is a curve. The round robins need no notes of their own, because each capture advances the sampler's counter itself; a short note is played only to carry that counter back into step, and the split discards it.");
     }
     ui_section_end(scale);
 
@@ -733,9 +733,6 @@ static void ui_tab_resample(App* app, float scale) {
     ImGui::BeginDisabled(busy);
     if (ImGui::Button("1. Build MIDI", ImVec2(-1.0f, 0.0f))) app_resample_build(app);
     ImGui::EndDisabled();
-    if (app->resample_build_text[0]) {
-        ui_colored_wrapped(app->resample_build_text, app->resample_build_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_SLOT_LABEL_TEXT);
-    }
 
     // The render and the split, once there is a script.
     if (rendering) {
@@ -766,9 +763,6 @@ static void ui_tab_resample(App* app, float scale) {
         } else {
             ui_hint("Renders faster than realtime with the speakers silent, into the one long WAV the bank is built from.");
         }
-    }
-    if (app->resample_result_text[0]) {
-        ui_colored_wrapped(app->resample_result_text, app->resample_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
     }
     ui_section_end(scale);
 
@@ -853,9 +847,6 @@ static void ui_tab_resample(App* app, float scale) {
             ui_hint("Available once the WAV is rendered.");
         }
     }
-    if (app->instrument_result_text[0]) {
-        ui_colored_wrapped(app->instrument_result_text, app->instrument_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
-    }
     ui_section_end(scale);
 
     // The project: every setting of this tab in one file, so a whole set-up
@@ -887,9 +878,6 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ImGui::EndDisabled();
     ui_hint("Puts every setting of this tab back, the folders with them. Build the MIDI again after a load.");
-    if (app->project_result_text[0]) {
-        ui_colored_wrapped(app->project_result_text, app->project_result_is_error ? CODE_COLOR_RED_VEC4 : CODE_COLOR_GREEN_VEC4);
-    }
     ui_section_end(scale);
 }
 

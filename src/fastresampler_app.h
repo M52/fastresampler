@@ -114,15 +114,12 @@ struct App {
     int        editor_width;
     int        editor_height;
 
-    // Resampling: the script the tab built, the render in flight, and what
-    // the tab shows about the last build and the last render.
+    // Resampling: the script the tab built and the render in flight. What
+    // each step reported goes to the status line and the output log; the
+    // tab itself says nothing about it.
     ResampleScript resample_script;
     ResampleJob    resample_job;
     bool           resample_start_request;
-    char           resample_build_text[FR_STATUS_LEN];
-    bool           resample_build_is_error;
-    char           resample_result_text[FR_STATUS_LEN];
-    bool           resample_result_is_error;
 
     // The instrument build: allowed once a render finished with every sample
     // file written, and until the script is built or rendered again.
@@ -130,8 +127,6 @@ struct App {
     bool           instrument_start_request;
     bool           resample_fsi_ready;
     bool           resample_full_wav_removed;   // the bank build deleted it; why fsi_ready went false
-    char           instrument_result_text[FR_STATUS_LEN];
-    bool           instrument_result_is_error;
 
     // The saved resampling projects: the names in the Projects folder next
     // to the exe, and what the tab asked for this frame.
@@ -140,8 +135,6 @@ struct App {
     bool        project_save_request;
     bool        project_load_request;
     char        project_load_name[FR_PROJECT_NAME_LEN];
-    char        project_result_text[FR_STATUS_LEN];
-    bool        project_result_is_error;
 
     PlatView*  view;
 };

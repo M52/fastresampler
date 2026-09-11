@@ -128,8 +128,8 @@ struct ResampleConfig {
     char  velocities[RESAMPLE_VELOCITY_TEXT_LEN];   // "40, 60"
     int   round_robins;                             // samples per note and velocity, 1..8
     bool  dynamic_layers;                           // the round robins are dynamic layers: see the top of the file
-    bool  preroll;                                  // play n-1 notes before variation n; not with dynamic layers
-    float preroll_gap_seconds;                      // pre-roll note-on to the next note-on
+    bool  preroll;                                  // give every capture a run-up of n-1 gaps; not with dynamic layers
+    float preroll_gap_seconds;                      // one gap of that run-up, and a pre-roll note-on to the next
 
     float hold_seconds;                             // note on to note off
     float gap_seconds;                              // note off to the segment's end
@@ -307,8 +307,8 @@ void resample_sample_file_name(const char* prefix, bool dynamic_layers, const Re
                                char* out, size_t out_len);
 
 
-// Whether the run plays pre-roll notes: only when asked, and only for round
-// robins. Dynamic layers have no counter to advance.
+// Whether the run gives its captures a pre-roll run-up: only when asked, and
+// only for round robins. Dynamic layers have no counter to carry.
 bool resample_preroll_on(const ResampleConfig* cfg);
 
 // The dropdown label for a preload size: "RAM" for 0, else "8192 frames".
@@ -320,8 +320,8 @@ uint64_t resample_required_bytes(const ResampleScript* script, bool split_sample
 
 // --- Controller curves ---------------------------------------------------------
 
-// The time one curve spans for the configuration, in seconds: the longest
-// pre-roll (that of the last round robin, 0 without pre-roll), the hold and
+// The time one curve spans for the configuration, in seconds: the pre-roll
+// run-up every capture is given (n-1 gaps, 0 without pre-roll), the hold and
 // the gap. Each part comes back on its own when a pointer is given.
 float resample_cc_span(const ResampleConfig* cfg, float* preroll, float* hold, float* gap);
 

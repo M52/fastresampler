@@ -865,25 +865,48 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     int last_value[MIDI_VALUE_MAX + 1];
     for (int k = 0; k <= MIDI_VALUE_MAX; ++k) last_value[k] = -1;
 
+    // The lead-in every capture is given so a painted curve is read over the
+    // same run-up to each note-on. Without curves it would be silence, so it
+    // is only spent when there is a curve to read.
+    int64_t cc_lead_frames = cfg->cc_curve_count > 0
+                             ? (int64_t)((double)preroll_seconds * sample_rate + 0.5) : 0;
+
     bool fits = true;
     int64_t t = 0;
     for (int note = low; note <= high; note += cfg->step) {
+        // The sampler advances its round robin on every note-on it is sent,
+        // the captured ones included, and counts per note. This is how far
+        // that counter has been carried on this note, so a window pre-rolls
+        // only the difference between where it stands and the variation
+        // wanted. Captures then walk the variations in order and ask for no
+        // pre-roll note at all; one is only sent if the count falls out of
+        // step. Counting the captured note is the whole point: pre-rolling
+        // rr - 1 notes every time landed on variations 1, 3, 1, 5, 5 of
+        // five, so two of them were sampled twice and two never at all.
+        int played = 0;
         for (int v = 0; v < velocity_count; ++v) {
             for (int rr = 1; rr <= cfg->round_robins; ++rr) {
-                // The window of this sample: the pre-roll notes, the real
-                // note, the gap. The controllers go in first.
-                int preroll_notes = preroll ? rr - 1 : 0;
-                int64_t note_on = t + (int64_t)preroll_notes * preroll_gap_frames;
+                // The window of this sample: the lead-in, the real note, the
+                // gap. The controllers go in first.
+                int preroll_notes = preroll ? ((rr - 1 - played) % cfg->round_robins + cfg->round_robins)
+                                              % cfg->round_robins : 0;
+                int64_t note_lead = (int64_t)preroll_notes * preroll_gap_frames;
+                int64_t lead_frames = cc_lead_frames > note_lead ? cc_lead_frames : note_lead;
+                int64_t note_on = t + lead_frames;
                 int64_t window_end = note_on + hold_frames + gap_frames;
                 fits = fits && resample_add_cc(script, cfg, rr, t, note_on, window_end, sample_rate,
                                                span_seconds, preroll_seconds, tick_frames, last_value);
-                // Advance the sampler's counter to variation rr with short
-                // notes that each ring out before the next.
+                // Carry the counter to the variation wanted with short notes
+                // that each ring out before the next. They end one gap before
+                // the captured note-on, whatever the lead-in is.
+                int64_t p = note_on - note_lead;
                 for (int i = 0; i < preroll_notes; ++i) {
-                    fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_NOTE_ON, 0, note, velocities[v]));
-                    fits = fits && resample_add(script, t + preroll_hold_frames, midi_make(MIDI_STATUS_NOTE_OFF, 0, note, 0));
-                    t += preroll_gap_frames;
+                    fits = fits && resample_add(script, p, midi_make(MIDI_STATUS_NOTE_ON, 0, note, velocities[v]));
+                    fits = fits && resample_add(script, p + preroll_hold_frames, midi_make(MIDI_STATUS_NOTE_OFF, 0, note, 0));
+                    p += preroll_gap_frames;
                 }
+                played = (played + preroll_notes + 1) % cfg->round_robins;
+                t = note_on;
                 ResampleSegment* seg = &script->segments[script->segment_count++];
                 memset(seg, 0, sizeof(*seg));
                 seg->start_frame = t;
