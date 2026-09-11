@@ -45,7 +45,7 @@ if not exist "%FASTSAMPLER_DIR%\src\fileformats\fastsampler.pb.h" (
 
 rem WavPack, the DLL FastSampler ships, compresses the streamed part of a bank.
 rem The import library is linked and the DLL is copied next to the exe.
-set WAVPACK_DIR=%FASTSAMPLER_DIR%\3rdparty\wavpack-4.80.0-dll
+set WAVPACK_DIR=%FASTSAMPLER_DIR%\3rdparty\wavpack-5.9.0-dll
 if not exist "%WAVPACK_DIR%\x64\wavpackdll.dll" (
     echo Error: WavPack not found at "%WAVPACK_DIR%\x64".
     exit /b 1

@@ -103,6 +103,7 @@
 // The collection effect ids and parameter slots, for the round robin effect
 // the instrument builder writes.
 #include "fx/collection/fastsampler_cfx.h"
+#include "fx/collection/legato/fastsampler_cfx_legato.h"
 // WavPack, from FastSampler's third-party folder: the bank builder
 // compresses the streamed part of every sample with it. The DLL sits next
 // to the exe, copied there by build.bat.
@@ -138,6 +139,12 @@
 #include "fastresampler_wav.h"
 #include "fastresampler_wav.cpp"
 #include "fastresampler_resample.cpp"
+#include "fastresampler_rzc.h"
+#include "fastresampler_rzc.cpp"
+#include "fastresampler_loop.h"
+#include "fastresampler_loop.cpp"
+#include "fastresampler_legato.h"
+#include "fastresampler_legato.cpp"
 #include "fastresampler_instrument.h"
 #include "fastresampler_instrument.cpp"
 #include "fastresampler_app.h"

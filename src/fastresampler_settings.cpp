@@ -174,6 +174,8 @@ bool settings_load(Settings* s, const char* path) {
             fr_strcpy(s->resample.velocities, sizeof(s->resample.velocities), value);
         } else if (strcmp(key, "resample_round_robins") == 0) {
             s->resample.round_robins = fr_clampi(atoi(value), 1, RESAMPLE_MAX_ROUND_ROBINS);
+        } else if (strcmp(key, "resample_dynamic_layers") == 0) {
+            s->resample.dynamic_layers = atoi(value) != 0;
         } else if (strcmp(key, "resample_preroll") == 0) {
             s->resample.preroll = atoi(value) != 0;
         } else if (strcmp(key, "resample_preroll_gap_ms") == 0) {
@@ -182,6 +184,28 @@ bool settings_load(Settings* s, const char* path) {
             s->resample.hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
         } else if (strcmp(key, "resample_gap_ms") == 0) {
             s->resample.gap_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
+        } else if (strcmp(key, "resample_legato") == 0) {
+            s->resample.legato = atoi(value) != 0;
+        } else if (strcmp(key, "resample_legato_step") == 0) {
+            s->resample.legato_step = fr_clampi(atoi(value), 1, RESAMPLE_MAX_STEP);
+        } else if (strcmp(key, "resample_legato_intervals") == 0) {
+            fr_strcpy(s->resample.legato_intervals, sizeof(s->resample.legato_intervals), value);
+        } else if (strcmp(key, "resample_legato_velocities") == 0) {
+            fr_strcpy(s->resample.legato_velocities, sizeof(s->resample.legato_velocities), value);
+        } else if (strcmp(key, "resample_legato_arrivals") == 0) {
+            fr_strcpy(s->resample.legato_arrivals, sizeof(s->resample.legato_arrivals), value);
+        } else if (strcmp(key, "resample_legato_detect_arrival") == 0) {
+            s->resample.legato_detect_arrival = atoi(value) != 0;
+        } else if (strcmp(key, "resample_legato_source_hold_ms") == 0) {
+            s->resample.legato_source_hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+        } else if (strcmp(key, "resample_legato_overlap_ms") == 0) {
+            s->resample.legato_overlap_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
+        } else if (strcmp(key, "resample_legato_hold_ms") == 0) {
+            s->resample.legato_hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+        } else if (strcmp(key, "resample_legato_lead_ms") == 0) {
+            s->resample.legato_lead_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
+        } else if (strcmp(key, "resample_legato_blend_ms") == 0) {
+            s->resample.legato_blend_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
         } else if (strcmp(key, "resample_instrument") == 0) {
             fr_strcpy(s->resample.instrument, sizeof(s->resample.instrument), value);
         } else if (strcmp(key, "resample_articulation") == 0) {
@@ -192,6 +216,8 @@ bool settings_load(Settings* s, const char* path) {
             s->resample.sample_rate = resample_valid_sample_rate(atoi(value));
         } else if (strcmp(key, "resample_render_speed") == 0) {
             s->resample.render_speed = resample_valid_render_speed(atoi(value), s->resample.render_speed);
+        } else if (strcmp(key, "resample_export_rzc") == 0) {
+            s->resample.export_rzc = atoi(value) != 0;
         } else if (strcmp(key, "resample_split_samples") == 0) {
             s->resample.split_samples = atoi(value) != 0;
         } else if (strcmp(key, "resample_delete_full_wav") == 0) {
@@ -205,15 +231,19 @@ bool settings_load(Settings* s, const char* path) {
             }
         } else if (strcmp(key, "resample_preload_frames") == 0) {
             s->resample.preload_frames = resample_valid_preload_frames(atoi(value), s->resample.preload_frames);
+        } else if (strcmp(key, "resample_bit_depth") == 0) {
+            s->resample.bit_depth = resample_valid_bit_depth(atoi(value), s->resample.bit_depth);
         } else if (strcmp(key, "project_name") == 0) {
             fr_strcpy(s->project_name, sizeof(s->project_name), value);
         } else if (strcmp(key, "show_tips") == 0) {
             s->show_tips = atoi(value) != 0;
         } else if (strcmp(key, "resample_cc") == 0) {
-            // "index controller bezier constant"; the nodes and values follow
-            // on their own lines, so the curve starts out flat at 127.
-            float nums[4];
-            if (fr_parse_floats(value, nums, 4) == 4) {
+            // "index controller bezier constant layer"; the nodes and values
+            // follow on their own lines, so the curve starts out flat at 127.
+            // A file from before layers existed stops at the constant.
+            float nums[5];
+            int read = fr_parse_floats(value, nums, 5);
+            if (read >= 4) {
                 int i = (int)nums[0];
                 if (i >= 0 && i < RESAMPLE_MAX_CC_CURVES) {
                     ResampleCcCurve* c = &s->resample.cc_curves[i];
@@ -221,6 +251,7 @@ bool settings_load(Settings* s, const char* path) {
                     c->controller = fr_clampi((int)nums[1], 0, MIDI_VALUE_MAX);
                     c->is_bezier = nums[2] != 0.0f;
                     c->constant = fr_clampi((int)nums[3], 0, MIDI_VALUE_MAX);
+                    c->layer = read >= 5 ? fr_clampi((int)nums[4], 0, RESAMPLE_MAX_ROUND_ROBINS) : 0;
                     if (s->resample.cc_curve_count < i + 1) s->resample.cc_curve_count = i + 1;
                 }
             }
@@ -284,25 +315,39 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_step %d\n", s->resample.step);
     fprintf(f, "resample_velocities \"%s\"\n", s->resample.velocities);
     fprintf(f, "resample_round_robins %d\n", s->resample.round_robins);
+    fprintf(f, "resample_dynamic_layers %d\n", s->resample.dynamic_layers ? 1 : 0);
     fprintf(f, "resample_preroll %d\n", s->resample.preroll ? 1 : 0);
     fprintf(f, "resample_preroll_gap_ms %d\n", (int)(s->resample.preroll_gap_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_hold_ms %d\n", (int)(s->resample.hold_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_gap_ms %d\n", (int)(s->resample.gap_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_legato %d\n", s->resample.legato ? 1 : 0);
+    fprintf(f, "resample_legato_step %d\n", s->resample.legato_step);
+    fprintf(f, "resample_legato_intervals \"%s\"\n", s->resample.legato_intervals);
+    fprintf(f, "resample_legato_velocities \"%s\"\n", s->resample.legato_velocities);
+    fprintf(f, "resample_legato_arrivals \"%s\"\n", s->resample.legato_arrivals);
+    fprintf(f, "resample_legato_detect_arrival %d\n", s->resample.legato_detect_arrival ? 1 : 0);
+    fprintf(f, "resample_legato_source_hold_ms %d\n", (int)(s->resample.legato_source_hold_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_legato_overlap_ms %d\n", (int)(s->resample.legato_overlap_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_legato_hold_ms %d\n", (int)(s->resample.legato_hold_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_legato_lead_ms %d\n", (int)(s->resample.legato_lead_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_legato_blend_ms %d\n", (int)(s->resample.legato_blend_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_instrument \"%s\"\n", s->resample.instrument);
     fprintf(f, "resample_articulation \"%s\"\n", s->resample.articulation);
     fprintf(f, "resample_microphone \"%s\"\n", s->resample.microphone);
     fprintf(f, "resample_sample_rate %d\n", s->resample.sample_rate);
     fprintf(f, "resample_render_speed %d\n", s->resample.render_speed);
     fprintf(f, "resample_split_samples %d\n", s->resample.split_samples ? 1 : 0);
+    fprintf(f, "resample_export_rzc %d\n", s->resample.export_rzc ? 1 : 0);
     fprintf(f, "resample_delete_full_wav %d\n", s->resample.delete_full_wav ? 1 : 0);
     fprintf(f, "resample_output_dir \"%s\"\n", s->resample.output_dir);
     fprintf(f, "resample_export_dir \"%s\"\n", s->resample.export_dir);
     fprintf(f, "resample_preload_frames %d\n", s->resample.preload_frames);
+    fprintf(f, "resample_bit_depth %d\n", s->resample.bit_depth);
     fprintf(f, "project_name \"%s\"\n", s->project_name);
     fprintf(f, "show_tips %d\n", s->show_tips ? 1 : 0);
     for (int i = 0; i < s->resample.cc_curve_count; ++i) {
         const ResampleCcCurve* c = &s->resample.cc_curves[i];
-        fprintf(f, "resample_cc %d %d %d %d\n", i, c->controller, c->is_bezier ? 1 : 0, c->constant);
+        fprintf(f, "resample_cc %d %d %d %d %d\n", i, c->controller, c->is_bezier ? 1 : 0, c->constant, c->layer);
         fprintf(f, "resample_cc_nodes %d %d", i, c->node_count);
         for (int k = 0; k < c->node_count; ++k) {
             fprintf(f, " %.4f %.4f %.4f", c->node_x[k], c->node_y[k], c->curvature[k]);

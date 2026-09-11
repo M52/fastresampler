@@ -28,6 +28,9 @@
 // Width of a modal message, like the disk space warning.
 #define UI_MODAL_WIDTH 420.0f
 
+// Width of the box that ties a controller curve to a dynamic layer.
+#define UI_LAYER_COMBO_WIDTH 90.0f
+
 // A section heading's double rule: the space between its two lines, and the
 // room left under a section's last control.
 #define UI_SECTION_RULE_GAP    2.0f
@@ -163,6 +166,11 @@ static void ui_fit_path(const char* path, float width, char* out, size_t out_len
 static DragSliderState g_hold_drag;
 static DragSliderState g_gap_drag;
 static DragSliderState g_preroll_drag;
+static DragSliderState g_legato_source_hold_drag;
+static DragSliderState g_legato_overlap_drag;
+static DragSliderState g_legato_hold_drag;
+static DragSliderState g_legato_lead_drag;
+static DragSliderState g_legato_blend_drag;
 
 // A time in seconds, read in seconds from one second up and in
 // milliseconds below it.
@@ -354,6 +362,15 @@ static void ui_speed_label(int speed, char* out, size_t out_len) {
     }
 }
 
+// "All layers", or "dyn2": what a curve's layer box shows.
+static void ui_layer_label(int layer, char* out, size_t out_len) {
+    if (layer <= 0) {
+        fr_strcpy(out, out_len, "All layers");
+    } else {
+        resample_layer_suffix(true, layer, out, out_len);
+    }
+}
+
 // Parses the range fields so the keyboard can mark the notes; nothing is
 // reported here, Build says what is wrong.
 static void ui_update_range(App* app) {
@@ -393,8 +410,13 @@ static void ui_tab_resample(App* app, float scale) {
         char err[FR_STATUS_LEN];
         char preview[RESAMPLE_FILE_NAME_LEN + 32];
         if (resample_prefix(cfg, prefix, sizeof(prefix), err, sizeof(err))) {
-            snprintf(preview, sizeof(preview), "Files: %s_<Note>_<Velocity>_RR<n>.wav", prefix);
+            snprintf(preview, sizeof(preview), "Files: %s_<Note>_<Velocity>_%s<n>.wav", prefix, cfg->dynamic_layers ? "dyn" : "RR");
             ui_note(preview);
+            if (cfg->legato) {
+                snprintf(preview, sizeof(preview), "Moves: %s_<From>-<To>_<Velocity>_%sleg.wav", prefix,
+                         cfg->dynamic_layers ? "dyn<n>-" : "");
+                ui_note(preview);
+            }
         } else {
             ui_colored_wrapped(err, CODE_COLOR_WARNING_VEC4);
         }
@@ -443,14 +465,26 @@ static void ui_tab_resample(App* app, float scale) {
     if (ImGui::InputInt("##rr", &cfg->round_robins)) {
         cfg->round_robins = fr_clampi(cfg->round_robins, 1, RESAMPLE_MAX_ROUND_ROBINS);
     }
+    ImGui::SameLine();
+    ImGui::Checkbox("RR are dynamic layers", &cfg->dynamic_layers);
+    ui_hint("With the box on, the number is one of dynamic layers: every note is played once per layer, a curve below can be "
+            "tied to one layer (three CC1 curves at three levels, say), the files end in dyn<n>, and the instrument crossfades "
+            "the layers on that controller, every sustain looped and its ring-out mapped as a release sample.");
+    // Pre-roll advances a round robin counter; dynamic layers have none.
     ui_label("Pre-roll", scale);
+    ImGui::BeginDisabled(cfg->dynamic_layers);
     ImGui::Checkbox("##preroll", &cfg->preroll);
     ui_label_inline("gap");
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::BeginDisabled(!cfg->preroll);
     ui_time_slider("##prerollgap", &cfg->preroll_gap_seconds, UI_PREROLL_GAP_MIN_SECONDS, UI_PREROLL_GAP_MAX_SECONDS, &g_preroll_drag);
     ImGui::EndDisabled();
-    ui_hint("Pre-roll plays n-1 short notes before round robin n, one per gap, so a sampler that resets its counter after silence lands on variation n. The split discards them.");
+    ImGui::EndDisabled();
+    if (cfg->dynamic_layers) {
+        ui_hint("Pre-roll advances a sampler's round robin counter, which dynamic layers do not use, so it is off.");
+    } else {
+        ui_hint("Pre-roll plays n-1 short notes before round robin n, one per gap, so a sampler that resets its counter after silence lands on variation n. The split discards them.");
+    }
     ui_section_end(scale);
 
     ui_section("Timing", scale);
@@ -507,6 +541,102 @@ static void ui_tab_resample(App* app, float scale) {
 
     ui_section_end(scale);
 
+    // The moves between the notes: which ones are captured, and how each
+    // capture is laid out in time.
+    ui_section("Legato", scale);
+    ImGui::BeginDisabled(busy);
+    ImGui::Checkbox("Capture legato transitions", &cfg->legato);
+    ImGui::EndDisabled();
+    ui_hint("After every note has been sampled, the run holds one note, presses the next over it and lets the first go, "
+            "so whatever the plugin plays between them is captured. The instrument maps those moves to FastSampler's "
+            "legato effect, which plays one whenever a key goes down while another is held.");
+    ImGui::BeginDisabled(!cfg->legato || busy);
+
+    ui_label("Intervals", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##legato_intervals", cfg->legato_intervals, sizeof(cfg->legato_intervals));
+    ui_hint("Widths in semitones, each captured up and down: \"1, 2\" is four moves from every note. Only these widths get "
+            "a move: a slur of any other width changes note without one, because a move of the wrong width would land on "
+            "the wrong note. Leave no gaps, and note that the notes below need no matching step -- a move keeps its width "
+            "when it is transposed, so spend the run on widths rather than on notes.");
+
+    ui_label("From every", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##legato_step", resample_step_label(cfg->legato_step))) {
+        for (int step = 1; step <= RESAMPLE_MAX_STEP; ++step) {
+            if (ImGui::Selectable(resample_step_label(step), step == cfg->legato_step)) cfg->legato_step = step;
+        }
+        ImGui::EndCombo();
+    }
+    ui_hint("The notes the moves start from, which need not follow the notes above: moves are often sampled every semitone "
+            "where the sustains are sampled every wholetone. A key between two of them plays the move of the nearer one.");
+
+    ui_label("Velocities", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##legato_velocities", cfg->legato_velocities, sizeof(cfg->legato_velocities));
+    ui_hint("What the note landed on is pressed at, which many libraries read as the speed of the move. Cinematic Studio "
+            "Strings has three zones, 0-64, 65-100 and 101-127, so \"30, 80, 110\" captures its slow, medium and fast slur. "
+            "The note left is pressed at the same velocity.");
+
+    ui_label("Arrival", scale);
+    {
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float detect_w = ImGui::CalcTextSize("Detect").x + 40.0f * scale;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - detect_w - spacing);
+        ImGui::InputText("##legato_arrivals", cfg->legato_arrivals, sizeof(cfg->legato_arrivals));
+        ImGui::SameLine();
+        ImGui::Checkbox("Detect", &cfg->legato_detect_arrival);
+    }
+    ui_hint("How long after the note landed on is pressed the move gets there, in milliseconds: one time, or one per "
+            "velocity. Detect reads the real one out of the audio, by following both pitches, and reads where the move "
+            "leaves the first note with it, so the instrument carries both ends of every move. It keeps these times for "
+            "a move it cannot hear apart.");
+
+    ui_label("Note left", scale);
+    {
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float overlap_label_w = ImGui::CalcTextSize("Overlap").x;
+        float slider_w = (ImGui::GetContentRegionAvail().x - overlap_label_w - 2.0f * spacing) * 0.5f;
+        ImGui::SetNextItemWidth(slider_w);
+        ui_time_slider("##legato_source_hold", &cfg->legato_source_hold_seconds, UI_HOLD_MIN_SECONDS,
+                       UI_TIME_MAX_SECONDS, &g_legato_source_hold_drag);
+        ui_label_inline("Overlap");
+        ImGui::SetNextItemWidth(-1.0f);
+        ui_time_slider("##legato_overlap", &cfg->legato_overlap_seconds, 0.0f, UI_TIME_MAX_SECONDS,
+                       &g_legato_overlap_drag);
+    }
+    ui_hint("How long the note that is left sounds before the next one is pressed, and how long it stays down after that. "
+            "The overlap is what makes a plugin play a move at all.");
+
+    ui_label("Note landed on", scale);
+    ImGui::SetNextItemWidth(-1.0f);
+    ui_time_slider("##legato_hold", &cfg->legato_hold_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
+                   &g_legato_hold_drag);
+    ui_hint("How long it is held. It has to reach past the arrival and the blend, so a slow slur needs a longer hold.");
+
+    ui_label("Lead", scale);
+    {
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float blend_label_w = ImGui::CalcTextSize("Blend").x;
+        float slider_w = (ImGui::GetContentRegionAvail().x - blend_label_w - 2.0f * spacing) * 0.5f;
+        ImGui::SetNextItemWidth(slider_w);
+        ui_time_slider("##legato_lead", &cfg->legato_lead_seconds, 0.0f, UI_TIME_MAX_SECONDS, &g_legato_lead_drag);
+        ui_label_inline("Blend");
+        ImGui::SetNextItemWidth(-1.0f);
+        ui_time_slider("##legato_blend", &cfg->legato_blend_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
+                       &g_legato_blend_drag);
+    }
+    ui_hint("The two crossfades. The lead is how much of the note being left the move keeps in front of it: the move comes "
+            "in over that time and the instrument fades that note out over it, so the two copies cross instead of doubling. "
+            "It plays before the move starts, so it is also added to the wait between the key and the new note; keep it "
+            "short, and long enough not to click on a low note. The blend is how much of the note landed on the move keeps "
+            "past the arrival, and its sustain rises over the same time, which costs no delay at all.");
+    ImGui::EndDisabled();
+    if (cfg->legato && cfg->round_robins > 1 && !cfg->dynamic_layers) {
+        ui_note("The moves are captured once and shared by every round robin.");
+    }
+    ui_section_end(scale);
+
     // The controller curves: one controller each, over the time of a sample.
     ui_section("Controllers", scale);
     ImGui::BeginDisabled(busy);
@@ -517,7 +647,10 @@ static void ui_tab_resample(App* app, float scale) {
         char cc_label[32];
         midi_cc_label(curve->controller, cc_label, sizeof(cc_label));
         ui_label("Controller", scale);
-        ImGui::SetNextItemWidth(-28.0f * scale);
+        // The controller, the layer the curve plays for, and the remove
+        // button share the row; the layer box only counts with dynamic layers.
+        float layer_w = UI_LAYER_COMBO_WIDTH * scale;
+        ImGui::SetNextItemWidth(-(layer_w + 32.0f * scale));
         if (ImGui::BeginCombo("##cc", cc_label)) {
             for (int cc = 0; cc <= MIDI_VALUE_MAX; ++cc) {
                 char item[32];
@@ -526,6 +659,21 @@ static void ui_tab_resample(App* app, float scale) {
             }
             ImGui::EndCombo();
         }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!cfg->dynamic_layers);
+        char layer_label[RESAMPLE_LAYER_SUFFIX_LEN + 8];
+        ui_layer_label(cfg->dynamic_layers ? curve->layer : 0, layer_label, sizeof(layer_label));
+        ImGui::SetNextItemWidth(layer_w);
+        if (ImGui::BeginCombo("##layer", layer_label)) {
+            if (ImGui::Selectable("All layers", curve->layer == 0)) curve->layer = 0;
+            for (int n = 1; n <= cfg->round_robins; ++n) {
+                char item[RESAMPLE_LAYER_SUFFIX_LEN];
+                resample_layer_suffix(true, n, item, sizeof(item));
+                if (ImGui::Selectable(item, curve->layer == n)) curve->layer = n;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         if (ImGui::Button("x", ImVec2(-1.0f, 0.0f))) remove_curve = i;
         ui_draw_cc_curve(curve, cfg, "##curve", scale);
@@ -539,7 +687,9 @@ static void ui_tab_resample(App* app, float scale) {
     ImGui::EndDisabled();
     ui_hint("Each curve sends one controller over the time of every sample: the pre-roll, the held note and the gap. "
             "Bezier: drag the nodes and the handles between them, double-click to add a node, right-click to remove one. "
-            "Off: paint the curve with the mouse. Constant sets the whole curve to the slider's value.");
+            "Off: paint the curve with the mouse. Constant sets the whole curve to the slider's value. "
+            "With dynamic layers, the box after the controller ties a curve to one layer; on All layers it plays in every pass. "
+            "A legato capture is longer than one note, and a curve stretches over the whole of it.");
     if (app->plugin && cfg->cc_curve_count > 0 && !host_plugin_info(app->plugin)->has_midi_mapping) {
         ui_colored_wrapped("This plugin publishes no MIDI controller mapping, so the curves do not reach it.",
                            CODE_COLOR_WARNING_VEC4);
@@ -596,7 +746,8 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ui_section_end(scale);
 
-    // The FastSampler instrument: how much of it stays in RAM, where it goes.
+    // The FastSampler instrument: how much of it stays in RAM, at what depth,
+    // where it goes.
     ui_section("Export to FastSampler", scale);
     ui_label("Preload", scale);
     char preload_label[32];
@@ -612,7 +763,31 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::EndCombo();
     }
     ui_hint("How much of every sample the bank keeps in RAM; the rest streams from disk while it plays. RAM holds every sample whole.");
+    ui_label("Bit depth", scale);
+    char depth_label[16];
+    snprintf(depth_label, sizeof(depth_label), "%d-bit", cfg->bit_depth);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##bit_depth", depth_label)) {
+        for (int i = 0; i < RESAMPLE_BIT_DEPTH_OPTION_COUNT; ++i) {
+            int bits = g_resample_bit_depth_options[i];
+            char item[16];
+            snprintf(item, sizeof(item), "%d-bit", bits);
+            if (ImGui::Selectable(item, cfg->bit_depth == bits)) cfg->bit_depth = bits;
+        }
+        ImGui::EndCombo();
+    }
+    ui_hint("What every sample is stored at, in the preload block and in the streams both. "
+            "16-bit halves the bank; 24-bit keeps the render's own depth.");
     ui_folder_row("Folder", cfg->export_dir, busy, &app->export_dir_pick_request, scale);
+    ImGui::BeginDisabled(busy);
+    ImGui::Checkbox("Export .rzc files", &cfg->export_rzc);
+    ImGui::EndDisabled();
+    ui_hint("Writes one readable zone collection file per collection of the instrument beside it, the same mapping in "
+            "FastSampler's editable text format. Its zones name the split sample files, so it needs those.");
+    if (cfg->export_rzc && !cfg->split_samples) {
+        ui_colored_wrapped("A .rzc names the split sample files, and Generate split samples is off, so none would be written.",
+                           CODE_COLOR_WARNING_VEC4);
+    }
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Remove full WAV", &cfg->delete_full_wav);
     ImGui::EndDisabled();
@@ -620,7 +795,7 @@ static void ui_tab_resample(App* app, float scale) {
             "so the folder keeps only the samples and the instrument.");
     if (building) {
         int done = app->instrument_job.progress.load();
-        int total = app->resample_script.segment_count;
+        int total = app->instrument_job.progress_total.load();
         char overlay[64];
         snprintf(overlay, sizeof(overlay), "Writing bank %d / %d", done, total);
         ImGui::ProgressBar(total > 0 ? (float)done / (float)total : 0.0f, ImVec2(-1.0f, 0.0f), overlay);
@@ -629,8 +804,18 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::BeginDisabled(!app->resample_fsi_ready || rendering);
         if (ImGui::Button("Build FSI + FSB", ImVec2(-1.0f, 0.0f))) app->instrument_start_request = true;
         ImGui::EndDisabled();
-        if (app->resample_fsi_ready) {
-            ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the output folder.");
+        if (app->resample_fsi_ready && app->resample_script.legato) {
+            ui_hint("Maps the samples across keys and velocities in the folder above, and the moves with them: one collection "
+                    "per interval, reached from the notes through FastSampler's legato effect, each move cut at the blend past "
+                    "where it lands on its note. Every move carries the two frames it leaves and lands on, so the note being "
+                    "left finishes fading at the first and the note landed on starts at the second. Both come off the clock, "
+                    "or out of the audio when Detect is on.");
+        } else if (app->resample_fsi_ready && app->resample_script.dynamic_layers) {
+            ui_hint("Maps the samples across keys and velocities into a FastSampler instrument in the folder above: one looped zone "
+                    "collection per dynamic layer and one of release samples for each, every collection's gain driven by the "
+                    "layers' controller through a curve that crossfades them, equal power, from dyn1 at the bottom to the last at the top.");
+        } else if (app->resample_fsi_ready) {
+            ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the folder above.");
         } else if (app->resample_full_wav_removed) {
             ui_hint("The bank was built and the full WAV removed with it. Render again to build another one.");
         } else if (cfg->split_samples) {

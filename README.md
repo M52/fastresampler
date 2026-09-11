@@ -71,10 +71,87 @@ Layout of the window:
   builds a FastSampler instrument (`.fsi` + `.fsb`) with the samples mapped:
   one zone collection per round robin, linked by FastSampler's round robin
   effect on a shared counter, each key on its nearest sampled note (ties pitch
-  down), each velocity range up to its sampled velocity. The bank keeps a
+  down), each velocity range up to its sampled velocity. RR are dynamic
+  layers, the box after the round robin count, turns that count into a
+  number of dynamic layers for resampling sustains: every note is still
+  played that many times, but each controller curve gets a box that ties it
+  to one layer (three CC1 curves at three levels, say, one per layer; a
+  curve on All layers plays in every pass), pre-roll is off, the files end
+  in `_dynn.wav`, and the instrument built from the run is a crossfading
+  sustain rather than a round robin. Every sample is mapped twice: the held
+  note, from the note-on to the note-off, as a looped sustain in the
+  collection of its layer (`dyn1`, `dyn2`, ...), with the loop from 250 ms
+  after the note-on to 250 ms before the note-off and a 200 ms equal power
+  crossfade at the join, both shrinking on a short hold; and what rings out
+  past the note-off as a release sample in a collection of its own
+  (`dyn1-release`, ...), which FastSampler plays when the key comes up. That
+  collection names its layer as the one whose releases it holds, and every
+  release zone gets a 10 ms attack: a release begins at the note-off of a
+  note that was still sounding, so started flat it would step from silence
+  to that level and click on every key-up.
+  Every zone has Ignore vel set, as the layers carry the dynamics. Every
+  collection, the release ones too, carries FastSampler's gain effect,
+  driven by the controller the layer curves were drawn for (the mod wheel
+  when none is) through a curve between -36 and 0 dB: layer k of n sits at
+  0 dB at k/n of the controller's range, the first from the bottom up to
+  1/n and the last at the top, and between two peaks the lower layer fades
+  out and the upper in by an equal power law, so the controller moves
+  through the layers at a steady level. The curves share FastSampler's first
+  curve group, so its editor draws them over one another.
+  Capture legato transitions, in the Legato section, adds the moves between
+  the notes to the run. After every note has been sampled, each capture
+  holds one note, presses the next one over it, lets the first go after the
+  overlap, and holds the second; whatever the plugin plays between them --
+  a slur, a re-bow, a portamento -- is what the sample keeps. The
+  intervals are widths in semitones, "1, 2, 3, 4, 5, 6, 7" by default, each
+  recorded up and down. Only a width that was captured gets a move: a slur
+  of any other width changes note without one, because a move is a recording
+  of two particular notes and one of the wrong width would land on the wrong
+  note, which is heard as a passing note that was never played. Leave no
+  gaps, then, and spend the run on widths rather than on the notes the moves
+  start from -- those have a step of their own, but a move is rooted on the
+  note it is left from, so a note between two captured ones plays the nearer
+  move transposed, and transposing a move keeps its width and so still lands
+  where it should. The note landed on is
+  pressed at each of the legato velocities, which is what a library that
+  reads its legato speed off the velocity needs -- Cinematic Studio Strings
+  has three zones, 0-64, 65-100 and 101-127, so "30, 80, 110" captures its
+  slow, medium and fast slur -- and the note left is pressed at the same
+  velocity. The sample runs from the lead before the second note-on to where
+  that note is released, and the instrument cuts it at the blend past the
+  arrival. Every move carries two frames: the departure, where it leaves the
+  note it is played from, and the arrival, where it has reached the note it
+  goes to. Both take a nominal time per velocity; with Detect on, the build
+  reads the real pair out of the audio instead (see
+  `src/fastresampler_legato.h`) and keeps the nominal for a move it cannot
+  hear apart. The instrument puts the moves in one collection per interval,
+  mapped and rooted on the note each was left from, and gives every
+  collection of notes FastSampler's legato effect with one link row per
+  interval, each row answering for its own width and no other. The two
+  crossfades come out of the capture, and the two frames place them: the
+  note being left finishes fading at the departure, over the lead, which is
+  how much of itself the transition sample carries in front of the move, and
+  the sustain of the note landed on starts at the arrival and rises over the
+  blend, which is what the transition fades out across. Both are equal
+  power, and between the two frames neither sustain sounds, so nothing but
+  the move itself is heard while the pitch is on its way. The move's own
+  zone envelope carries its rise, as nothing in the legato effect fades a
+  transition in. The lead is
+  short because it plays before the move even starts, so it is added to the
+  wait between the key and the new note. A looped sustain needs no way out of its
+  loop: the legato effect fades the voice it leaves, and the voice keeps
+  looping under that fade. With dynamic layers every layer gets its own
+  moves and its own links, and its releases stay in the collection of their
+  own, which names the layer they belong to: a note a move has taken over
+  must leave no release behind, and what records that the move happened is
+  kept with the layer's notes, so the releases are read off the layer rather
+  than off themselves. The bank keeps a
   chosen number of frames of every sample in RAM (8192 by default; 1024 to
   65536) and streams the rest, WavPack compressed, or in RAM mode holds every
-  sample whole. The render runs at
+  sample whole. It stores those samples at the chosen bit depth, 16-bit by
+  default or 24-bit, in the resident part and the streamed one both: the two
+  depths the format carries, and the two FastSampler's own export offers.
+  The render runs at
   the chosen export rate (96 kHz by default, up to 192 kHz) with the plugin in
   offline mode, then the plugin returns to the device's rate. Before a render
   the free space of the output disk is checked against the full WAV and the
@@ -83,20 +160,28 @@ Layout of the window:
   not start. A render speed
   (realtime to 16x, or unlimited; 4x by default) paces the render so a sampler
   that streams from disk has the wall time to read its sample tails. Controller
-  curves (up to eight, one controller each) are drawn over the time of one
+  curves (up to 64, one controller each) are drawn over the time of one
   sample, its pre-roll, hold and gap, in a bezier or freehand editor after
   FastSampler's, and sent along with every note: a CC1 held at 127, say, so a
   sustain patch plays its loudest dynamic layer. The tab is laid out in
   sections under capitalised orange headings: the samples' folder, Generate
   split samples and the numbered Build MIDI and Render to WAV buttons make up
-  Output, and the preload size, the instrument's own folder, Remove full WAV
-  and the FSI + FSB build make up Export to FastSampler. Both boxes follow
-  from the bank being cut from the full WAV, not from the sample files:
-  Generate split samples, on by default, cuts that WAV into one file per
-  sample and can be turned off by a run that only exports to FastSampler, and
-  Remove full WAV deletes the WAV once the bank has been built from it. With
-  the first off and the second on, an export is Build MIDI, Render to WAV,
-  Build FSI + FSB, and the folder is left holding only the instrument. Both folders are picked with the system's dialog.
+  Output, and the preload size, the bit depth, the instrument's own folder,
+  Export .rzc files, Remove full WAV and the FSI + FSB build make up Export
+  to FastSampler. Generate split samples and Remove full WAV both follow from
+  the bank being cut from the full WAV, not from the sample files: the first,
+  on by default, cuts that WAV into one file per sample and can be turned off
+  by a run that only exports to FastSampler; the second deletes the WAV once
+  the bank has been built from it. With the first off and the second on, an
+  export is Build MIDI, Render to WAV, Build FSI + FSB, and the folder is
+  left holding only the instrument. Export .rzc files writes one readable
+  zone collection per collection of the instrument beside it: the same mapping in
+  FastSampler's editable text format, each zone naming the split sample file
+  it plays, so that box needs the split ones and says so when it is off.
+  The format is FastSampler's own, mirrored from `rzc_save_file` off the zone
+  records the `.fsi` is built from -- its own writer cannot be compiled in
+  here, as it is built against the YAML parser and platform layer this
+  project deliberately forked. Both folders are picked with the system's dialog.
   Save resampling project, last of all, writes every setting of the tab to
   `Projects\<name>.yaml` next to the exe and loads one back from the list of
   what is in that folder; a load starts the tab again at Build MIDI.
@@ -136,6 +221,9 @@ Files:
 - `src/fastresampler_yaml.*` — the YAML reader, FastSampler's parser copied here.
 - `src/fastresampler_project.*` — the `Projects\<name>.yaml` files: the whole Resample tab saved and loaded.
 - `src/fastresampler_instrument.*` — the `.fsi`/`.fsb` builder and the key/velocity mapping.
+- `src/fastresampler_loop.*` — a sustain's loop points, taken off the waveform instead of the clock.
+- `src/fastresampler_legato.*` — where a legato move leaves one note and reaches the next, read out of the audio.
+- `src/fastresampler_rzc.*` — FastSampler's readable zone collection, one file per collection.
 - `src/ui/` — the ImGui side panel, plugin list, keyboard and the controller curve editor.
 
 Threading: the UI thread owns the plugin. The audio thread only calls

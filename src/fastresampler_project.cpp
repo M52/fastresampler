@@ -118,22 +118,37 @@ bool project_save(const ResampleConfig* cfg, const char* name, char* err, size_t
     fprintf(f, "step: %d\n", cfg->step);
     project_write_string(f, "velocities", cfg->velocities);
     fprintf(f, "round_robins: %d\n", cfg->round_robins);
+    fprintf(f, "dynamic_layers: %s\n", cfg->dynamic_layers ? "true" : "false");
     fprintf(f, "preroll: %s\n", cfg->preroll ? "true" : "false");
     fprintf(f, "preroll_gap_ms: %d\n", project_ms(cfg->preroll_gap_seconds));
     fprintf(f, "hold_ms: %d\n", project_ms(cfg->hold_seconds));
     fprintf(f, "gap_ms: %d\n", project_ms(cfg->gap_seconds));
+    fprintf(f, "legato: %s\n", cfg->legato ? "true" : "false");
+    fprintf(f, "legato_step: %d\n", cfg->legato_step);
+    project_write_string(f, "legato_intervals", cfg->legato_intervals);
+    project_write_string(f, "legato_velocities", cfg->legato_velocities);
+    project_write_string(f, "legato_arrivals", cfg->legato_arrivals);
+    fprintf(f, "legato_detect_arrival: %s\n", cfg->legato_detect_arrival ? "true" : "false");
+    fprintf(f, "legato_source_hold_ms: %d\n", project_ms(cfg->legato_source_hold_seconds));
+    fprintf(f, "legato_overlap_ms: %d\n", project_ms(cfg->legato_overlap_seconds));
+    fprintf(f, "legato_hold_ms: %d\n", project_ms(cfg->legato_hold_seconds));
+    fprintf(f, "legato_lead_ms: %d\n", project_ms(cfg->legato_lead_seconds));
+    fprintf(f, "legato_blend_ms: %d\n", project_ms(cfg->legato_blend_seconds));
     fprintf(f, "sample_rate: %d\n", cfg->sample_rate);
     fprintf(f, "render_speed: %d\n", cfg->render_speed);
     fprintf(f, "split_samples: %s\n", cfg->split_samples ? "true" : "false");
+    fprintf(f, "export_rzc: %s\n", cfg->export_rzc ? "true" : "false");
     fprintf(f, "delete_full_wav: %s\n", cfg->delete_full_wav ? "true" : "false");
     project_write_string(f, "output_dir", cfg->output_dir);
     project_write_string(f, "export_dir", cfg->export_dir);
     fprintf(f, "preload_frames: %d\n", cfg->preload_frames);
+    fprintf(f, "bit_depth: %d\n", cfg->bit_depth);
 
     fprintf(f, "cc_curves:\n");
     for (int i = 0; i < cfg->cc_curve_count; ++i) {
         const ResampleCcCurve* c = &cfg->cc_curves[i];
         fprintf(f, "  - controller: %d\n", c->controller);
+        fprintf(f, "    layer: %d\n", c->layer);
         fprintf(f, "    bezier: %s\n", c->is_bezier ? "true" : "false");
         fprintf(f, "    constant: %d\n", c->constant);
         // The nodes are x, y and the curvature of the segment after them;
@@ -170,6 +185,7 @@ static float project_seconds(YamlNode* root, const char* key, float fallback, in
 static void project_read_curve(YamlNode* item, ResampleCcCurve* c) {
     resample_cc_set_constant(c, 1.0f);
     c->controller = fr_clampi(yaml_get_int(item, "controller", 1), 0, MIDI_VALUE_MAX);
+    c->layer = fr_clampi(yaml_get_int(item, "layer", 0), 0, RESAMPLE_MAX_ROUND_ROBINS);
     c->is_bezier = yaml_get_bool(item, "bezier", true);
     c->constant = fr_clampi(yaml_get_int(item, "constant", MIDI_VALUE_MAX), 0, MIDI_VALUE_MAX);
 
@@ -218,17 +234,31 @@ bool project_load(ResampleConfig* cfg, const char* name, char* err, size_t err_l
     out.step = fr_clampi(yaml_get_int(root, "step", out.step), 1, RESAMPLE_MAX_STEP);
     fr_strcpy(out.velocities, sizeof(out.velocities), yaml_get_string(root, "velocities", out.velocities));
     out.round_robins = fr_clampi(yaml_get_int(root, "round_robins", out.round_robins), 1, RESAMPLE_MAX_ROUND_ROBINS);
+    out.dynamic_layers = yaml_get_bool(root, "dynamic_layers", out.dynamic_layers);
     out.preroll = yaml_get_bool(root, "preroll", out.preroll);
     out.preroll_gap_seconds = project_seconds(root, "preroll_gap_ms", out.preroll_gap_seconds, 1);
     out.hold_seconds = project_seconds(root, "hold_ms", out.hold_seconds, 1);
     out.gap_seconds = project_seconds(root, "gap_ms", out.gap_seconds, 0);
+    out.legato = yaml_get_bool(root, "legato", out.legato);
+    out.legato_step = fr_clampi(yaml_get_int(root, "legato_step", out.legato_step), 1, RESAMPLE_MAX_STEP);
+    fr_strcpy(out.legato_intervals, sizeof(out.legato_intervals), yaml_get_string(root, "legato_intervals", out.legato_intervals));
+    fr_strcpy(out.legato_velocities, sizeof(out.legato_velocities), yaml_get_string(root, "legato_velocities", out.legato_velocities));
+    fr_strcpy(out.legato_arrivals, sizeof(out.legato_arrivals), yaml_get_string(root, "legato_arrivals", out.legato_arrivals));
+    out.legato_detect_arrival = yaml_get_bool(root, "legato_detect_arrival", out.legato_detect_arrival);
+    out.legato_source_hold_seconds = project_seconds(root, "legato_source_hold_ms", out.legato_source_hold_seconds, 1);
+    out.legato_overlap_seconds = project_seconds(root, "legato_overlap_ms", out.legato_overlap_seconds, 0);
+    out.legato_hold_seconds = project_seconds(root, "legato_hold_ms", out.legato_hold_seconds, 1);
+    out.legato_lead_seconds = project_seconds(root, "legato_lead_ms", out.legato_lead_seconds, 0);
+    out.legato_blend_seconds = project_seconds(root, "legato_blend_ms", out.legato_blend_seconds, 1);
     out.sample_rate = resample_valid_sample_rate(yaml_get_int(root, "sample_rate", out.sample_rate));
     out.render_speed = resample_valid_render_speed(yaml_get_int(root, "render_speed", out.render_speed), out.render_speed);
     out.split_samples = yaml_get_bool(root, "split_samples", out.split_samples);
+    out.export_rzc = yaml_get_bool(root, "export_rzc", out.export_rzc);
     out.delete_full_wav = yaml_get_bool(root, "delete_full_wav", out.delete_full_wav);
     fr_strcpy(out.output_dir, sizeof(out.output_dir), yaml_get_string(root, "output_dir", out.output_dir));
     fr_strcpy(out.export_dir, sizeof(out.export_dir), yaml_get_string(root, "export_dir", out.export_dir));
     out.preload_frames = resample_valid_preload_frames(yaml_get_int(root, "preload_frames", out.preload_frames), out.preload_frames);
+    out.bit_depth = resample_valid_bit_depth(yaml_get_int(root, "bit_depth", out.bit_depth), out.bit_depth);
 
     YamlNode* curves = yaml_find_child(root, "cc_curves");
     if (curves && curves->type == YAML_SEQUENCE) {

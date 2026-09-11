@@ -19,8 +19,32 @@
 #define RESAMPLE_DEFAULT_RENDER_SPEED        4
 // What FastSampler's own export preloads by default.
 #define RESAMPLE_DEFAULT_PRELOAD_FRAMES      8192
+// Half the bank for a depth a sampled instrument rarely needs past.
+#define RESAMPLE_DEFAULT_BIT_DEPTH           16
 #define RESAMPLE_DEFAULT_OUTPUT_DIR_NAME     "samples"
 #define RESAMPLE_FULL_FILE_SUFFIX            "_full.wav"
+
+// Legato, the defaults of a capture. The source note is held long enough for
+// a slow attack to have settled before the move starts. The overlap is what
+// makes the plugin play a move at all: the note landed on goes down while
+// the note left is still held.
+//
+// The lead and the blend are the two crossfades. The lead is short: it is
+// played back before the move even begins, so every millisecond of it is
+// added to the wait between the key and the new note, and it holds plain
+// sustain rather than anything the player did. 80 ms is five periods of a
+// cello's C and ten of a violin's, which is long enough to come in without
+// a click. The blend costs nothing, as it runs while the note landed on is
+// already sounding, so it takes the time a bowed note needs to settle.
+#define RESAMPLE_DEFAULT_LEGATO_SOURCE_HOLD_SECONDS 1.5f
+#define RESAMPLE_DEFAULT_LEGATO_OVERLAP_SECONDS     0.1f
+#define RESAMPLE_DEFAULT_LEGATO_HOLD_SECONDS        2.0f
+#define RESAMPLE_DEFAULT_LEGATO_LEAD_SECONDS        0.08f
+#define RESAMPLE_DEFAULT_LEGATO_BLEND_SECONDS       0.15f
+// What a library takes to land on the note, when nothing says otherwise.
+#define RESAMPLE_LEGATO_ARRIVAL_MS                  120
+#define RESAMPLE_DEFAULT_LEGATO_ARRIVAL_MS          "120"
+#define RESAMPLE_MAX_LEGATO_ARRIVAL_MS              2000
 
 void resample_config_defaults(ResampleConfig* cfg) {
     memset(cfg, 0, sizeof(*cfg));
@@ -29,15 +53,32 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->step = RESAMPLE_DEFAULT_STEP;
     fr_strcpy(cfg->velocities, sizeof(cfg->velocities), "40, 60");
     cfg->round_robins = 1;
+    cfg->dynamic_layers = false;
     cfg->preroll = false;
     cfg->preroll_gap_seconds = RESAMPLE_DEFAULT_PREROLL_GAP_SECONDS;
     cfg->hold_seconds = RESAMPLE_DEFAULT_HOLD_SECONDS;
     cfg->gap_seconds = RESAMPLE_DEFAULT_GAP_SECONDS;
+    cfg->legato = false;
+    // A step of 2 and every width to a fifth: the widths are what a slur
+    // needs to land on the right note, and the notes between two captured
+    // ones play the nearer move transposed, which keeps its width.
+    cfg->legato_step = 2;
+    fr_strcpy(cfg->legato_intervals, sizeof(cfg->legato_intervals), "1, 2, 3, 4, 5, 6, 7");
+    fr_strcpy(cfg->legato_velocities, sizeof(cfg->legato_velocities), "64");
+    fr_strcpy(cfg->legato_arrivals, sizeof(cfg->legato_arrivals), RESAMPLE_DEFAULT_LEGATO_ARRIVAL_MS);
+    cfg->legato_detect_arrival = true;
+    cfg->legato_source_hold_seconds = RESAMPLE_DEFAULT_LEGATO_SOURCE_HOLD_SECONDS;
+    cfg->legato_overlap_seconds = RESAMPLE_DEFAULT_LEGATO_OVERLAP_SECONDS;
+    cfg->legato_hold_seconds = RESAMPLE_DEFAULT_LEGATO_HOLD_SECONDS;
+    cfg->legato_lead_seconds = RESAMPLE_DEFAULT_LEGATO_LEAD_SECONDS;
+    cfg->legato_blend_seconds = RESAMPLE_DEFAULT_LEGATO_BLEND_SECONDS;
     cfg->sample_rate = RESAMPLE_DEFAULT_SAMPLE_RATE;
     cfg->render_speed = RESAMPLE_DEFAULT_RENDER_SPEED;
     cfg->split_samples = true;
+    cfg->export_rzc = false;
     cfg->delete_full_wav = false;
     cfg->preload_frames = RESAMPLE_DEFAULT_PRELOAD_FRAMES;
+    cfg->bit_depth = RESAMPLE_DEFAULT_BIT_DEPTH;
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));
     plat_path_join(cfg->output_dir, sizeof(cfg->output_dir), dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);
@@ -66,6 +107,13 @@ int resample_valid_preload_frames(int value, int fallback) {
     return fallback;
 }
 
+int resample_valid_bit_depth(int value, int fallback) {
+    for (int i = 0; i < RESAMPLE_BIT_DEPTH_OPTION_COUNT; ++i) {
+        if (g_resample_bit_depth_options[i] == value) return value;
+    }
+    return fallback;
+}
+
 void resample_preload_label(int preload_frames, char* out, size_t out_len) {
     if (preload_frames <= 0) {
         fr_strcpy(out, out_len, "RAM");
@@ -83,6 +131,52 @@ uint64_t resample_required_bytes(const ResampleScript* script, bool split_sample
         total += (uint64_t)(seg->end_frame - seg->start_frame) * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
     }
     return total;
+}
+
+void resample_layer_suffix(bool dynamic_layers, int layer, char* out, size_t out_len) {
+    snprintf(out, out_len, "%s%d", dynamic_layers ? "dyn" : "RR", layer);
+}
+
+void resample_interval_suffix(int interval, char* out, size_t out_len) {
+    snprintf(out, out_len, "%+d", interval);
+}
+
+void resample_sample_suffix(bool dynamic_layers, const ResampleSegment* seg, bool release,
+                            char* out, size_t out_len) {
+    char note[8];
+    midi_note_name(seg->note, note, sizeof(note));
+    char layer[RESAMPLE_LAYER_SUFFIX_LEN];
+    resample_layer_suffix(dynamic_layers, seg->round_robin, layer, sizeof(layer));
+    if (seg->kind == RESAMPLE_SEG_TRANSITION) {
+        // The two notes of the move, the one left first. A run without
+        // dynamic layers captures every move once, so it names no layer.
+        char source[8];
+        midi_note_name(seg->source_note, source, sizeof(source));
+        if (dynamic_layers) {
+            snprintf(out, out_len, "_%s-%s_%d_%s-leg.wav", source, note, (int)seg->velocity, layer);
+        } else {
+            snprintf(out, out_len, "_%s-%s_%d_leg.wav", source, note, (int)seg->velocity);
+        }
+        return;
+    }
+    snprintf(out, out_len, "_%s_%d_%s%s.wav", note, (int)seg->velocity, layer, release ? "-release" : "");
+}
+
+void resample_sample_file_name(const char* prefix, bool dynamic_layers, const ResampleSegment* seg,
+                               char* out, size_t out_len) {
+    char suffix[RESAMPLE_FILE_NAME_LEN];
+    resample_sample_suffix(dynamic_layers, seg, false, suffix, sizeof(suffix));
+    snprintf(out, out_len, "%s%s", prefix, suffix);
+}
+
+// The layers a run plays every note at: the dynamic layers, or one. The
+// moves are captured once per layer, and once for a round robin run.
+static int resample_layer_count(const ResampleConfig* cfg) {
+    return cfg->dynamic_layers ? cfg->round_robins : 1;
+}
+
+bool resample_preroll_on(const ResampleConfig* cfg) {
+    return cfg->preroll && !cfg->dynamic_layers;
 }
 
 const char* resample_step_label(int step) {
@@ -103,7 +197,7 @@ const char* resample_step_label(int step) {
 #define RESAMPLE_CC_FIT_TOLERANCE 0.03f
 
 float resample_cc_span(const ResampleConfig* cfg, float* preroll, float* hold, float* gap) {
-    float pre = cfg->preroll && cfg->round_robins > 1 ? (float)(cfg->round_robins - 1) * cfg->preroll_gap_seconds : 0.0f;
+    float pre = resample_preroll_on(cfg) && cfg->round_robins > 1 ? (float)(cfg->round_robins - 1) * cfg->preroll_gap_seconds : 0.0f;
     if (pre < 0.0f) pre = 0.0f;
     float h = cfg->hold_seconds > 0.0f ? cfg->hold_seconds : 0.0f;
     float g = cfg->gap_seconds > 0.0f ? cfg->gap_seconds : 0.0f;
@@ -127,17 +221,27 @@ void resample_cc_set_constant(ResampleCcCurve* c, float value) {
 
 bool resample_cc_add(ResampleConfig* cfg) {
     if (cfg->cc_curve_count >= RESAMPLE_MAX_CC_CURVES) return false;
-    // The lowest controller no curve has yet, from the mod wheel up.
+    // After a curve tied to a layer, the same controller for the next layer;
+    // the last layer's curve, and every other case, takes the lowest
+    // controller no curve has yet, from the mod wheel up.
     int controller = MIDI_CC_MOD_WHEEL;
-    for (int i = 0; i < cfg->cc_curve_count; ++i) {
-        if (cfg->cc_curves[i].controller == controller) {
-            ++controller;
-            i = -1;   // the next candidate is checked against every curve again
+    int layer = 0;
+    const ResampleCcCurve* last = cfg->cc_curve_count > 0 ? &cfg->cc_curves[cfg->cc_curve_count - 1] : nullptr;
+    if (cfg->dynamic_layers && last && last->layer > 0 && last->layer < cfg->round_robins) {
+        controller = last->controller;
+        layer = last->layer + 1;
+    } else {
+        for (int i = 0; i < cfg->cc_curve_count; ++i) {
+            if (cfg->cc_curves[i].controller == controller) {
+                ++controller;
+                i = -1;   // the next candidate is checked against every curve again
+            }
         }
     }
     ResampleCcCurve* c = &cfg->cc_curves[cfg->cc_curve_count++];
     memset(c, 0, sizeof(*c));
     c->controller = controller > MIDI_VALUE_MAX ? MIDI_VALUE_MAX : controller;
+    c->layer = layer;
     c->is_bezier = true;
     c->constant = MIDI_VALUE_MAX;
     resample_cc_set_constant(c, 1.0f);
@@ -289,39 +393,46 @@ void resample_segment_file_name(const ResampleConfig* cfg, const ResampleSegment
     char prefix[RESAMPLE_FILE_NAME_LEN];
     char err[8];
     if (!resample_prefix(cfg, prefix, sizeof(prefix), err, sizeof(err))) fr_strcpy(prefix, sizeof(prefix), "sample");
-    char note[8];
-    midi_note_name(seg->note, note, sizeof(note));
-    snprintf(out, out_len, "%s_%s_%d_RR%d.wav", prefix, note, (int)seg->velocity, (int)seg->round_robin);
+    resample_sample_file_name(prefix, cfg->dynamic_layers, seg, out, out_len);
 }
 
-// "40, 60 100" to a sorted list of distinct velocities in 1..127.
-static int resample_parse_velocities(const char* text, int* out, int max_count, char* err, size_t err_len) {
+// Whether a curve plays during a pass: every curve does, unless the run has
+// dynamic layers and the curve is tied to another one.
+static bool resample_cc_plays(const ResampleConfig* cfg, const ResampleCcCurve* curve, int layer) {
+    return !cfg->dynamic_layers || curve->layer == 0 || curve->layer == layer;
+}
+
+// "40, 60 100" to a sorted list of distinct velocities in 1..127. The label
+// names the field in the messages: the notes' velocities, or the legato
+// ones.
+static int resample_parse_velocities(const char* label, const char* text, int* out, int max_count,
+                                     char* err, size_t err_len) {
     int count = 0;
     const char* s = text;
     while (*s) {
         while (*s == ' ' || *s == ',' || *s == ';' || *s == '\t') ++s;
         if (!*s) break;
         if (*s < '0' || *s > '9') {
-            snprintf(err, err_len, "Velocities: '%c' is not a number", *s);
+            snprintf(err, err_len, "%s: '%c' is not a number", label, *s);
             return 0;
         }
         int v = 0;
         while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
         if (v < 1 || v > MIDI_VALUE_MAX) {
-            snprintf(err, err_len, "Velocities: %d is outside 1..127", v);
+            snprintf(err, err_len, "%s: %d is outside 1..127", label, v);
             return 0;
         }
         bool seen = false;
         for (int i = 0; i < count; ++i) seen = seen || out[i] == v;
         if (seen) continue;
         if (count >= max_count) {
-            snprintf(err, err_len, "Velocities: at most %d", max_count);
+            snprintf(err, err_len, "%s: at most %d", label, max_count);
             return 0;
         }
         out[count++] = v;
     }
     if (count == 0) {
-        fr_strcpy(err, err_len, "Velocities: give at least one, like \"40, 60\"");
+        snprintf(err, err_len, "%s: give at least one, like \"40, 60\"", label);
         return 0;
     }
     // Ascending, so the file goes soft to loud within each note.
@@ -333,6 +444,87 @@ static int resample_parse_velocities(const char* text, int* out, int max_count, 
             --j;
         }
         out[j] = v;
+    }
+    return count;
+}
+
+// "1, 2" to the signed intervals a legato run records: -2, -1, 1, 2. The
+// widths go in as magnitudes, and each is recorded both ways, as a move up
+// and a move down are two different performances.
+static int resample_parse_intervals(const char* text, int* out, int max_count, char* err, size_t err_len) {
+    int widths[RESAMPLE_MAX_LEGATO_INTERVALS];
+    int width_count = 0;
+    const char* s = text;
+    while (*s) {
+        while (*s == ' ' || *s == ',' || *s == ';' || *s == '\t' || *s == '+') ++s;
+        if (!*s) break;
+        if (*s < '0' || *s > '9') {
+            snprintf(err, err_len, "Intervals: '%c' is not a number", *s);
+            return 0;
+        }
+        int v = 0;
+        while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+        if (v < 1 || v > RESAMPLE_MAX_STEP) {
+            snprintf(err, err_len, "Intervals: %d is outside 1..%d semitones", v, RESAMPLE_MAX_STEP);
+            return 0;
+        }
+        bool seen = false;
+        for (int i = 0; i < width_count; ++i) seen = seen || widths[i] == v;
+        if (seen) continue;
+        if (width_count >= RESAMPLE_MAX_LEGATO_INTERVALS) {
+            snprintf(err, err_len, "Intervals: at most %d", RESAMPLE_MAX_LEGATO_INTERVALS);
+            return 0;
+        }
+        widths[width_count++] = v;
+    }
+    if (width_count == 0) {
+        fr_strcpy(err, err_len, "Intervals: give at least one width, like \"1, 2\"");
+        return 0;
+    }
+    if (2 * width_count > max_count) {
+        snprintf(err, err_len, "Intervals: at most %d", max_count / 2);
+        return 0;
+    }
+    for (int i = 1; i < width_count; ++i) {
+        int v = widths[i];
+        int j = i;
+        while (j > 0 && widths[j - 1] > v) {
+            widths[j] = widths[j - 1];
+            --j;
+        }
+        widths[j] = v;
+    }
+    // Ascending and signed: the widest move down first, the widest move up
+    // last, so a link table built from the list reads in order.
+    int count = 0;
+    for (int i = width_count - 1; i >= 0; --i) out[count++] = -widths[i];
+    for (int i = 0; i < width_count; ++i) out[count++] = widths[i];
+    return count;
+}
+
+// A list of times in milliseconds, "333, 250, 100". One value stands for
+// every velocity; any other count has to match them one for one.
+static int resample_parse_ms(const char* text, int* out, int max_count, char* err, size_t err_len) {
+    int count = 0;
+    const char* s = text;
+    while (*s) {
+        while (*s == ' ' || *s == ',' || *s == ';' || *s == '\t') ++s;
+        if (!*s) break;
+        if (*s < '0' || *s > '9') {
+            snprintf(err, err_len, "Arrival: '%c' is not a number", *s);
+            return -1;
+        }
+        int v = 0;
+        while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+        if (v > RESAMPLE_MAX_LEGATO_ARRIVAL_MS) {
+            snprintf(err, err_len, "Arrival: %d ms is more than the %d ms one can be", v, RESAMPLE_MAX_LEGATO_ARRIVAL_MS);
+            return -1;
+        }
+        if (count >= max_count) {
+            snprintf(err, err_len, "Arrival: at most %d times", max_count);
+            return -1;
+        }
+        out[count++] = v;
     }
     return count;
 }
@@ -363,20 +555,24 @@ static int resample_event_compare(const void* a, const void* b) {
 // note to the end of its gap. The curve's time starts at the longest
 // pre-roll, so the real note-on lands on the same point of it for every
 // round robin; a shorter pre-roll starts further along the curve. An event
-// goes out when the 7-bit value differs from the last one sent, so a flat
-// curve costs one event. False when the script is full.
-static bool resample_add_cc(ResampleScript* script, const ResampleConfig* cfg, int64_t window_start,
+// goes out when the 7-bit value differs from the last one sent on that
+// controller, so a flat curve costs one event. With dynamic layers only the
+// curves of this pass's layer, and the ones tied to none, are read. False
+// when the script is full.
+static bool resample_add_cc(ResampleScript* script, const ResampleConfig* cfg, int layer, int64_t window_start,
                             int64_t note_on, int64_t window_end, double sample_rate, float span_seconds,
                             float preroll_seconds, int64_t tick_frames, int* last_value) {
     for (int k = 0; k < cfg->cc_curve_count; ++k) {
         const ResampleCcCurve* curve = &cfg->cc_curves[k];
+        if (!resample_cc_plays(cfg, curve, layer)) continue;
+        int* last = &last_value[curve->controller];
         for (int64_t f = window_start; f < window_end; f += tick_frames) {
             float seconds = (float)((double)(f - note_on) / sample_rate) + preroll_seconds;
             float x = span_seconds > 0.0f ? seconds / span_seconds : 0.0f;
             int v = fr_clampi((int)(resample_cc_value_at(curve, x) * (float)MIDI_VALUE_MAX + 0.5f), 0, MIDI_VALUE_MAX);
-            if (v == last_value[k]) continue;
+            if (v == *last) continue;
             if (!resample_add(script, f, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, curve->controller, v))) return false;
-            last_value[k] = v;
+            *last = v;
         }
     }
     return true;
@@ -412,13 +608,14 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         return false;
     }
     int velocities[RESAMPLE_MAX_VELOCITIES];
-    int velocity_count = resample_parse_velocities(cfg->velocities, velocities, RESAMPLE_MAX_VELOCITIES, err, err_len);
+    int velocity_count = resample_parse_velocities("Velocities", cfg->velocities, velocities, RESAMPLE_MAX_VELOCITIES, err, err_len);
     if (velocity_count == 0) return false;
     if (cfg->round_robins < 1 || cfg->round_robins > RESAMPLE_MAX_ROUND_ROBINS) {
         snprintf(err, err_len, "Round robins: 1 to %d", RESAMPLE_MAX_ROUND_ROBINS);
         return false;
     }
-    if (cfg->preroll && cfg->preroll_gap_seconds <= RESAMPLE_PREROLL_HOLD_SECONDS) {
+    bool preroll = resample_preroll_on(cfg);
+    if (preroll && cfg->preroll_gap_seconds <= RESAMPLE_PREROLL_HOLD_SECONDS) {
         snprintf(err, err_len, "Pre-roll gap must be longer than the %.1f s a pre-roll note is held",
                  RESAMPLE_PREROLL_HOLD_SECONDS);
         return false;
@@ -444,24 +641,119 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         return false;
     }
     for (int i = 0; i < cfg->cc_curve_count; ++i) {
-        int cc = cfg->cc_curves[i].controller;
+        const ResampleCcCurve* a = &cfg->cc_curves[i];
+        int cc = a->controller;
         if (cc < 0 || cc > MIDI_VALUE_MAX) {
             snprintf(err, err_len, "CC curves: controller %d is outside 0..127", cc);
             return false;
         }
+        if (cfg->dynamic_layers && (a->layer < 0 || a->layer > cfg->round_robins)) {
+            snprintf(err, err_len, "CC curves: a CC%d curve is tied to layer %d, and there are %d", cc, a->layer, cfg->round_robins);
+            return false;
+        }
+        // Two curves on one controller are fine when each plays for a layer
+        // of its own; they clash when some pass would read both.
         for (int j = 0; j < i; ++j) {
-            if (cfg->cc_curves[j].controller == cc) {
-                snprintf(err, err_len, "CC curves: CC%d has two curves; remove one", cc);
+            const ResampleCcCurve* b = &cfg->cc_curves[j];
+            if (b->controller != cc) continue;
+            bool clash = !cfg->dynamic_layers || a->layer == 0 || b->layer == 0 || a->layer == b->layer;
+            if (clash) {
+                snprintf(err, err_len, cfg->dynamic_layers
+                         ? "CC curves: two CC%d curves play for the same layer; tie each to its own"
+                         : "CC curves: CC%d has two curves; remove one", cc);
                 return false;
             }
         }
     }
 
+    // The legato part: the intervals, the velocities the note landed on is
+    // played at, and the time each of those takes to land.
+    int intervals[2 * RESAMPLE_MAX_LEGATO_INTERVALS];
+    int interval_count = 0;
+    int legato_velocities[RESAMPLE_MAX_LEGATO_VELOCITIES];
+    int legato_velocity_count = 0;
+    int arrivals[RESAMPLE_MAX_LEGATO_VELOCITIES];
+    int layer_count = resample_layer_count(cfg);
+    int transition_total = 0;
+    if (cfg->legato) {
+        interval_count = resample_parse_intervals(cfg->legato_intervals, intervals,
+                                                  2 * RESAMPLE_MAX_LEGATO_INTERVALS, err, err_len);
+        if (interval_count == 0) return false;
+        if (cfg->legato_step < 1 || cfg->legato_step > RESAMPLE_MAX_STEP) {
+            fr_strcpy(err, err_len, "Legato: pick an interval for the notes the moves start from");
+            return false;
+        }
+        legato_velocity_count = resample_parse_velocities("Legato velocities", cfg->legato_velocities, legato_velocities,
+                                                          RESAMPLE_MAX_LEGATO_VELOCITIES, err, err_len);
+        if (legato_velocity_count == 0) return false;
+        int given = resample_parse_ms(cfg->legato_arrivals, arrivals, RESAMPLE_MAX_LEGATO_VELOCITIES, err, err_len);
+        if (given < 0) return false;
+        if (given == 0) {
+            for (int i = 0; i < legato_velocity_count; ++i) arrivals[i] = RESAMPLE_LEGATO_ARRIVAL_MS;
+        } else if (given == 1) {
+            for (int i = 1; i < legato_velocity_count; ++i) arrivals[i] = arrivals[0];
+        } else if (given != legato_velocity_count) {
+            snprintf(err, err_len, "Arrival: %d times for %d legato velocities; give one, or one each",
+                     given, legato_velocity_count);
+            return false;
+        }
+        if (cfg->legato_source_hold_seconds <= 0.0f || cfg->legato_hold_seconds <= 0.0f) {
+            fr_strcpy(err, err_len, "Legato: both holds must be longer than 0 seconds");
+            return false;
+        }
+        if (cfg->legato_overlap_seconds < 0.0f) {
+            fr_strcpy(err, err_len, "Legato: the overlap cannot be negative");
+            return false;
+        }
+        if (cfg->legato_overlap_seconds >= cfg->legato_hold_seconds) {
+            fr_strcpy(err, err_len, "Legato: the overlap must be shorter than the hold of the note landed on");
+            return false;
+        }
+        if (cfg->legato_lead_seconds < 0.0f || cfg->legato_lead_seconds > cfg->legato_source_hold_seconds) {
+            fr_strcpy(err, err_len, "Legato: the lead must fit inside the hold of the note left");
+            return false;
+        }
+        if (cfg->legato_blend_seconds <= 0.0f) {
+            fr_strcpy(err, err_len, "Legato: the blend must be longer than 0 seconds");
+            return false;
+        }
+        // Every capture has to reach past the landing, or the sample the
+        // instrument cuts from it stops before the note it lands on.
+        for (int i = 0; i < legato_velocity_count; ++i) {
+            float needed = (float)arrivals[i] / 1000.0f + cfg->legato_blend_seconds;
+            if (needed > cfg->legato_hold_seconds) {
+                snprintf(err, err_len, "Legato: a %d ms arrival and a %.0f ms blend need a hold of at least %.2f s",
+                         arrivals[i], cfg->legato_blend_seconds * 1000.0f, (double)needed);
+                return false;
+            }
+        }
+        for (int source = low; source <= high; source += cfg->legato_step) {
+            for (int i = 0; i < interval_count; ++i) {
+                int target = source + intervals[i];
+                // A move onto a key the run does not sample has no sustain
+                // to land on, so it is left out.
+                if (target < low || target > high) continue;
+                transition_total += legato_velocity_count * layer_count;
+            }
+        }
+        if (transition_total == 0) {
+            fr_strcpy(err, err_len, "Legato: no move fits inside the note range; widen it or use narrower intervals");
+            return false;
+        }
+    }
+
     int note_count = (high - low) / cfg->step + 1;
-    int segment_total = note_count * velocity_count * cfg->round_robins;
-    if (segment_total > RESAMPLE_MAX_SEGMENTS) {
-        snprintf(err, err_len, "%d samples is more than the %d one run can hold; narrow the range, velocities or round robins",
-                 segment_total, RESAMPLE_MAX_SEGMENTS);
+    int sustain_total = note_count * velocity_count * cfg->round_robins;
+    int segment_total = sustain_total + transition_total;
+    // A sustain run maps every sample twice, as a loop and as a release; a
+    // transition is one zone. The instrument holds as many zones as the
+    // segments make between them.
+    int zone_total = sustain_total * (cfg->dynamic_layers ? 2 : 1) + transition_total;
+    if (segment_total > RESAMPLE_MAX_SEGMENTS || zone_total > RESAMPLE_MAX_SEGMENTS) {
+        int over = zone_total > segment_total ? zone_total : segment_total;
+        snprintf(err, err_len,
+                 "%d samples and %d zones is more than the %d one run can hold; narrow the range, the velocities, the layers or the legato intervals",
+                 segment_total, over, RESAMPLE_MAX_SEGMENTS);
         return false;
     }
 
@@ -471,13 +763,14 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     int64_t preroll_gap_frames = (int64_t)((double)cfg->preroll_gap_seconds * sample_rate + 0.5);
 
     // The controller curves: their span, how often they are read, and the
-    // value each last sent, so the first tick of the run always sends one.
+    // value last sent on each controller, so the first tick of the run
+    // always sends one.
     float preroll_seconds;
     float span_seconds = resample_cc_span(cfg, &preroll_seconds, nullptr, nullptr);
     int64_t tick_frames = (int64_t)((double)RESAMPLE_CC_TICK_SECONDS * sample_rate + 0.5);
     if (tick_frames < 1) tick_frames = 1;
-    int last_value[RESAMPLE_MAX_CC_CURVES];
-    for (int k = 0; k < RESAMPLE_MAX_CC_CURVES; ++k) last_value[k] = -1;
+    int last_value[MIDI_VALUE_MAX + 1];
+    for (int k = 0; k <= MIDI_VALUE_MAX; ++k) last_value[k] = -1;
 
     bool fits = true;
     int64_t t = 0;
@@ -486,10 +779,10 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             for (int rr = 1; rr <= cfg->round_robins; ++rr) {
                 // The window of this sample: the pre-roll notes, the real
                 // note, the gap. The controllers go in first.
-                int preroll_notes = cfg->preroll ? rr - 1 : 0;
+                int preroll_notes = preroll ? rr - 1 : 0;
                 int64_t note_on = t + (int64_t)preroll_notes * preroll_gap_frames;
                 int64_t window_end = note_on + hold_frames + gap_frames;
-                fits = fits && resample_add_cc(script, cfg, t, note_on, window_end, sample_rate,
+                fits = fits && resample_add_cc(script, cfg, rr, t, note_on, window_end, sample_rate,
                                                span_seconds, preroll_seconds, tick_frames, last_value);
                 // Advance the sampler's counter to variation rr with short
                 // notes that each ring out before the next.
@@ -499,10 +792,14 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
                     t += preroll_gap_frames;
                 }
                 ResampleSegment* seg = &script->segments[script->segment_count++];
+                memset(seg, 0, sizeof(*seg));
                 seg->start_frame = t;
+                seg->off_frame = t + hold_frames;
                 seg->note = (uint8_t)note;
                 seg->velocity = (uint8_t)velocities[v];
                 seg->round_robin = (uint8_t)rr;
+                seg->kind = RESAMPLE_SEG_SUSTAIN;
+                seg->source_note = (uint8_t)note;
                 fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_NOTE_ON, 0, note, velocities[v]));
                 fits = fits && resample_add(script, t + hold_frames, midi_make(MIDI_STATUS_NOTE_OFF, 0, note, 0));
                 t += hold_frames + gap_frames;
@@ -510,6 +807,59 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             }
         }
     }
+
+    // The moves, after every note has been sampled. One capture holds the
+    // note it leaves, puts the note it lands on down over it, and lets the
+    // first go; the sample runs from the lead before that second note-on to
+    // where the second note is released.
+    if (cfg->legato) {
+        int64_t source_hold_frames = (int64_t)((double)cfg->legato_source_hold_seconds * sample_rate + 0.5);
+        int64_t overlap_frames = (int64_t)((double)cfg->legato_overlap_seconds * sample_rate + 0.5);
+        int64_t target_hold_frames = (int64_t)((double)cfg->legato_hold_seconds * sample_rate + 0.5);
+        int64_t lead_frames = (int64_t)((double)cfg->legato_lead_seconds * sample_rate + 0.5);
+        float legato_span = cfg->legato_source_hold_seconds + cfg->legato_hold_seconds + cfg->gap_seconds;
+        for (int source = low; source <= high; source += cfg->legato_step) {
+            for (int i = 0; i < interval_count; ++i) {
+                int target = source + intervals[i];
+                if (target < low || target > high) continue;
+                for (int v = 0; v < legato_velocity_count; ++v) {
+                    int velocity = legato_velocities[v];
+                    for (int layer = 1; layer <= layer_count; ++layer) {
+                        int64_t source_on = t;
+                        int64_t target_on = source_on + source_hold_frames;
+                        int64_t source_off = target_on + overlap_frames;
+                        int64_t target_off = target_on + target_hold_frames;
+                        int64_t window_end = target_off + gap_frames;
+                        fits = fits && resample_add_cc(script, cfg, layer, source_on, source_on, window_end,
+                                                       sample_rate, legato_span, 0.0f, tick_frames, last_value);
+                        ResampleSegment* seg = &script->segments[script->segment_count++];
+                        memset(seg, 0, sizeof(*seg));
+                        seg->kind = RESAMPLE_SEG_TRANSITION;
+                        seg->start_frame = target_on - lead_frames;
+                        seg->off_frame = target_on;
+                        seg->end_frame = target_off;
+                        seg->note = (uint8_t)target;
+                        seg->source_note = (uint8_t)source;
+                        seg->interval = (int8_t)intervals[i];
+                        seg->velocity = (uint8_t)velocity;
+                        seg->round_robin = (uint8_t)layer;
+                        // Where the move is taken to leave and to land, until
+                        // the instrument build reads both out of the audio.
+                        // Nothing moves before the key that asked for it went
+                        // down, so the note-on is the nominal departure.
+                        seg->departure_frame = lead_frames;
+                        seg->arrival_frame = lead_frames + (int64_t)((double)arrivals[v] * sample_rate / 1000.0 + 0.5);
+                        fits = fits && resample_add(script, source_on, midi_make(MIDI_STATUS_NOTE_ON, 0, source, velocity));
+                        fits = fits && resample_add(script, target_on, midi_make(MIDI_STATUS_NOTE_ON, 0, target, velocity));
+                        fits = fits && resample_add(script, source_off, midi_make(MIDI_STATUS_NOTE_OFF, 0, source, 0));
+                        fits = fits && resample_add(script, target_off, midi_make(MIDI_STATUS_NOTE_OFF, 0, target, 0));
+                        t = window_end;
+                    }
+                }
+            }
+        }
+    }
+
     // Whatever still rings is cut at the end of the file.
     fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, MIDI_CC_ALL_NOTES_OFF, 0));
     fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, MIDI_CC_ALL_SOUND_OFF, 0));
@@ -529,10 +879,25 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     script->note_count = note_count;
     script->velocity_count = velocity_count;
     script->round_robin_count = cfg->round_robins;
+    script->dynamic_layers = cfg->dynamic_layers;
+    script->legato = cfg->legato;
+    script->interval_count = interval_count;
+    for (int i = 0; i < interval_count; ++i) script->intervals[i] = intervals[i];
+    script->legato_velocity_count = legato_velocity_count;
+    script->transition_count = transition_total;
+    script->lead_seconds = cfg->legato_lead_seconds;
+    script->blend_seconds = cfg->legato_blend_seconds;
     script->built = true;
-    fr_log("resample: %d notes x %d velocities x %d round robins = %d samples, %d CC curves, %d events, %.1f s at %.0f Hz, pre-roll %s",
-           note_count, velocity_count, cfg->round_robins, script->segment_count, cfg->cc_curve_count, script->count,
-           (double)t / sample_rate, sample_rate, cfg->preroll ? "on" : "off");
+    fr_log("resample: %d notes x %d velocities x %d %s = %d samples, %d CC curves, %d events, %.1f s at %.0f Hz, pre-roll %s",
+           note_count, velocity_count, cfg->round_robins, cfg->dynamic_layers ? "dynamic layers" : "round robins",
+           sustain_total, cfg->cc_curve_count, script->count,
+           (double)t / sample_rate, sample_rate, preroll ? "on" : "off");
+    if (cfg->legato) {
+        fr_log("resample: plus %d moves: %d intervals from every %s x %d velocities x %d layer%s, lead %.0f ms, blend %.0f ms",
+               transition_total, interval_count, resample_step_label(cfg->legato_step),
+               legato_velocity_count, layer_count, layer_count == 1 ? "" : "s",
+               (double)cfg->legato_lead_seconds * 1000.0, (double)cfg->legato_blend_seconds * 1000.0);
+    }
     return true;
 }
 
@@ -611,10 +976,8 @@ static bool resample_split(ResampleJob* job) {
     for (int i = 0; i < script->segment_count; ++i) {
         if (job->cancel.load()) return true;
         const ResampleSegment* seg = &script->segments[i];
-        char note[8];
-        midi_note_name(seg->note, note, sizeof(note));
         char name[RESAMPLE_FILE_NAME_LEN];
-        snprintf(name, sizeof(name), "%s_%s_%d_RR%d.wav", job->prefix, note, (int)seg->velocity, (int)seg->round_robin);
+        resample_sample_file_name(job->prefix, job->dynamic_layers, seg, name, sizeof(name));
         char path[FR_MAX_PATH];
         plat_path_join(path, sizeof(path), job->out_dir, name);
         if (!wav_copy_segment(job->full_path, seg->start_frame, seg->end_frame - seg->start_frame, path)) {
@@ -677,6 +1040,8 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
     job->block_size = block_size > FR_MAX_BLOCK_SIZE ? FR_MAX_BLOCK_SIZE : block_size;
     job->speed = cfg->render_speed < 0 ? 0 : cfg->render_speed;
     job->split_samples = cfg->split_samples;
+    // The script's, not the tab's: the files must say what was rendered.
+    job->dynamic_layers = script->dynamic_layers;
     fr_strcpy(job->out_dir, sizeof(job->out_dir), cfg->output_dir);
     char full_name[RESAMPLE_FILE_NAME_LEN];
     snprintf(full_name, sizeof(full_name), "%s%s", job->prefix, RESAMPLE_FULL_FILE_SUFFIX);
