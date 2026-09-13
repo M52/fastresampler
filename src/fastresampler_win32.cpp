@@ -88,9 +88,7 @@
 #include "public.sdk/source/vst/hosting/parameterchanges.cpp"
 #include "public.sdk/source/vst/hosting/processdata.cpp"
 
-// FastSampler's file formats, from the FastSampler checkout (see build.bat):
-// the nanopb runtime, the generated schema code, the bank header and the
-// magic of the instrument file.
+// Public format definitions come from the pinned fastsampler-shared submodule.
 #include "pb.h"
 #include "pb_common.h"
 #include "pb_encode.h"
@@ -98,12 +96,9 @@
 #include "pb_encode.c"
 #include "fastsampler.pb.h"
 #include "fastsampler.pb.c"
-#include "fileformats/fastsampler_fsb.h"
-#include "fileformats/fastsampler_pb.h"
-// The collection effect ids and parameter slots, for the round robin effect
-// the instrument builder writes.
-#include "fx/collection/fastsampler_cfx.h"
-#include "fx/collection/legato/fastsampler_cfx_legato.h"
+#include "fastsampler_fsb.h"
+#include "fastsampler_pb.h"
+#include "fastsampler_formats.h"
 // WavPack, from FastSampler's third-party folder: the bank builder
 // compresses the streamed part of every sample with it. The DLL sits next
 // to the exe, copied there by build.bat.

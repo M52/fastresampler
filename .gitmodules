@@ -1,0 +1,3 @@
+[submodule "3rdparty/fastsampler-shared"]
+	path = 3rdparty/fastsampler-shared
+	url = https://git.omkserver.nl/Macaberz/fastsampler-shared.git

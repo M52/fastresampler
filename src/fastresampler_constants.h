@@ -150,3 +150,11 @@ enum AppLogTab {
 
 // How the output meter falls back after a peak, per frame.
 #define UI_METER_DECAY          0.92f
+
+// Standard signed PCM conversion limits used by the bank writer.
+#define PCM_ENCODE_16BIT 32768.0f
+#define PCM_ENCODE_24BIT 8388608.0f
+#define PCM_MAX_16BIT 32767
+#define PCM_MAX_24BIT 8388607
+#define PCM_MIN_16BIT (-32768)
+#define PCM_MIN_24BIT (-8388608)

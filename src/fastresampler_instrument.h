@@ -4,8 +4,8 @@
 // configuration asks, one .rzc per round robin -- FastSampler's readable
 // zone collection, naming the sample files the split wrote.
 //
-// The formats are FastSampler's and are compiled from its checkout (see
-// build.bat): fastsampler.pb.h for the .fsi message, fastsampler_fsb.h for
+// The public formats are pinned in the fastsampler-shared submodule (see
+// FORMATS.md): fastsampler.pb.h for the .fsi message, fastsampler_fsb.h for
 // the bank header and rows. Nothing about their layout is repeated here.
 //
 // The mapping: one zone collection per round robin, named RR1, RR2, ..., each

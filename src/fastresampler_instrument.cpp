@@ -510,11 +510,6 @@ static void instrument_fill_layer_fx(FSICollectionFX* fx, int collection_index, 
 
 // --- Legato --------------------------------------------------------------------
 
-// From FastSampler's fastsampler_zonecollection.h, which cannot be included
-// here: it brings in that project's platform layer, the one this project
-// forked, and the two collide. Compare the pair when it changes.
-#define INSTRUMENT_COLLECTION_FLAG_REFERENCED (1 << 3)
-
 // FastSampler's legato effect on one sustain collection, with the sampler's
 // own defaults for every fade and the two things this run knows better.
 // The fades are clamped to the margin, which is all the room a transition
@@ -873,7 +868,7 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
         // A collection of transitions is only ever reached through a link, never
         // from the keyboard.
         col->has_flags = true;
-        col->flags = plan[c].kind == INSTRUMENT_COL_TRANSITION ? INSTRUMENT_COLLECTION_FLAG_REFERENCED : 0;
+        col->flags = plan[c].kind == INSTRUMENT_COL_TRANSITION ? COLLECTION_FLAG_REFERENCED : 0;
         col->has_stable_id = true;  col->stable_id = (uint32_t)(c + 1);
         col->has_output_bus = true; col->output_bus = 0;
         // Whose releases these are: the sustain collection of the same layer,

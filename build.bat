@@ -16,7 +16,7 @@ if not exist build_number.txt (
     echo 0 > build_number.txt
 )
 set /p BUILD_NUM=<build_number.txt
-set /a BUILD_NUM=%BUILD_NUM%+1
+if not defined FASTRESAMPLER_KEEP_BUILD_NUMBER set /a BUILD_NUM=%BUILD_NUM%+1
 >build_number.txt echo %BUILD_NUM%
 echo #define FASTRESAMPLER_BUILD_NUMBER %BUILD_NUM% > src\fastresampler_build.h
 
@@ -26,22 +26,22 @@ rem while(true), 4324 is padding asked for with alignas. Third-party code is
 rem silenced at its include site with pragma pairs in fastresampler_win32.cpp.
 set WARN_FLAGS=/W4 /wd4100 /wd4127 /wd4324
 
+set FORMAT_TEST=0
 set OPT_FLAGS=/O2 /DNDEBUG
 for %%x in (%*) do (
+    if "%%x"=="format-tests" set FORMAT_TEST=1
     if "%%x"=="debug" set OPT_FLAGS=/Od /Zi /DDEBUG=1
 )
 
 if not exist build mkdir build
 
-rem The .fsi and .fsb file formats are FastSampler's. Their schema, the nanopb
-rem code generated from it and the bank header are compiled straight out of
-rem the FastSampler checkout, so this build always carries the current format.
-rem Point FASTSAMPLER_DIR elsewhere when the two checkouts are not siblings.
-if "%FASTSAMPLER_DIR%"=="" set FASTSAMPLER_DIR=%~dp0..\fastsampler
-if not exist "%FASTSAMPLER_DIR%\src\fileformats\fastsampler.pb.h" (
-    echo Error: FastSampler sources not found at "%FASTSAMPLER_DIR%". Set FASTSAMPLER_DIR.
+rem Formats are pinned in the public fastsampler-shared submodule.
+if not exist "3rdparty\fastsampler-shared\include\fastsampler.pb.h" (
+    echo Error: Run git submodule update --init --recursive first.
     exit /b 1
 )
+rem FastSampler still supplies the custom WavPack build.
+if "%FASTSAMPLER_DIR%"=="" set FASTSAMPLER_DIR=%~dp0..\fastsampler
 
 rem WavPack, the DLL FastSampler ships, compresses the streamed part of a bank.
 rem It is built here from the sources FastSampler vendors, with FastSampler's
@@ -64,9 +64,11 @@ if not exist "%VST3_SDK_DIR%\pluginterfaces\base\funknown.h" (
     exit /b 1
 )
 
-set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "%VST3_SDK_DIR%" /I "%FASTSAMPLER_DIR%\src" /I "%FASTSAMPLER_DIR%\src\fileformats" /I "%FASTSAMPLER_DIR%\3rdparty\nanopb" /I "%WAVPACK_DIR%"
+set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "%VST3_SDK_DIR%" /I "3rdparty\fastsampler-shared\include" /I "3rdparty\fastsampler-shared\3rdparty\nanopb" /I "%WAVPACK_DIR%"
 set DEFINES=/DUNICODE /D_UNICODE /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /DPB_FIELD_32BIT /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
 set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib shell32.lib dwmapi.lib "%WAVPACK_BUILD%\wavpackdll.lib"
+
+if "%FORMAT_TEST%"=="1" goto format_tests
 
 echo Compiling fastresampler.exe (build %BUILD_NUM%)...
 cl.exe %WARN_FLAGS% %OPT_FLAGS% /MT /EHsc /std:c++17 %DEFINES% %INCLUDES% src\fastresampler_win32.cpp /Fe"build\fastresampler.exe" /Fo"build/" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS%
@@ -79,3 +81,14 @@ if %ERRORLEVEL% neq 0 (
 copy /y "%WAVPACK_BUILD%\wavpackdll.dll" build\ >nul
 
 echo fastresampler.exe compiled successfully.
+
+exit /b 0
+
+:format_tests
+if not exist build\format-test mkdir build\format-test
+cl.exe %WARN_FLAGS% %OPT_FLAGS% /MT /EHsc /std:c++17 %DEFINES% %INCLUDES% tests\format_fixture.cpp /Fe"build\format-test\format_fixture.exe" /Fo"build\format-test/" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO %LIBS%
+if errorlevel 1 exit /b 1
+copy /y "%WAVPACK_BUILD%\wavpackdll.dll" build\format-test\ >nul
+if errorlevel 1 exit /b 1
+build\format-test\format_fixture.exe
+exit /b %ERRORLEVEL%

@@ -1,5 +1,9 @@
 # FastResampler
 
+FSI/FSB/FSP/SMFP definitions now come from the pinned public
+`fastsampler-shared` submodule. See [FORMATS.md](FORMATS.md) before changing
+any file format or updating its revision.
+
 A small plugin host for Windows. It loads one VST3 plugin or one VST 2
 instrument (VSTi) at a time, shows the plugin's own editor, sends it MIDI
 notes and controllers from a GUI keyboard and a set of sliders, and plays the
@@ -33,13 +37,9 @@ Details about the project:
   the file changes. Effects and shell plugins are left out of the list, and
   refused when loaded by path. MIDI reaches a VST 2 plugin as it is, so the
   CC sliders and the controller curves always work with one.
-- The `.fsi` and `.fsb` formats belong to FastSampler and are never copied
-  here. `build.bat` adds the FastSampler checkout to the include path
-  (`FASTSAMPLER_DIR`, by default the sibling folder `..\fastsampler`) and the
-  unity root compiles its `fastsampler.pb.h/.c`, `fastsampler_fsb.h`,
-  `fastsampler_pb.h` and the nanopb runtime from there. A change to the schema
-  or the bank header in FastSampler is picked up by the next build of this
-  project; `src/fastresampler_instrument.cpp` only fills in the messages.
+- The public `3rdparty/fastsampler-shared` submodule supplies FSI/FSB
+  definitions, effect IDs, defaults and the nanopb runtime. Run
+  `git submodule update --init --recursive` before building; see [FORMATS.md](FORMATS.md).
 - The YAML reader is the other way round: a resampling project is this
   project's own format, so FastSampler's parser is copied into
   `src/fastresampler_yaml.*` and nothing about the projects depends on that
