@@ -33,31 +33,57 @@
 #include "fastresampler_constants.h"
 #include "fastresampler_resample.h"
 
+// One instrument to build: the full WAV of one output bus, and where its
+// files go. A run with three microphones has three of these and the worker
+// builds them one after the other, each into the folder of its own bus.
+struct InstrumentTarget {
+    char full_wav_path[FR_MAX_PATH];
+    char out_dir[FR_MAX_PATH];         // where all of them go, the .rzc included
+    char prefix[RESAMPLE_FILE_NAME_LEN];
+    char bus_name[RESAMPLE_NAME_LEN];  // what a message calls this one
+};
+
 struct InstrumentJob {
     std::atomic<bool> running;
     std::atomic<bool> cancel;
     std::atomic<bool> finished;
-    std::atomic<int>  progress;        // zones written to the bank
-    std::atomic<int>  progress_total;  // zones the bank will hold: twice the samples with dynamic layers
+    std::atomic<int>  progress;        // zones written to the bank, over every bus
+    std::atomic<int>  progress_total;  // zones every bank will hold together
+    std::atomic<int>  bus_done;        // instruments finished, so the tab can say "2 / 3"
     PlatThread        thread;
 
     const ResampleScript* script;
     ResampleConfig cfg;                // a copy, so the tab may change meanwhile
+    InstrumentTarget targets[FR_MAX_OUTPUT_BUSSES];
+    int  target_count;
+
+    // The one being built: the worker's own writers read these, so a build
+    // of one bus reads exactly what it did before the busses existed.
+    int  target;
     char full_wav_path[FR_MAX_PATH];
     char fsi_path[FR_MAX_PATH];
     char fsb_path[FR_MAX_PATH];
-    char out_dir[FR_MAX_PATH];         // where all of them go, the .rzc included
+    char out_dir[FR_MAX_PATH];
     char prefix[RESAMPLE_FILE_NAME_LEN];
 
     char result[FR_STATUS_LEN];
     bool result_is_error;
-    bool full_wav_removed;             // the build deleted it, as the configuration asked
-    int  rzc_written;                  // zone collection files written beside the bank
+    bool full_wav_removed;             // the build deleted one, as the configuration asked
+    int  rzc_written;                  // zone collection files written beside the banks
+    int  zones_written;                // zones of every instrument together
+    int  instruments_written;
+
+    // What each bus's own build reported, in order. The worker cannot write
+    // to the output log from its thread, so the UI thread reads these out
+    // once the build is joined and puts one line in the ledger per bus.
+    char bus_result[FR_MAX_OUTPUT_BUSSES][FR_STATUS_LEN];
+    int  bus_result_count;
 };
 
-// Starts the worker. The script is the one the full WAV was rendered from.
+// Starts the worker over one target per output bus. The script is the one
+// every full WAV was rendered from, so one mapping serves them all.
 bool instrument_start(InstrumentJob* job, const ResampleScript* script, const ResampleConfig* cfg,
-                      const char* full_wav_path, const char* out_dir, const char* prefix);
+                      const InstrumentTarget* targets, int target_count);
 void instrument_cancel(InstrumentJob* job);
 
 // Joins the worker once finished is set. Returns true when a result is ready.

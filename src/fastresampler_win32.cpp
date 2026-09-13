@@ -117,6 +117,7 @@
 #include "platform/fastresampler_platform_win32.cpp"
 #include "fastresampler_helpers.h"
 #include "fastresampler_log.h"
+#include "fastresampler_state.h"
 #include "fastresampler_midi.h"
 #include "fastresampler_resample.h"
 #include "fastresampler_yaml.h"

@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include "fastresampler_constants.h"
 #include "fastresampler_midi.h"
+#include "fastresampler_state.h"
 #include "fastresampler_host.h"
 
 struct Vst2Plugin;
@@ -32,6 +33,23 @@ void vst2_plugin_process(Vst2Plugin* p, MidiQueue* midi, float* const* outputs, 
 // The offline variant: the events for this block, each at its sample offset.
 void vst2_plugin_process_events(Vst2Plugin* p, const MidiEvent* events, const int* sample_offsets,
                                 int count, float* const* outputs, int channel_count, int frames);
+
+// --- State ------------------------------------------------------------------
+// See the state section of fastresampler_host.h. A plugin that keeps chunks
+// writes its whole bank as one; one that does not gives its parameters, one
+// float each, and the program it is on.
+
+bool vst2_plugin_get_state(Vst2Plugin* p, StateBuffer* out);
+
+// Puts a block back. The plugin is suspended over the call, and the setup
+// that follows reads the outputs it has then: a sampler that was saved with
+// sixteen of them comes back with sixteen. info is brought up to date.
+bool vst2_plugin_set_state(Vst2Plugin* p, const void* data, size_t size, HostPluginInfo* info,
+                           char* err, size_t err_len);
+
+// True once for every time the plugin told the host its inputs or outputs
+// changed.
+bool vst2_plugin_take_io_change(Vst2Plugin* p);
 
 // --- Editor -----------------------------------------------------------------
 // The size comes from the plugin before it opens; attach opens the editor in

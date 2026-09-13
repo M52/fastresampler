@@ -810,7 +810,9 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
                 break;
             }
         }
-        job->progress.store(z + 1);
+        // The zones of the busses already built come first, so the bar runs
+        // once over the whole export rather than starting again per bus.
+        job->progress.store(job->zones_written + z + 1);
     }
 
     if (ok && !job->cancel.load()) {
@@ -1006,10 +1008,11 @@ static bool instrument_write_rzc(InstrumentJob* job, const InstrumentZoneMap* ma
         return false;
     }
 
-    // The split samples the zones name are in the folder the render wrote to.
+    // The split samples the zones name are in the folder the render wrote
+    // to for this bus, which is the bus being built now.
     char sample_dir[FR_MAX_PATH];
     char dir_err[FR_STATUS_LEN];
-    if (!resample_output_dir(&job->cfg, sample_dir, sizeof(sample_dir), dir_err, sizeof(dir_err))) {
+    if (!resample_output_dir(&job->cfg, job->target, sample_dir, sizeof(sample_dir), dir_err, sizeof(dir_err))) {
         sample_dir[0] = '\0';
     }
 
@@ -1178,9 +1181,13 @@ static void instrument_refine_arrivals(InstrumentJob* job, WavReader* wav, Instr
            read - moved);
 }
 
-static void instrument_thread_main(void* user) {
-    InstrumentJob* job = (InstrumentJob*)user;
+// One instrument, from the full WAV of one output bus. The job's target
+// fields say which; the caller has pointed them at it.
+static bool instrument_build_one(InstrumentJob* job) {
     const ResampleScript* script = job->script;
+    // The count runs over the whole export, so this bus's own share of it is
+    // what it had written before this build started, taken off at the end.
+    int rzc_before = job->rzc_written;
 
     // At most two zones per segment: a sustain is a held note and a release,
     // a transition is one zone.
@@ -1209,7 +1216,9 @@ static void instrument_thread_main(void* user) {
             instrument_zone_name(job->prefix, script, &map[z], names[z], MAX_NAME_LENGTH);
             if (z == 0 || map[z].collection != map[z - 1].collection) collection_count++;
         }
-        job->progress_total.store(zone_count);
+        // The mapping is the same for every bus, so the total is known as
+        // soon as the first one is planned.
+        job->progress_total.store(zone_count * job->target_count);
         ok = zone_count > 0;
         if (!ok) fr_strcpy(job->result, sizeof(job->result), "The run holds no samples to map");
         if (ok && zone_count > fsi_zone_capacity) {
@@ -1252,9 +1261,9 @@ static void instrument_thread_main(void* user) {
         resample_preload_label(job->cfg.preload_frames, preload, sizeof(preload));
         char rzc_note[96];
         rzc_note[0] = '\0';
-        if (job->rzc_written > 0) {
-            snprintf(rzc_note, sizeof(rzc_note), " Plus %d .rzc file%s.",
-                     job->rzc_written, job->rzc_written == 1 ? "" : "s");
+        int rzc_here = job->rzc_written - rzc_before;
+        if (rzc_here > 0) {
+            snprintf(rzc_note, sizeof(rzc_note), " Plus %d .rzc file%s.", rzc_here, rzc_here == 1 ? "" : "s");
         } else if (job->cfg.export_rzc) {
             fr_strcpy(rzc_note, sizeof(rzc_note), " No .rzc: they name the split samples, which this run did not write.");
         }
@@ -1283,6 +1292,8 @@ static void instrument_thread_main(void* user) {
                  job->cfg.bit_depth, preload, legato_note,
                  rzc_note, job->full_wav_removed ? " The full WAV was removed." : "");
         job->result_is_error = false;
+        job->zones_written += zone_count;
+        job->instruments_written++;
     } else {
         job->result_is_error = true;
     }
@@ -1290,38 +1301,104 @@ static void instrument_thread_main(void* user) {
     free(rows);
     free(names);
     fr_log("instrument: %s", job->result);
+    return ok && !job->cancel.load();
+}
+
+// Every output bus in turn: the same mapping, cut from that bus's own full
+// WAV into that bus's own folder. One that fails stops the rest, because a
+// half exported set is worse than one that says what went wrong.
+static void instrument_thread_main(void* user) {
+    InstrumentJob* job = (InstrumentJob*)user;
+    bool ok = true;
+    char first_result[FR_STATUS_LEN];
+    first_result[0] = '\0';
+
+    for (int t = 0; t < job->target_count && ok; ++t) {
+        const InstrumentTarget* target = &job->targets[t];
+        job->target = t;
+        fr_strcpy(job->full_wav_path, sizeof(job->full_wav_path), target->full_wav_path);
+        fr_strcpy(job->out_dir, sizeof(job->out_dir), target->out_dir);
+        fr_strcpy(job->prefix, sizeof(job->prefix), target->prefix);
+        char name[RESAMPLE_FILE_NAME_LEN];
+        snprintf(name, sizeof(name), "%s.fsi", target->prefix);
+        plat_path_join(job->fsi_path, sizeof(job->fsi_path), target->out_dir, name);
+        snprintf(name, sizeof(name), "%s.fsb", target->prefix);
+        plat_path_join(job->fsb_path, sizeof(job->fsb_path), target->out_dir, name);
+
+        if (job->target_count > 1) {
+            fr_log("instrument: bus %d of %d, '%s'", t + 1, job->target_count, target->bus_name);
+        }
+        ok = instrument_build_one(job);
+        // The first bus's line is the one a single-bus run reports as is.
+        if (t == 0) fr_strcpy(first_result, sizeof(first_result), job->result);
+        // Kept for the ledger: with more than one bus the summary is a
+        // single line, and this is where the detail of each one stays.
+        if (job->target_count > 1 && job->bus_result_count < FR_MAX_OUTPUT_BUSSES) {
+            snprintf(job->bus_result[job->bus_result_count], FR_STATUS_LEN, "%s: %s", target->bus_name, job->result);
+            job->bus_result_count++;
+        }
+        job->bus_done.store(job->instruments_written);
+        if (!ok && job->target_count > 1) {
+            // Say which microphone stopped it; the reason is already there.
+            char why[FR_STATUS_LEN];
+            fr_strcpy(why, sizeof(why), job->result);
+            snprintf(job->result, sizeof(job->result), "Output bus '%s': %s", target->bus_name, why);
+        }
+    }
+
+    if (ok && job->target_count > 1) {
+        // One line for the set: the detail of each bus is already in the log.
+        snprintf(job->result, sizeof(job->result),
+                 "Wrote %d instruments, one per output bus: %d zones over %d folders, %d-bit.%s",
+                 job->instruments_written, job->zones_written, job->instruments_written,
+                 job->cfg.bit_depth, job->full_wav_removed ? " The full WAVs were removed." : "");
+        job->result_is_error = false;
+    } else if (ok) {
+        fr_strcpy(job->result, sizeof(job->result), first_result);
+    }
     job->finished.store(true);
 }
 
 bool instrument_start(InstrumentJob* job, const ResampleScript* script, const ResampleConfig* cfg,
-                      const char* full_wav_path, const char* out_dir, const char* prefix) {
+                      const InstrumentTarget* targets, int target_count) {
     if (job->running.load()) return false;
     if (!script || !script->built || script->segment_count == 0) return false;
+    if (!targets || target_count < 1 || target_count > FR_MAX_OUTPUT_BUSSES) return false;
     job->script = script;
     job->cfg = *cfg;
-    fr_strcpy(job->full_wav_path, sizeof(job->full_wav_path), full_wav_path);
-    fr_strcpy(job->out_dir, sizeof(job->out_dir), out_dir);
-    fr_strcpy(job->prefix, sizeof(job->prefix), prefix);
+    job->target_count = target_count;
+    for (int t = 0; t < target_count; ++t) job->targets[t] = targets[t];
+    // The worker points these at each target in turn; the first is set here
+    // so a caller that reads them before the thread runs sees the first bus.
+    job->target = 0;
+    fr_strcpy(job->full_wav_path, sizeof(job->full_wav_path), targets[0].full_wav_path);
+    fr_strcpy(job->out_dir, sizeof(job->out_dir), targets[0].out_dir);
+    fr_strcpy(job->prefix, sizeof(job->prefix), targets[0].prefix);
     char name[RESAMPLE_FILE_NAME_LEN];
-    snprintf(name, sizeof(name), "%s.fsi", prefix);
-    plat_path_join(job->fsi_path, sizeof(job->fsi_path), out_dir, name);
-    snprintf(name, sizeof(name), "%s.fsb", prefix);
-    plat_path_join(job->fsb_path, sizeof(job->fsb_path), out_dir, name);
+    snprintf(name, sizeof(name), "%s.fsi", targets[0].prefix);
+    plat_path_join(job->fsi_path, sizeof(job->fsi_path), targets[0].out_dir, name);
+    snprintf(name, sizeof(name), "%s.fsb", targets[0].prefix);
+    plat_path_join(job->fsb_path, sizeof(job->fsb_path), targets[0].out_dir, name);
 
     job->result[0] = '\0';
     job->result_is_error = false;
     job->full_wav_removed = false;
     job->rzc_written = 0;
+    job->zones_written = 0;
+    job->instruments_written = 0;
+    job->bus_result_count = 0;
     job->cancel.store(false);
     job->finished.store(false);
     job->progress.store(0);
-    job->progress_total.store(script->segment_count * (script->dynamic_layers ? 2 : 1));
+    job->bus_done.store(0);
+    job->progress_total.store(script->segment_count * (script->dynamic_layers ? 2 : 1) * target_count);
     job->running.store(true);
     if (!plat_thread_create(&job->thread, instrument_thread_main, job)) {
         job->running.store(false);
         return false;
     }
-    fr_log("instrument: building %s from %d samples%s%s", job->fsi_path, script->segment_count,
+    fr_log("instrument: building %d instrument%s from %d samples%s%s", target_count, target_count == 1 ? "" : "s",
+           script->segment_count,
            script->dynamic_layers ? ", as looped dynamic layers with releases" : "",
            script->legato ? ", with the moves between the notes" : "");
     return true;

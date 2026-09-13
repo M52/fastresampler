@@ -67,10 +67,11 @@ Layout of the window:
   sustain, pitch bend and all-notes-off. **Resample** builds a MIDI script
   (a note range sampled every n semitones, a list of velocities, a number of
   round robins per note with optional pre-roll notes, each note held then left
-  to ring out), renders it through the plugin to one 32 bit float WAV faster
-  than realtime, then splits that file into one WAV per sample named
-  `Microphone_Instrument_Articulation_Note_Velocity_RRn.wav`, and finally
-  builds a FastSampler instrument (`.fsi` + `.fsb`) with the samples mapped:
+  to ring out), renders it through the plugin to one 32 bit float WAV per
+  output bus faster than realtime, then splits each of those into one WAV per
+  sample named
+  `Bus_Instrument_Articulation_Note_Velocity_RRn.wav`, and finally
+  builds a FastSampler instrument (`.fsi` + `.fsb`) per bus with the samples mapped:
   one zone collection per round robin, linked by FastSampler's round robin
   effect on a shared counter, each key on its nearest sampled note (ties pitch
   down), each velocity range up to its sampled velocity. RR are dynamic
@@ -169,19 +170,25 @@ Layout of the window:
   split samples and the numbered Build MIDI and Render to WAV buttons make up
   Output, and the preload size, the bit depth, the instrument's own folder,
   Export .rzc files, Remove full WAV and the FSI + FSB build make up Export
-  to FastSampler. Where a run writes comes from Naming: under the root
-  project folder, the first row of that section, a run makes
-  `<root>\<Instrument>\<Articulation>\<Microphone>` and puts the full WAV,
-  the sample files and the instrument there, so every take gets a folder of
-  its own and the naming fields name it. Output and Export to FastSampler
-  each show that folder and each carry a Choose another folder box that
-  overrides it with a folder of their own, one for the samples and one for
-  the instrument. The whole chain is made at the render, however deep it is.
+  to FastSampler. Where a run writes comes from Naming and from the output
+  busses: under the root project folder, the first row of that section, each
+  bus makes `<root>\<Instrument>\<Articulation>\<Bus>` and puts its full WAV,
+  its sample files and its instrument there, so every take gets a folder of
+  its own and every microphone a folder in it. Output and Export to
+  FastSampler each show the first bus's folder and each carry a Choose
+  another folder box that overrides it with a folder of their own, one for
+  the samples and one for the instrument; a bus is the last folder either
+  way, so an overridden folder still gets one subfolder per bus and two
+  microphones never write over one another. The whole chain is made at the
+  render, however deep it is.
   A settings file or a project from before the root existed names only the
   two folders it wrote to: when the samples already went to a folder that
   ends in those three names, that root is read back off it and nothing
   moves; otherwise both boxes go on, which also keeps the folders as they
-  were. Generate split samples and Remove full WAV both follow from
+  were. A settings file or a project from before the output busses named one
+  Microphone instead: that name becomes the first bus, so such a run keeps
+  the folder and the file names it always had.
+  Generate split samples and Remove full WAV both follow from
   the bank being cut from the full WAV, not from the sample files: the first,
   on by default, cuts that WAV into one file per sample and can be turned off
   by a run that only exports to FastSampler; the second deletes the WAV once
@@ -198,6 +205,32 @@ Layout of the window:
   Save resampling project, last of all, writes every setting of the tab to
   `Projects\<name>.yaml` next to the exe and loads one back from the list of
   what is in that folder; a load starts the tab again at Build MIDI.
+  A project also holds the plugin it was made with, so opening one brings
+  back the whole set-up and not only the tab. The YAML names the plugin, its
+  format and its path, and the block of state the plugin wrote goes in
+  `Projects\<name>.fstate` beside it: the patch it held, every parameter, and
+  the outputs it was routed to, exactly what a DAW keeps in its song. Opening
+  the project loads that plugin when another one, or none, is up, then hands
+  it its state; when it is already the one loaded, only the state goes in, so
+  a sampler that takes a minute to start is not started again. A project
+  carries to another computer: when the path it holds is not there, the
+  scanned list of its format is searched for the same file name and then for
+  the same plugin name, so a Kontakt installed in another folder is still
+  found, and the log says where it came from. The state names the plugin it
+  belongs to -- the class id for a VST3, the unique id for a VST 2 -- so a
+  state is refused rather than pushed into the wrong plugin of the same file
+  name. The folders travel the same way: one whose whole tree is missing,
+  which is what another computer's drive letter looks like, comes back to
+  the folder beside the exe, and an override that pointed there is dropped;
+  a folder that is simply not made yet is kept, as a run makes it. A plugin
+  that comes back on other busses than it had -- a sampler whose state names
+  more microphones -- is set up again for the layout it reports then, and the
+  log says how many channels over how many busses it offers. A project saved
+  with nothing loaded keeps no state and takes any stale one with it, and a
+  plugin this computer has not got at all is reported while the settings
+  still load. What a plugin's own state points at is the plugin's business:
+  a Kontakt multi names its libraries by path, so the computer that opens
+  the project needs those installed, exactly as it would in a DAW.
   **Settings** has the folders to scan (for both formats; a fresh install
   starts with the system's VST3 folder and its VST 2 folder, the one the
   registry names or `Program Files\VstPlugins`), the
@@ -214,33 +247,56 @@ Layout of the window:
   plugin's editor under a header with its name and a close button. A plugin
   that wants more room than the window has grows the window to fit it, once,
   as far as the screen allows. A VST 2 editor has the one size it reports
-  and is given an idle call every frame. Under that the output log, and
-  under the log the 88-key GUI keyboard, both as wide as the plugin area.
+  and is given an idle call every frame. Under that a strip with two tabs,
+  **Output log** and **Output busses**, and
+  under the strip the 88-key GUI keyboard, both as wide as the plugin area.
   Click a key to play it; lower on the key is louder.
 - The output log is a ledger of every status message, each stamped with the
   time of day and errors in red: what a render wrote and how fast, what a
   build made of the settings, a project saved or loaded, a folder picked, a
-  disk too small. The arrow on its bar folds it down to that bar alone and
+  disk too small. The arrow on the strip's bar folds it down to that bar
+  alone and
   opens it up again, and the grip along its top edge is dragged up or down
-  to set how tall it is; both are kept in the settings. Clear empties it.
+  to set how tall it is; both are kept in the settings, as is the tab last
+  shown. Clear empties it.
   The newest line is the one the side panel's own status strip shows, so
   the log is that line's history. It holds the last 512 and drops the
   oldest past that; `fastresampler.log` next to the exe keeps them all.
   A plugin editor is a child window, which the compositor draws over
   everything this program renders itself, so the editor is never given the
-  room the log and the keyboard have: it is clipped above the log's top
+  room the strip and the keyboard have: it is clipped above the strip's top
   edge and the ledger stays in sight whatever is loaded. Dragging the grip
   therefore offers the plugin a shorter area, and a plugin that can shrink
   does. The plugin area keeps a floor of its own, so the ledger cannot be
   dragged over the whole window.
+- The output busses are how a multi-miced instrument is resampled in one go.
+  A library that plays a close, a tree and an outrigger microphone at once
+  routes each of them to its own pair of the plugin's outputs; a bus here
+  reads one such pair and is named after the microphone on it. One render
+  then captures every microphone in the single pass, and each bus writes a
+  folder of its own holding its full WAV, its samples and its instrument.
+  The tab is one row per bus: a radio button that picks the one the speakers
+  play (the device is stereo and cannot carry them all), the name, the pair
+  it reads, a meter, and a button that removes it. Add output bus adds one on
+  the lowest pair nothing reads yet, up to sixteen; the last bus cannot go,
+  as a run must have somewhere to write. The meters are what make the
+  routing visible: play a note and the bus the plugin sent it to moves. A
+  line under the list says how many output channels the loaded plugin has,
+  over how many busses, against how many the busses read, and warns when a
+  bus sits past the end of them, which would record silence. Two busses
+  under one name, or on one pair, are marked in red and refused by Build
+  MIDI, because either would have two microphones write the same files.
+  The plugin's own output busses are flattened into one list of channels
+  first, so a VST3 with three stereo busses and a VST 2 with six output
+  channels are addressed the same way.
 - The timing sliders (hold, gap, pre-roll gap) are FastSampler's drag
   sliders: a plain drag moves in 10 ms steps, a Shift drag 100 ms per pixel,
   an Alt drag 1 ms per pixel, and they read in milliseconds below one second.
 
 Files:
 - `src/fastresampler_app.*` — the application state and the requests the UI raises.
-- `src/fastresampler_host.*` — plugin hosting, VST3: module, component, controller, processing, editor. Hands a VST 2 plugin on.
-- `src/fastresampler_host_vst2.*` — VST 2 instrument hosting: the DLL, the audio master callback, processing, editor, and the scan's probe.
+- `src/fastresampler_host.*` — plugin hosting, VST3: module, component, controller, processing, state, editor. Hands a VST 2 plugin on.
+- `src/fastresampler_host_vst2.*` — VST 2 instrument hosting: the DLL, the audio master callback, processing, state, editor, and the scan's probe.
 - `src/fastresampler_vst2.h` — the VST 2.4 ABI, declared here so no SDK is needed.
 - `src/fastresampler_audio.*` — the audio device API; backends under `src/platform/`.
 - `src/fastresampler_scan.*` — finds `.vst3` bundles and files and VST 2 instrument `.dll`s under the configured folders; the VST 2 cache.
@@ -249,7 +305,8 @@ Files:
 - `src/fastresampler_resample.*` — the resampling script and the offline render worker.
 - `src/fastresampler_wav.*` — the float32 WAV writer and reader.
 - `src/fastresampler_yaml.*` — the YAML reader, FastSampler's parser copied here.
-- `src/fastresampler_project.*` — the `Projects\<name>.yaml` files: the whole Resample tab saved and loaded.
+- `src/fastresampler_state.h` — the container a plugin's own state is kept in: a header and any number of parts, so a VST3's two streams and a VST 2's chunk both fit.
+- `src/fastresampler_project.*` — the `Projects\<name>.yaml` files: the whole Resample tab saved and loaded, and the plugin's state in `<name>.fstate` beside them.
 - `src/fastresampler_instrument.*` — the `.fsi`/`.fsb` builder and the key/velocity mapping.
 - `src/fastresampler_loop.*` — a sustain's loop points, taken off the waveform instead of the clock.
 - `src/fastresampler_legato.*` — where a legato move leaves one note and reaches the next, read out of the audio.

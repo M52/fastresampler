@@ -27,6 +27,7 @@ void settings_defaults(Settings* s) {
     s->show_tips = true;
     s->log_expanded = true;
     s->log_height = (int)UI_LOG_BODY_HEIGHT;
+    s->log_tab = APP_LOG_TAB_LOG;
     s->window_width = WINDOW_DEFAULT_WIDTH;
     s->window_height = WINDOW_DEFAULT_HEIGHT;
     resample_config_defaults(&s->resample);
@@ -127,6 +128,9 @@ bool settings_load(Settings* s, const char* path) {
     // A file from before the root project folder existed names the two
     // folders it wrote to and no root; the root is read back off them.
     bool saw_root_dir = false;
+    // The output busses replace the one a fresh configuration starts with,
+    // so the first one read takes its place rather than being added to it.
+    bool saw_bus = false;
 
     char* line = text;
     while (line && *line) {
@@ -214,7 +218,36 @@ bool settings_load(Settings* s, const char* path) {
         } else if (strcmp(key, "resample_articulation") == 0) {
             fr_strcpy(s->resample.articulation, sizeof(s->resample.articulation), value);
         } else if (strcmp(key, "resample_microphone") == 0) {
-            fr_strcpy(s->resample.microphone, sizeof(s->resample.microphone), value);
+            // A file written before the output busses: the one microphone it
+            // names becomes the first bus, so the run keeps its folder and
+            // its file names exactly as they were.
+            if (value[0] && s->resample.bus_count >= 1) {
+                fr_strcpy(s->resample.busses[0].name, sizeof(s->resample.busses[0].name), value);
+                s->resample.busses[0].channel = 0;
+            }
+        } else if (strcmp(key, "resample_bus") == 0) {
+            // "Close 0": the name, then the first output channel of its
+            // pair. The name may hold spaces, so the channel is read off the
+            // last one, which leaves a name like "Mic 2" whole.
+            if (s->resample.bus_count < FR_MAX_OUTPUT_BUSSES) {
+                char name[RESAMPLE_NAME_LEN];
+                fr_strcpy(name, sizeof(name), value);
+                int channel = 0;
+                char* space = strrchr(name, ' ');
+                if (space) {
+                    channel = atoi(space + 1);
+                    *space = '\0';
+                }
+                // The first bus of the file replaces the default one; the
+                // rest are added after it.
+                int index = saw_bus ? s->resample.bus_count : 0;
+                s->resample.bus_count = index + 1;
+                saw_bus = true;
+                fr_strcpy(s->resample.busses[index].name, sizeof(s->resample.busses[index].name), name);
+                s->resample.busses[index].channel = channel;
+            }
+        } else if (strcmp(key, "resample_monitor_bus") == 0) {
+            s->resample.monitor_bus = atoi(value);
         } else if (strcmp(key, "resample_sample_rate") == 0) {
             s->resample.sample_rate = resample_valid_sample_rate(atoi(value));
         } else if (strcmp(key, "resample_render_speed") == 0) {
@@ -253,6 +286,8 @@ bool settings_load(Settings* s, const char* path) {
             s->log_expanded = atoi(value) != 0;
         } else if (strcmp(key, "log_height") == 0) {
             s->log_height = fr_clampi(atoi(value), (int)UI_LOG_MIN_BODY_HEIGHT, (int)UI_LOG_MAX_BODY_HEIGHT);
+        } else if (strcmp(key, "log_tab") == 0) {
+            s->log_tab = fr_clampi(atoi(value), 0, 1);
         } else if (strcmp(key, "resample_cc") == 0) {
             // "index controller bezier constant layer"; the nodes and values
             // follow on their own lines, so the curve starts out flat at 127.
@@ -298,6 +333,9 @@ bool settings_load(Settings* s, const char* path) {
         }
         line = next;
     }
+    // The busses are settled before the folders are read back off them: the
+    // root is found under <Instrument>\<Articulation>\<the first bus>.
+    resample_bus_validate(&s->resample);
     if (!saw_export_dir) fr_strcpy(s->resample.export_dir, sizeof(s->resample.export_dir), s->resample.output_dir);
     if (!saw_root_dir) resample_config_root_from_dirs(&s->resample);
     // A curve the file skipped over still has to be a curve.
@@ -349,7 +387,13 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_legato_margin_ms %d\n", (int)(s->resample.legato_margin_seconds * 1000.0f + 0.5f));
     fprintf(f, "resample_instrument \"%s\"\n", s->resample.instrument);
     fprintf(f, "resample_articulation \"%s\"\n", s->resample.articulation);
-    fprintf(f, "resample_microphone \"%s\"\n", s->resample.microphone);
+    // One line per output bus: its name and the first output channel of its
+    // stereo pair. The reader takes the channel off the last space, so a
+    // name with spaces of its own survives.
+    for (int i = 0; i < s->resample.bus_count; ++i) {
+        fprintf(f, "resample_bus \"%s %d\"\n", s->resample.busses[i].name, s->resample.busses[i].channel);
+    }
+    fprintf(f, "resample_monitor_bus %d\n", s->resample.monitor_bus);
     fprintf(f, "resample_sample_rate %d\n", s->resample.sample_rate);
     fprintf(f, "resample_render_speed %d\n", s->resample.render_speed);
     fprintf(f, "resample_split_samples %d\n", s->resample.split_samples ? 1 : 0);

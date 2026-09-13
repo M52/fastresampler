@@ -261,16 +261,24 @@ static void ui_folder_row(const char* label, const char* dir, bool disabled, boo
 
 // The folder a section writes to. With its box off the row shows the folder
 // built from the root and the naming fields and cannot be picked; with the
-// box on it shows the folder that was picked for this section.
+// box on it shows the folder that was picked for this section. Either way
+// the first bus's folder is what is shown, and a line under it says the
+// other busses sit beside it, as a bus is always the last folder.
 static void ui_target_folder_row(const char* label, const ResampleConfig* cfg, const char* picked_dir,
                                  bool* override_flag, bool busy, bool* pick_request, float scale) {
     ImGui::PushID((const void*)override_flag);
     char derived[FR_MAX_PATH];
     char err[FR_STATUS_LEN];
     bool from_root = !*override_flag;
-    bool have_derived = resample_root_target_dir(cfg, derived, sizeof(derived), err, sizeof(err));
+    bool have_derived = resample_root_target_dir(cfg, 0, derived, sizeof(derived), err, sizeof(err));
     ui_folder_row(label, from_root ? (have_derived ? derived : "") : picked_dir, busy || from_root, pick_request, scale);
     if (from_root && !have_derived) ui_colored_wrapped(err, CODE_COLOR_WARNING_VEC4);
+    if (cfg->bus_count > 1) {
+        char note[128];
+        snprintf(note, sizeof(note), "and %d more folder%s beside it, one per output bus.",
+                 cfg->bus_count - 1, cfg->bus_count - 1 == 1 ? "" : "s");
+        ui_note(note);
+    }
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Choose another folder", override_flag);
     ImGui::EndDisabled();
@@ -414,28 +422,28 @@ static void ui_tab_resample(App* app, float scale) {
 
     ui_section("Naming", scale);
     ui_folder_row("Project root", cfg->root_dir, busy, &app->root_dir_pick_request, scale);
-    ui_hint("The root of every project. A run writes under it, into Instrument\\Articulation\\Microphone, "
-            "so each take gets a folder of its own. The Output and Export sections each have a box to write somewhere else.");
+    ui_hint("The root of every project. A run writes under it, into Instrument\\Articulation\\Bus, "
+            "so each take gets a folder of its own and each output bus a folder in it. "
+            "The Output and Export sections each have a box to write somewhere else.");
     ui_label("Instrument", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##instrument", cfg->instrument, sizeof(cfg->instrument));
     ui_label("Articulation", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##articulation", cfg->articulation, sizeof(cfg->articulation));
-    ui_label("Microphone", scale);
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##microphone", cfg->microphone, sizeof(cfg->microphone));
     {
+        // The first bus stands for the rest: they differ only in the name
+        // that starts every file and ends every folder.
         char prefix[RESAMPLE_FILE_NAME_LEN];
         char err[FR_STATUS_LEN];
         char preview[RESAMPLE_FILE_NAME_LEN + 32];
         char target[FR_MAX_PATH];
-        if (resample_root_target_dir(cfg, target, sizeof(target), err, sizeof(err))) {
+        if (resample_root_target_dir(cfg, 0, target, sizeof(target), err, sizeof(err))) {
             char fitted[FR_MAX_PATH + 8];
             ui_fit_path(target, ImGui::GetContentRegionAvail().x, fitted, sizeof(fitted));
             ui_note(fitted);
         }
-        if (resample_prefix(cfg, prefix, sizeof(prefix), err, sizeof(err))) {
+        if (resample_prefix(cfg, 0, prefix, sizeof(prefix), err, sizeof(err))) {
             snprintf(preview, sizeof(preview), "Files: %s_<Note>_<Velocity>_%s<n>.wav", prefix, cfg->dynamic_layers ? "dyn" : "RR");
             ui_note(preview);
             if (cfg->legato) {
@@ -443,10 +451,16 @@ static void ui_tab_resample(App* app, float scale) {
                          cfg->dynamic_layers ? "dyn<n>-" : "");
                 ui_note(preview);
             }
+            if (cfg->bus_count > 1) {
+                snprintf(preview, sizeof(preview), "and the same again for each of the %d output busses, under its own name.",
+                         cfg->bus_count);
+                ui_note(preview);
+            }
         } else {
             ui_colored_wrapped(err, CODE_COLOR_WARNING_VEC4);
         }
     }
+    ui_hint("The microphones are the output busses, named in the Output busses tab under the plugin.");
     ui_section_end(scale);
 
     ui_section("Notes", scale);
@@ -723,8 +737,8 @@ static void ui_tab_resample(App* app, float scale) {
     ui_section("Output", scale);
     ui_target_folder_row("Folder", cfg, cfg->output_dir, &cfg->output_dir_override, busy,
                          &app->output_dir_pick_request, scale);
-    ui_hint("The full WAV and the sample files go under the root project folder, in Instrument\\Articulation\\Microphone. "
-            "Tick the box to put them somewhere else.");
+    ui_hint("The full WAV and the sample files go under the root project folder, in Instrument\\Articulation\\Bus, "
+            "one folder per output bus. Tick the box to put them somewhere else; a bus is still the last folder.");
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Generate split samples", &cfg->split_samples);
     ImGui::EndDisabled();
@@ -740,9 +754,11 @@ static void ui_tab_resample(App* app, float scale) {
         char overlay[64];
         float fraction;
         if (app->resample_job.phase.load() == RESAMPLE_PHASE_SPLIT) {
+            // Over every bus: each writes the whole set into its own folder.
             int done = app->resample_job.split_done.load();
-            fraction = s->segment_count > 0 ? (float)done / (float)s->segment_count : 0.0f;
-            snprintf(overlay, sizeof(overlay), "Splitting %d / %d", done, s->segment_count);
+            int total = s->segment_count * app->resample_job.bus_count;
+            fraction = total > 0 ? (float)done / (float)total : 0.0f;
+            snprintf(overlay, sizeof(overlay), "Splitting %d / %d", done, total);
         } else {
             fraction = s->total_frames > 0 ? (float)app->resample_job.progress_frames.load() / (float)s->total_frames : 0.0f;
             snprintf(overlay, sizeof(overlay), "Rendering %.0f%%", fraction * 100.0f);
@@ -800,8 +816,8 @@ static void ui_tab_resample(App* app, float scale) {
             "16-bit halves the bank; 24-bit keeps the render's own depth.");
     ui_target_folder_row("Folder", cfg, cfg->export_dir, &cfg->export_dir_override, busy,
                          &app->export_dir_pick_request, scale);
-    ui_hint("The .fsi and .fsb go under the root project folder as well, beside the samples. "
-            "Tick the box to put the instrument somewhere else.");
+    ui_hint("The .fsi and .fsb go under the root project folder as well, beside the samples, one instrument "
+            "per output bus. Tick the box to put them somewhere else; a bus is still the last folder.");
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Export .rzc files", &cfg->export_rzc);
     ImGui::EndDisabled();
@@ -819,8 +835,17 @@ static void ui_tab_resample(App* app, float scale) {
     if (building) {
         int done = app->instrument_job.progress.load();
         int total = app->instrument_job.progress_total.load();
+        // The bar runs once over the whole export; with more than one bus it
+        // also says which of them is being written.
+        int targets = app->instrument_job.target_count;
         char overlay[64];
-        snprintf(overlay, sizeof(overlay), "Writing bank %d / %d", done, total);
+        if (targets > 1) {
+            int bus = app->instrument_job.bus_done.load() + 1;
+            if (bus > targets) bus = targets;
+            snprintf(overlay, sizeof(overlay), "Writing bank %d / %d of bus %d / %d", done, total, bus, targets);
+        } else {
+            snprintf(overlay, sizeof(overlay), "Writing bank %d / %d", done, total);
+        }
         ImGui::ProgressBar(total > 0 ? (float)done / (float)total : 0.0f, ImVec2(-1.0f, 0.0f), overlay);
         if (ui_red_button("Cancel##instrument", ImVec2(-1.0f, 0.0f))) instrument_cancel(&app->instrument_job);
     } else {
@@ -849,8 +874,8 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ui_section_end(scale);
 
-    // The project: every setting of this tab in one file, so a whole set-up
-    // comes back later.
+    // The project: every setting of this tab in one file and the plugin's
+    // own state beside it, so a whole set-up comes back later.
     ui_section("Save resampling project", scale);
     ui_label("Name", scale);
     ImGui::SetNextItemWidth(-1.0f);
@@ -858,7 +883,9 @@ static void ui_tab_resample(App* app, float scale) {
     ImGui::BeginDisabled(busy || app->settings.project_name[0] == '\0');
     if (ImGui::Button("Save project", ImVec2(-1.0f, 0.0f))) app->project_save_request = true;
     ImGui::EndDisabled();
-    ui_hint("Writes every setting of this tab to Projects\\<name>.yaml next to the exe. A project of the same name is replaced.");
+    ui_hint("Writes every setting of this tab to Projects\\<name>.yaml next to the exe, and the loaded plugin as it stands "
+            "-- its patch, its parameters and the outputs it is routed to -- to Projects\\<name>.fstate beside it. "
+            "A project of the same name is replaced.");
 
     ui_label("Open", scale);
     ImGui::SetNextItemWidth(-1.0f);
@@ -877,7 +904,8 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::EndCombo();
     }
     ImGui::EndDisabled();
-    ui_hint("Puts every setting of this tab back, the folders with them. Build the MIDI again after a load.");
+    ui_hint("Puts every setting of this tab back, the folders with them, then loads the plugin the project was saved with "
+            "and gives it its state again. Build the MIDI again after a load.");
     ui_section_end(scale);
 }
 
@@ -1054,9 +1082,172 @@ static void ui_log_grip(App* app, float scale) {
     ImGui::SetCursorPos(ImVec2(ImGui::GetStyle().WindowPadding.x, grip_h));
 }
 
-// The output log: every status message, oldest first, over the keyboard. The
-// arrow folds the ledger down and opens it up again, the grip on the top
-// edge sets how tall it is.
+// The ledger itself: every status message, oldest first.
+static void ui_draw_log_lines(App* app) {
+    ImGui::BeginChild("##loglines", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
+    if (app->log_count == 0) {
+        ui_note("Nothing yet. What a render, a build or a save reports comes here.");
+    }
+    for (int i = 0; i < app->log_count; ++i) {
+        const AppLogLine* line = app_log_line(app, i);
+        ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_SLOT_LABEL_TEXT);
+        ImGui::TextUnformatted(line->time);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (line->is_error) {
+            ImGui::TextColored(CODE_COLOR_RED_VEC4, "%s", line->text);
+        } else {
+            ImGui::TextUnformatted(line->text);
+        }
+    }
+    if (g_ui_log_written != app->log_written) {
+        g_ui_log_written = app->log_written;
+        ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+}
+
+// One bus's meter pair, side by side in the width it is given: what the
+// plugin is sending to that pair of its outputs right now.
+static void ui_draw_bus_meter(App* app, int bus, float width, float scale) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float bar_h = UI_METER_HEIGHT * scale;
+    float gap = 2.0f * scale;
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    for (int c = 0; c < FR_BUS_CHANNELS; ++c) {
+        ImVec2 pos = ImVec2(origin.x, origin.y + (float)c * (bar_h + gap));
+        ImVec2 end = ImVec2(pos.x + width, pos.y + bar_h);
+        dl->AddRectFilled(pos, end, CODE_COLOR_PANEL_BG_U32, 2.0f);
+        float db = ui_db(app->bus_meter[bus][c]);
+        float fill = (db - UI_METER_MIN_DB) / (0.0f - UI_METER_MIN_DB);
+        if (fill > 1.0f) fill = 1.0f;
+        if (fill > 0.0f) dl->AddRectFilled(pos, ImVec2(pos.x + width * fill, end.y), ui_meter_color(db), 2.0f);
+        dl->AddRect(pos, end, CODE_COLOR_BORDER_U32, 2.0f);
+    }
+    ImGui::Dummy(ImVec2(width, FR_BUS_CHANNELS * bar_h + gap));
+}
+
+// The output busses: one row per microphone, each naming the folder it
+// writes to and the stereo pair of the plugin's outputs it reads. A run
+// fills every one of them in the one pass, so a multi-miced library is
+// captured in a single render.
+static void ui_draw_bus_tab(App* app, float scale) {
+    ResampleConfig* cfg = &app->settings.resample;
+    bool busy = app_resample_running(app) || app_instrument_running(app);
+
+    ImGui::BeginChild("##buslist", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_None);
+    ui_hint("Every bus is one stereo pair of the plugin's outputs and becomes a folder of its own, "
+            "with its own samples and its own instrument. Route each microphone to its pair in the plugin, "
+            "then name the bus to match. Play a note and the meters show which bus the plugin sends it to.");
+
+    int remove = -1;
+    float meter_w = 90.0f * scale;
+    float pair_w = 90.0f * scale;
+    float button_w = 28.0f * scale;
+    for (int i = 0; i < cfg->bus_count; ++i) {
+        ImGui::PushID(i);
+        bool name_clash = resample_bus_name_clashes(cfg, i);
+        bool pair_clash = resample_bus_pair_clashes(cfg, i);
+
+        // The monitor: the one bus the speakers play, as the device is
+        // stereo and cannot carry them all.
+        bool is_monitor = cfg->monitor_bus == i;
+        if (ImGui::RadioButton("##monitor", is_monitor)) cfg->monitor_bus = i;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Play this bus through the speakers");
+        ImGui::SameLine();
+
+        // The name takes a field wide enough for a microphone's name and no
+        // more; the slack goes to the meter, which is what says whether the
+        // plugin routed this microphone here at all.
+        float avail = ImGui::GetContentRegionAvail().x;
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float rest = avail - pair_w - button_w - 3.0f * spacing;
+        float name_w = 260.0f * scale;
+        if (name_w > rest - meter_w) name_w = rest - meter_w;
+        if (name_w < 60.0f * scale) name_w = 60.0f * scale;
+        float bar_w = rest - name_w;
+        if (bar_w < meter_w) bar_w = meter_w;
+
+        ImGui::BeginDisabled(busy);
+        if (name_clash) ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_RED_VEC4);
+        ImGui::SetNextItemWidth(name_w);
+        ImGui::InputText("##name", cfg->busses[i].name, sizeof(cfg->busses[i].name));
+        if (name_clash) ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The microphone's name: its folder, and the start of every file it writes");
+        ImGui::SameLine();
+
+        // The pair it reads, named the way a plugin's own routing names it.
+        char pair_label[16];
+        resample_bus_pair_label(cfg->busses[i].channel, pair_label, sizeof(pair_label));
+        ImGui::BeginDisabled(busy);
+        if (pair_clash) ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_RED_VEC4);
+        ImGui::SetNextItemWidth(pair_w);
+        if (ImGui::BeginCombo("##pair", pair_label)) {
+            for (int c = 0; c < FR_MAX_RENDER_CHANNELS; c += FR_BUS_CHANNELS) {
+                char item[16];
+                resample_bus_pair_label(c, item, sizeof(item));
+                if (ImGui::Selectable(item, cfg->busses[i].channel == c)) cfg->busses[i].channel = c;
+            }
+            ImGui::EndCombo();
+        }
+        if (pair_clash) ImGui::PopStyleColor();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The plugin's own outputs this bus reads");
+        ImGui::SameLine();
+
+        ui_draw_bus_meter(app, i, bar_w, scale);
+        ImGui::SameLine();
+
+        ImGui::BeginDisabled(busy || cfg->bus_count <= 1);
+        if (ui_red_button("X", ImVec2(button_w, 0.0f))) remove = i;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered() && cfg->bus_count > 1) ImGui::SetTooltip("Remove this bus");
+
+        if (name_clash) {
+            ui_colored_wrapped("Name this bus something no other bus is called: the name is its folder.",
+                               CODE_COLOR_WARNING_VEC4);
+        }
+        if (pair_clash) {
+            ui_colored_wrapped("Another bus reads this pair as well. Move one of them.", CODE_COLOR_WARNING_VEC4);
+        }
+        ImGui::PopID();
+    }
+    if (remove >= 0) resample_bus_remove(cfg, remove);
+
+    ImGui::BeginDisabled(busy || cfg->bus_count >= FR_MAX_OUTPUT_BUSSES);
+    if (ImGui::Button("Add output bus", ImVec2(150.0f * scale, 0.0f))) resample_bus_add(cfg);
+    ImGui::EndDisabled();
+    if (cfg->bus_count >= FR_MAX_OUTPUT_BUSSES) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d is the most", FR_MAX_OUTPUT_BUSSES);
+    }
+
+    // What the loaded plugin actually offers, so a bus on a pair it does not
+    // have is seen before the render rather than after it.
+    if (app->plugin) {
+        const HostPluginInfo* info = host_plugin_info(app->plugin);
+        int needed = resample_bus_channel_count(cfg);
+        char line[160];
+        snprintf(line, sizeof(line), "%s has %d output channel%s over %d bus%s; the busses read %d.",
+                 info->name, info->total_output_channels, info->total_output_channels == 1 ? "" : "s",
+                 info->output_bus_count, info->output_bus_count == 1 ? "" : "ses", needed);
+        if (needed > info->total_output_channels) {
+            ui_colored_wrapped(line, CODE_COLOR_WARNING_VEC4);
+            ui_colored_wrapped("A bus past the plugin's own outputs records silence. Move it, or route the plugin to more outputs.",
+                               CODE_COLOR_WARNING_VEC4);
+        } else {
+            ui_note(line);
+        }
+    } else {
+        ui_note("Load a plugin to see how many outputs it offers.");
+    }
+    ImGui::EndChild();
+}
+
+// The strip over the keyboard: the output log and the output busses, one tab
+// each. The arrow folds it down to its bar alone and opens it up again, the
+// grip on the top edge sets how tall it is.
 static void ui_draw_log(App* app, ImVec2 size, float scale) {
     ImGui::BeginChild("##log", size, ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar);
 
@@ -1066,38 +1257,50 @@ static void ui_draw_log(App* app, ImVec2 size, float scale) {
         app->settings.log_expanded = !expanded;
     }
     ImGui::SameLine();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(CODE_COLOR_SECTION_VEC4, "OUTPUT LOG");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(%d)", app->log_count);
-    float clear_w = 56.0f * scale;
-    ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x - clear_w);
-    ImGui::BeginDisabled(app->log_count == 0);
-    if (ImGui::Button("Clear", ImVec2(clear_w, 0.0f))) app->log_clear_request = true;
-    ImGui::EndDisabled();
+
+    // The tabs sit on the bar, so a folded strip still says which one is
+    // open and a click on the other opens the strip on it. The tab asked for
+    // is read once, the way the plugin lists do it: on the bar's first frame
+    // ImGui shows the first tab, which would set the setting back before the
+    // second one is submitted.
+    bool show_log = app->settings.log_tab == APP_LOG_TAB_LOG;
+    int wanted = app->log_tab_select_request ? app->settings.log_tab : -1;
+    app->log_tab_select_request = false;
+    if (ImGui::BeginTabBar("##logtabs", ImGuiTabBarFlags_None)) {
+        ImGuiTabItemFlags log_flags = wanted == APP_LOG_TAB_LOG ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Output log", nullptr, log_flags)) {
+            app->settings.log_tab = APP_LOG_TAB_LOG;
+            show_log = true;
+            ImGui::EndTabItem();
+        }
+        ImGuiTabItemFlags bus_flags = wanted == APP_LOG_TAB_BUSSES ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+        if (ImGui::BeginTabItem("Output busses", nullptr, bus_flags)) {
+            app->settings.log_tab = APP_LOG_TAB_BUSSES;
+            show_log = false;
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    // The counter and Clear belong to the log alone.
+    if (show_log) {
+        float clear_w = 56.0f * scale;
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x - clear_w);
+        ImGui::BeginDisabled(app->log_count == 0);
+        if (ImGui::Button("Clear", ImVec2(clear_w, 0.0f))) app->log_clear_request = true;
+        ImGui::EndDisabled();
+    } else {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d bus%s", app->settings.resample.bus_count,
+                            app->settings.resample.bus_count == 1 ? "" : "ses");
+    }
 
     if (app->settings.log_expanded) {
-        ImGui::BeginChild("##loglines", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
-        if (app->log_count == 0) {
-            ui_note("Nothing yet. What a render, a build or a save reports comes here.");
+        if (show_log) {
+            ui_draw_log_lines(app);
+        } else {
+            ui_draw_bus_tab(app, scale);
         }
-        for (int i = 0; i < app->log_count; ++i) {
-            const AppLogLine* line = app_log_line(app, i);
-            ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_SLOT_LABEL_TEXT);
-            ImGui::TextUnformatted(line->time);
-            ImGui::PopStyleColor();
-            ImGui::SameLine();
-            if (line->is_error) {
-                ImGui::TextColored(CODE_COLOR_RED_VEC4, "%s", line->text);
-            } else {
-                ImGui::TextUnformatted(line->text);
-            }
-        }
-        if (g_ui_log_written != app->log_written) {
-            g_ui_log_written = app->log_written;
-            ImGui::SetScrollHereY(1.0f);
-        }
-        ImGui::EndChild();
     }
 
     ImGui::EndChild();

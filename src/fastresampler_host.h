@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include "fastresampler_constants.h"
 #include "fastresampler_midi.h"
+#include "fastresampler_state.h"
 
 struct HostContext;   // the IHostApplication every plugin is given
 struct HostPlugin;    // one loaded plugin
@@ -33,6 +34,12 @@ struct HostPluginInfo {
     char version[64];
     char category[128];
     int  output_channels;      // channels on the main output bus
+    // Every output channel the plugin has, its busses flattened into one
+    // list: what an output bus of this program picks its stereo pair out
+    // of. A VST3 with three stereo busses and a VST 2 with six output
+    // channels both report six.
+    int  total_output_channels;
+    int  output_bus_count;     // audio output busses the plugin has; 1 for VST 2
     int  latency_frames;
     bool has_midi_mapping;     // CC and pitch bend reach the plugin as parameters
     bool has_controller;
@@ -65,7 +72,11 @@ void        host_plugin_unload(HostPlugin* p);
 bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_size, bool offline);
 
 // Audio thread. Drains the MIDI queue into this block's events, runs the
-// plugin, and copies its main output into outputs[0..channel_count).
+// plugin, and copies its output into outputs[0..channel_count). The channels
+// are the plugin's output busses flattened into one list, so channel 2 and 3
+// are the plugin's outputs 3/4 whether those are a second bus or two more
+// channels of the first. A channel the plugin does not have is left silent,
+// except that a mono plugin feeds both of the first pair.
 void host_plugin_process(HostPlugin* p, MidiQueue* midi, float* const* outputs,
                          int channel_count, int frames);
 
@@ -76,6 +87,32 @@ void host_plugin_process_events(HostPlugin* p, const MidiEvent* events, const in
                                 int count, float* const* outputs, int channel_count, int frames);
 
 const HostPluginInfo* host_plugin_info(const HostPlugin* p);
+
+// --- State ------------------------------------------------------------------
+// The plugin's own state: the patch it holds, every parameter, and the
+// output routing it was set to, in the block a DAW would keep in its
+// project. The container is fastresampler_state.h; what is in its parts is
+// the plugin's and is never read here.
+//
+// Both calls run on the UI thread with the audio thread kept out, the way an
+// unload is: setting a state stops the plugin, hands it the block, and
+// starts it again.
+
+// Reads the state into out, which the caller starts with state_buffer_init()
+// and frees with state_buffer_release(). False when the plugin wrote nothing.
+bool host_plugin_get_state(HostPlugin* p, StateBuffer* out);
+
+// Puts a block read earlier back. It is refused when it was written for
+// another format or another VST 2 plugin. A plugin may name other outputs
+// once its state is back (a sampler told to send its microphones to more
+// busses does): the info is up to date when this returns, and the caller
+// reopens the audio device for it.
+bool host_plugin_set_state(HostPlugin* p, const void* data, size_t size, char* err, size_t err_len);
+
+// True once for every time the plugin changed its own busses or channels by
+// itself, through IComponent's restart call or the VST 2 io-changed one. The
+// caller reconfigures for the new layout.
+bool host_plugin_take_io_change(HostPlugin* p);
 
 // --- Editor -----------------------------------------------------------------
 // Two steps so the caller can size the native parent before the view attaches:

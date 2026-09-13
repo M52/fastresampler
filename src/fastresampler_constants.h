@@ -17,6 +17,14 @@
 #define FR_PROJECT_NAME_LEN     64
 #define FR_MAX_PROJECTS         256
 
+// The plugin's own state belongs to the project but not in its YAML: it is
+// the plugin's binary block and a sampler's runs to megabytes. It goes in a
+// file of the same name beside it, and the YAML names that file.
+#define FR_PROJECT_STATE_EXT    ".fstate"
+// The largest state a project takes back. A sampler with a big multi loaded
+// writes a few megabytes; this is the guard against a file that is wrong.
+#define FR_MAX_PLUGIN_STATE     (256u * 1024u * 1024u)
+
 // --- Sizes of the fixed arrays ----------------------------------------------
 #define FR_MAX_PATH             260
 #define FR_MAX_SCAN_PATHS       16
@@ -39,6 +47,17 @@
 // output is folded down to the first two, a mono plugin is copied to both.
 #define FR_OUTPUT_CHANNELS      2
 #define FR_MAX_BLOCK_SIZE       4096
+
+// --- Output busses ----------------------------------------------------------
+// A resampling run captures more than one microphone at a time. Every output
+// bus is one stereo pair of the plugin's own outputs, so a library that sends
+// its close mic to outputs 1/2 and its tree to 3/4 is captured in one pass.
+// The plugin's output busses are flattened into one list of channels first,
+// which makes a VST3 with three stereo busses and a VST 2 with six output
+// channels look the same from here.
+#define FR_MAX_OUTPUT_BUSSES    16
+#define FR_BUS_CHANNELS         2
+#define FR_MAX_RENDER_CHANNELS  (FR_MAX_OUTPUT_BUSSES * FR_BUS_CHANNELS)
 #define FR_MIN_BLOCK_SIZE       32
 #define FR_DEFAULT_BLOCK_SIZE   256
 #define FR_DEFAULT_SAMPLE_RATE  48000.0
@@ -109,6 +128,14 @@ static const int g_block_size_options[FR_BLOCK_SIZE_OPTION_COUNT] = { 32, 64, 12
 #define UI_LOG_MIN_BODY_HEIGHT  40.0f
 #define UI_LOG_MAX_BODY_HEIGHT  2000.0f
 #define UI_LOG_GRIP_HEIGHT      6.0f
+
+// The strip holds two tabs: the ledger of what every step reported, and the
+// output busses a run captures at once. The settings keep the one shown.
+enum AppLogTab {
+    APP_LOG_TAB_LOG = 0,
+    APP_LOG_TAB_BUSSES
+};
+
 #define UI_MAIN_MIN_HEIGHT      120.0f
 #define UI_PANEL_PADDING        8.0f
 #define UI_ITEM_SPACING         4.0f

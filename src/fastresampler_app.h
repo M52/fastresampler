@@ -41,6 +41,7 @@ struct App {
     PluginList plugins[HOST_FORMAT_COUNT];
     int        selected_plugin[HOST_FORMAT_COUNT];   // row highlighted in each list, -1 none
     bool       plugin_tab_select_request;            // the UI moves to settings.plugin_tab
+    bool       log_tab_select_request;               // the UI moves to settings.log_tab
     ScanCache  vsti_cache;
 
     AudioDriverList drivers;
@@ -49,6 +50,7 @@ struct App {
 
     HostContext* host;
     HostPlugin*  plugin;               // the one loaded plugin, or null
+    char         plugin_path[FR_MAX_PATH];   // where it was loaded from, for a project
 
     // Handshake with the audio thread. The audio callback raises audio_busy
     // around its work and only touches the plugin while plugin_active is set;
@@ -76,6 +78,13 @@ struct App {
 
     std::atomic<float> peak[FR_OUTPUT_CHANNELS];   // written by the audio thread
     float      meter[FR_OUTPUT_CHANNELS];          // decayed copy the UI draws
+
+    // One meter per output bus, so the Output busses tab shows what the
+    // plugin's own routing actually sends where: play a note and the bus
+    // holding that microphone moves. Written by the audio thread over every
+    // bus, whichever one the speakers are on.
+    std::atomic<float> bus_peak[FR_MAX_OUTPUT_BUSSES][FR_BUS_CHANNELS];
+    float      bus_meter[FR_MAX_OUTPUT_BUSSES][FR_BUS_CHANNELS];
 
     char       status[FR_STATUS_LEN];
     bool       status_is_error;

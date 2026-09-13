@@ -24,8 +24,9 @@ struct Settings {
     int  midi_channel;                           // 0..15
 
     bool show_tips;                              // the dim lines that explain a control
-    bool log_expanded;                           // the output log over the keyboard is unfolded
-    int  log_height;                             // how tall its ledger is, the grip's drag
+    bool log_expanded;                           // the strip over the keyboard is unfolded
+    int  log_height;                             // how tall its body is, the grip's drag
+    int  log_tab;                                // AppLogTab: the output log or the output busses
 
     int  window_width;
     int  window_height;

@@ -23,6 +23,9 @@
 #define RESAMPLE_DEFAULT_BIT_DEPTH           16
 #define RESAMPLE_DEFAULT_OUTPUT_DIR_NAME     "samples"
 #define RESAMPLE_FULL_FILE_SUFFIX            "_full.wav"
+// What the one bus a fresh configuration has is called. A run with a single
+// microphone needs no more than this, and the name is still a folder.
+#define RESAMPLE_DEFAULT_BUS_NAME            "Close"
 
 // Legato, the defaults of a capture. The source note is held long enough for
 // a slow attack to have settled before the move starts. The overlap is what
@@ -48,6 +51,12 @@
 
 void resample_config_defaults(ResampleConfig* cfg) {
     memset(cfg, 0, sizeof(*cfg));
+    // One bus on the first stereo pair: what a plugin plays without any
+    // routing of its own.
+    cfg->bus_count = 1;
+    cfg->monitor_bus = 0;
+    fr_strcpy(cfg->busses[0].name, sizeof(cfg->busses[0].name), RESAMPLE_DEFAULT_BUS_NAME);
+    cfg->busses[0].channel = 0;
     fr_strcpy(cfg->low_note, sizeof(cfg->low_note), "C3");
     fr_strcpy(cfg->high_note, sizeof(cfg->high_note), "C4");
     cfg->step = RESAMPLE_DEFAULT_STEP;
@@ -90,6 +99,104 @@ void resample_config_defaults(ResampleConfig* cfg) {
     fr_strcpy(cfg->export_dir, sizeof(cfg->export_dir), cfg->root_dir);
 }
 
+// --- Output busses --------------------------------------------------------------
+
+// A name as a file and a folder carry it: what the naming fields and the bus
+// names are put through. False when nothing usable is left.
+static bool resample_sanitize_name(char* dst, size_t dst_size, const char* src);
+
+// Whether any bus other than skip already reads that pair.
+static bool resample_bus_pair_taken(const ResampleConfig* cfg, int channel, int skip) {
+    for (int i = 0; i < cfg->bus_count; ++i) {
+        if (i == skip) continue;
+        if (cfg->busses[i].channel == channel) return true;
+    }
+    return false;
+}
+
+bool resample_bus_add(ResampleConfig* cfg) {
+    if (cfg->bus_count >= FR_MAX_OUTPUT_BUSSES) return false;
+    ResampleBus* bus = &cfg->busses[cfg->bus_count];
+    memset(bus, 0, sizeof(*bus));
+    // The lowest pair nothing reads yet, so the busses line up with a
+    // plugin's outputs in order until one is moved by hand.
+    bus->channel = 0;
+    for (int c = 0; c < FR_MAX_RENDER_CHANNELS; c += FR_BUS_CHANNELS) {
+        if (!resample_bus_pair_taken(cfg, c, cfg->bus_count)) {
+            bus->channel = c;
+            break;
+        }
+    }
+    snprintf(bus->name, sizeof(bus->name), "Mic %d", cfg->bus_count + 1);
+    cfg->bus_count++;
+    return true;
+}
+
+void resample_bus_remove(ResampleConfig* cfg, int index) {
+    // The last one stays: a run has to have somewhere to write.
+    if (cfg->bus_count <= 1 || index < 0 || index >= cfg->bus_count) return;
+    for (int i = index; i < cfg->bus_count - 1; ++i) cfg->busses[i] = cfg->busses[i + 1];
+    cfg->bus_count--;
+    memset(&cfg->busses[cfg->bus_count], 0, sizeof(cfg->busses[0]));
+    // The monitor follows the list: it moves up with the busses above the
+    // one that went, and steps back when it was the one removed at the end.
+    if (cfg->monitor_bus > index) cfg->monitor_bus--;
+    if (cfg->monitor_bus >= cfg->bus_count) cfg->monitor_bus = cfg->bus_count - 1;
+}
+
+void resample_bus_validate(ResampleConfig* cfg) {
+    cfg->bus_count = fr_clampi(cfg->bus_count, 0, FR_MAX_OUTPUT_BUSSES);
+    for (int i = 0; i < cfg->bus_count; ++i) {
+        ResampleBus* bus = &cfg->busses[i];
+        // A channel from a file is rounded down to the pair that holds it.
+        bus->channel = fr_clampi(bus->channel, 0, FR_MAX_RENDER_CHANNELS - FR_BUS_CHANNELS);
+        bus->channel -= bus->channel % FR_BUS_CHANNELS;
+        if (!bus->name[0]) snprintf(bus->name, sizeof(bus->name), "Mic %d", i + 1);
+    }
+    // A file with no busses at all: the one a fresh configuration has.
+    if (cfg->bus_count == 0) {
+        cfg->bus_count = 1;
+        fr_strcpy(cfg->busses[0].name, sizeof(cfg->busses[0].name), RESAMPLE_DEFAULT_BUS_NAME);
+        cfg->busses[0].channel = 0;
+    }
+    cfg->monitor_bus = fr_clampi(cfg->monitor_bus, 0, cfg->bus_count - 1);
+}
+
+void resample_bus_pair_label(int channel, char* out, size_t out_len) {
+    snprintf(out, out_len, "%d/%d", channel + 1, channel + FR_BUS_CHANNELS);
+}
+
+bool resample_bus_name_clashes(const ResampleConfig* cfg, int index) {
+    char mine[RESAMPLE_NAME_LEN];
+    if (index < 0 || index >= cfg->bus_count) return false;
+    if (!resample_sanitize_name(mine, sizeof(mine), cfg->busses[index].name)) return true;
+    for (int i = 0; i < cfg->bus_count; ++i) {
+        char other[RESAMPLE_NAME_LEN];
+        if (i == index) continue;
+        if (!resample_sanitize_name(other, sizeof(other), cfg->busses[i].name)) continue;
+        // The folder is what must differ, and folders do not tell case
+        // apart, so "Close" and "close" are the same bus twice.
+        if (fr_stricmp(mine, other) == 0) return true;
+    }
+    return false;
+}
+
+bool resample_bus_pair_clashes(const ResampleConfig* cfg, int index) {
+    if (index < 0 || index >= cfg->bus_count) return false;
+    return resample_bus_pair_taken(cfg, cfg->busses[index].channel, index);
+}
+
+int resample_bus_channel_count(const ResampleConfig* cfg) {
+    int highest = 0;
+    for (int i = 0; i < cfg->bus_count; ++i) {
+        int past = cfg->busses[i].channel + FR_BUS_CHANNELS;
+        if (past > highest) highest = past;
+    }
+    if (highest < FR_BUS_CHANNELS) highest = FR_BUS_CHANNELS;
+    if (highest > FR_MAX_RENDER_CHANNELS) highest = FR_MAX_RENDER_CHANNELS;
+    return highest;
+}
+
 int resample_valid_sample_rate(int value) {
     for (int i = 0; i < RESAMPLE_RATE_OPTION_COUNT; ++i) {
         if (g_resample_rate_options[i] == value) return value;
@@ -126,15 +233,18 @@ void resample_preload_label(int preload_frames, char* out, size_t out_len) {
     }
 }
 
-uint64_t resample_required_bytes(const ResampleScript* script, bool split_samples) {
-    uint64_t frame_bytes = (uint64_t)FR_OUTPUT_CHANNELS * sizeof(float);
+uint64_t resample_required_bytes(const ResampleScript* script, bool split_samples, int bus_count) {
+    uint64_t frame_bytes = (uint64_t)FR_BUS_CHANNELS * sizeof(float);
     uint64_t total = (uint64_t)script->total_frames * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
-    if (!split_samples) return total;
-    for (int i = 0; i < script->segment_count; ++i) {
-        const ResampleSegment* seg = &script->segments[i];
-        total += (uint64_t)(seg->end_frame - seg->start_frame) * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
+    if (split_samples) {
+        for (int i = 0; i < script->segment_count; ++i) {
+            const ResampleSegment* seg = &script->segments[i];
+            total += (uint64_t)(seg->end_frame - seg->start_frame) * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
+        }
     }
-    return total;
+    // Every bus writes the same files into a folder of its own.
+    if (bus_count < 1) bus_count = 1;
+    return total * (uint64_t)bus_count;
 }
 
 void resample_layer_suffix(bool dynamic_layers, int layer, char* out, size_t out_len) {
@@ -374,8 +484,23 @@ static bool resample_sanitize_name(char* dst, size_t dst_size, const char* src) 
     return o > 0;
 }
 
-bool resample_prefix(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
-    char mic[RESAMPLE_NAME_LEN], instrument[RESAMPLE_NAME_LEN], articulation[RESAMPLE_NAME_LEN];
+// The name of one bus, cleaned for a file and a folder. False, with the
+// reason in err, when the bus is out of range or its name is empty.
+static bool resample_bus_name(const ResampleConfig* cfg, int bus, char* out, size_t out_len,
+                              char* err, size_t err_len) {
+    if (bus < 0 || bus >= cfg->bus_count) {
+        fr_strcpy(err, err_len, "Add an output bus");
+        return false;
+    }
+    if (!resample_sanitize_name(out, out_len, cfg->busses[bus].name)) {
+        snprintf(err, err_len, "Name output bus %d", bus + 1);
+        return false;
+    }
+    return true;
+}
+
+bool resample_prefix(const ResampleConfig* cfg, int bus, char* out, size_t out_len, char* err, size_t err_len) {
+    char name[RESAMPLE_NAME_LEN], instrument[RESAMPLE_NAME_LEN], articulation[RESAMPLE_NAME_LEN];
     if (!resample_sanitize_name(instrument, sizeof(instrument), cfg->instrument)) {
         fr_strcpy(err, err_len, "Fill in the Instrument field");
         return false;
@@ -384,16 +509,13 @@ bool resample_prefix(const ResampleConfig* cfg, char* out, size_t out_len, char*
         fr_strcpy(err, err_len, "Fill in the Articulation field");
         return false;
     }
-    if (!resample_sanitize_name(mic, sizeof(mic), cfg->microphone)) {
-        fr_strcpy(err, err_len, "Fill in the Microphone field");
-        return false;
-    }
-    snprintf(out, out_len, "%s_%s_%s", mic, instrument, articulation);
+    if (!resample_bus_name(cfg, bus, name, sizeof(name), err, err_len)) return false;
+    snprintf(out, out_len, "%s_%s_%s", name, instrument, articulation);
     return true;
 }
 
-bool resample_root_target_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
-    char mic[RESAMPLE_NAME_LEN], instrument[RESAMPLE_NAME_LEN], articulation[RESAMPLE_NAME_LEN];
+bool resample_root_target_dir(const ResampleConfig* cfg, int bus, char* out, size_t out_len, char* err, size_t err_len) {
+    char name[RESAMPLE_NAME_LEN], instrument[RESAMPLE_NAME_LEN], articulation[RESAMPLE_NAME_LEN];
     if (cfg->root_dir[0] == '\0') {
         fr_strcpy(err, err_len, "Choose a root project folder");
         return false;
@@ -406,24 +528,23 @@ bool resample_root_target_dir(const ResampleConfig* cfg, char* out, size_t out_l
         fr_strcpy(err, err_len, "Fill in the Articulation field");
         return false;
     }
-    if (!resample_sanitize_name(mic, sizeof(mic), cfg->microphone)) {
-        fr_strcpy(err, err_len, "Fill in the Microphone field");
-        return false;
-    }
+    if (!resample_bus_name(cfg, bus, name, sizeof(name), err, err_len)) return false;
     char path[FR_MAX_PATH];
     plat_path_join(path, sizeof(path), cfg->root_dir, instrument);
     plat_path_join(out, out_len, path, articulation);
     fr_strcpy(path, sizeof(path), out);
-    plat_path_join(out, out_len, path, mic);
+    plat_path_join(out, out_len, path, name);
     return true;
 }
 
 // The root a folder implies: the part of it above
-// <Instrument>\<Articulation>\<Microphone>. False when it does not end in
-// those three names.
+// <Instrument>\<Articulation>\<Bus>. False when it does not end in those
+// three names. The bus is the first one, which is what a configuration
+// written before the busses existed carried its microphone into.
 static bool resample_root_of_dir(const ResampleConfig* cfg, const char* dir, char* out, size_t out_len) {
     char names[3][RESAMPLE_NAME_LEN];
-    if (!resample_sanitize_name(names[0], sizeof(names[0]), cfg->microphone)) return false;
+    if (cfg->bus_count < 1) return false;
+    if (!resample_sanitize_name(names[0], sizeof(names[0]), cfg->busses[0].name)) return false;
     if (!resample_sanitize_name(names[1], sizeof(names[1]), cfg->articulation)) return false;
     if (!resample_sanitize_name(names[2], sizeof(names[2]), cfg->instrument)) return false;
 
@@ -459,35 +580,108 @@ void resample_config_root_from_dirs(ResampleConfig* cfg) {
     }
 }
 
-bool resample_output_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
+// Whether a folder could be written on this computer: it is there already,
+// or something above it is and the rest is made when a run writes. False
+// only when nothing in the whole chain exists, which is what another
+// computer's drive letter looks like from here.
+static bool resample_dir_reachable(const char* dir) {
+    if (!dir || !dir[0]) return false;
+    char work[FR_MAX_PATH];
+    fr_strcpy(work, sizeof(work), dir);
+    for (;;) {
+        if (plat_path_is_dir(work)) return true;
+        size_t len = strlen(work);
+        while (len > 0 && (work[len - 1] == '\\' || work[len - 1] == '/')) work[--len] = '\0';
+        // "D:" on its own is the drive, and the drive is where the walk ends.
+        if (len == 2 && work[1] == ':') {
+            work[len] = PLAT_PATH_SEP;
+            work[len + 1] = '\0';
+            return plat_path_is_dir(work);
+        }
+        const char* base = plat_path_basename(work);
+        if (base == work) return false;    // nothing above it left to try
+        work[base - work] = '\0';
+    }
+}
+
+int resample_config_localize_dirs(ResampleConfig* cfg) {
+    char module_dir[FR_MAX_PATH];
+    char home[FR_MAX_PATH];
+    plat_module_dir(module_dir, sizeof(module_dir));
+    plat_path_join(home, sizeof(home), module_dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);
+
+    int replaced = 0;
+    bool root_moved = false;
+    if (!resample_dir_reachable(cfg->root_dir)) {
+        fr_strcpy(cfg->root_dir, sizeof(cfg->root_dir), home);
+        root_moved = true;
+        replaced++;
+    }
+    // An override that cannot be written falls back to the root, which is
+    // where a fresh configuration sends both of them anyway.
+    bool output_dropped = false;
+    bool export_dropped = false;
+    if (cfg->output_dir_override && !resample_dir_reachable(cfg->output_dir)) {
+        cfg->output_dir_override = false;
+        output_dropped = true;
+        replaced++;
+    }
+    if (cfg->export_dir_override && !resample_dir_reachable(cfg->export_dir)) {
+        cfg->export_dir_override = false;
+        export_dropped = true;
+        replaced++;
+    }
+    // A folder that does not override the root is only the picker's starting
+    // point. It is left alone at home, and follows the root when the root
+    // moved or its own box was just dropped, so the picker never opens on
+    // another computer's drive.
+    if ((root_moved || output_dropped) && !cfg->output_dir_override) {
+        fr_strcpy(cfg->output_dir, sizeof(cfg->output_dir), cfg->root_dir);
+    }
+    if ((root_moved || export_dropped) && !cfg->export_dir_override) {
+        fr_strcpy(cfg->export_dir, sizeof(cfg->export_dir), cfg->root_dir);
+    }
+    return replaced;
+}
+
+// A picked folder with the bus's own name under it. The bus is the last
+// folder wherever a run writes, so two microphones never land on one
+// another's files.
+static bool resample_picked_bus_dir(const ResampleConfig* cfg, int bus, const char* picked,
+                                    char* out, size_t out_len, char* err, size_t err_len) {
+    char name[RESAMPLE_NAME_LEN];
+    if (!resample_bus_name(cfg, bus, name, sizeof(name), err, err_len)) return false;
+    plat_path_join(out, out_len, picked, name);
+    return true;
+}
+
+bool resample_output_dir(const ResampleConfig* cfg, int bus, char* out, size_t out_len, char* err, size_t err_len) {
     if (cfg->output_dir_override) {
         if (cfg->output_dir[0] == '\0') {
             fr_strcpy(err, err_len, "Choose an output folder");
             return false;
         }
-        fr_strcpy(out, out_len, cfg->output_dir);
-        return true;
+        return resample_picked_bus_dir(cfg, bus, cfg->output_dir, out, out_len, err, err_len);
     }
-    return resample_root_target_dir(cfg, out, out_len, err, err_len);
+    return resample_root_target_dir(cfg, bus, out, out_len, err, err_len);
 }
 
-bool resample_export_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len) {
+bool resample_export_dir(const ResampleConfig* cfg, int bus, char* out, size_t out_len, char* err, size_t err_len) {
     if (cfg->export_dir_override) {
         if (cfg->export_dir[0] == '\0') {
             fr_strcpy(err, err_len, "Choose a folder for the instrument");
             return false;
         }
-        fr_strcpy(out, out_len, cfg->export_dir);
-        return true;
+        return resample_picked_bus_dir(cfg, bus, cfg->export_dir, out, out_len, err, err_len);
     }
-    return resample_root_target_dir(cfg, out, out_len, err, err_len);
+    return resample_root_target_dir(cfg, bus, out, out_len, err, err_len);
 }
 
-void resample_segment_file_name(const ResampleConfig* cfg, const ResampleSegment* seg,
+void resample_segment_file_name(const ResampleConfig* cfg, int bus, const ResampleSegment* seg,
                                 char* out, size_t out_len) {
     char prefix[RESAMPLE_FILE_NAME_LEN];
     char err[8];
-    if (!resample_prefix(cfg, prefix, sizeof(prefix), err, sizeof(err))) fr_strcpy(prefix, sizeof(prefix), "sample");
+    if (!resample_prefix(cfg, bus, prefix, sizeof(prefix), err, sizeof(err))) fr_strcpy(prefix, sizeof(prefix), "sample");
     resample_sample_file_name(prefix, cfg->dynamic_layers, seg, out, out_len);
 }
 
@@ -680,8 +874,33 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     script->count = 0;
     script->segment_count = 0;
 
-    char prefix[RESAMPLE_FILE_NAME_LEN];
-    if (!resample_prefix(cfg, prefix, sizeof(prefix), err, err_len)) return false;
+    // Every bus must name a file and a folder no other bus names, and must
+    // read a pair no other bus reads: either clash would have two
+    // microphones write over one another.
+    if (cfg->bus_count < 1) {
+        fr_strcpy(err, err_len, "Add an output bus in the Output busses tab");
+        return false;
+    }
+    if (cfg->bus_count > FR_MAX_OUTPUT_BUSSES) {
+        snprintf(err, err_len, "Output busses: at most %d", FR_MAX_OUTPUT_BUSSES);
+        return false;
+    }
+    for (int b = 0; b < cfg->bus_count; ++b) {
+        char prefix[RESAMPLE_FILE_NAME_LEN];
+        if (!resample_prefix(cfg, b, prefix, sizeof(prefix), err, err_len)) return false;
+        if (resample_bus_name_clashes(cfg, b)) {
+            snprintf(err, err_len, "Output bus %d: '%s' is another bus's name as well; every bus needs its own folder",
+                     b + 1, cfg->busses[b].name);
+            return false;
+        }
+        if (resample_bus_pair_clashes(cfg, b)) {
+            char pair[16];
+            resample_bus_pair_label(cfg->busses[b].channel, pair, sizeof(pair));
+            snprintf(err, err_len, "Output bus %d '%s' reads outputs %s, which another bus reads as well",
+                     b + 1, cfg->busses[b].name, pair);
+            return false;
+        }
+    }
 
     int low = midi_note_parse(cfg->low_note);
     int high = midi_note_parse(cfg->high_note);
@@ -728,7 +947,9 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         return false;
     }
     char target_dir[FR_MAX_PATH];
-    if (!resample_output_dir(cfg, target_dir, sizeof(target_dir), err, err_len)) return false;
+    for (int b = 0; b < cfg->bus_count; ++b) {
+        if (!resample_output_dir(cfg, b, target_dir, sizeof(target_dir), err, err_len)) return false;
+    }
     if (cfg->cc_curve_count < 0 || cfg->cc_curve_count > RESAMPLE_MAX_CC_CURVES) {
         snprintf(err, err_len, "CC curves: at most %d", RESAMPLE_MAX_CC_CURVES);
         return false;
@@ -1019,19 +1240,28 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
 
 // --- The worker ------------------------------------------------------------------
 
-// Phase one: the plugin over the whole script into the full WAV. False when
-// writing failed; a cancel ends early and returns true.
+// Phase one: the plugin over the whole script, every bus captured in the one
+// pass, into one full WAV each. False when writing failed; a cancel ends
+// early and returns true.
 static bool resample_render(ResampleJob* job, int64_t* frames_done) {
     const ResampleScript* script = job->script;
-    WavWriter wav;
-    if (!wav_writer_open(&wav, job->full_path, FR_OUTPUT_CHANNELS, (int)script->sample_rate)) {
-        snprintf(job->result, sizeof(job->result), "Could not create %s", job->full_path);
-        return false;
+    WavWriter wav[FR_MAX_OUTPUT_BUSSES];
+    int opened = 0;
+    for (int b = 0; b < job->bus_count; ++b) {
+        if (!wav_writer_open(&wav[b], job->full_path[b], FR_BUS_CHANNELS, (int)script->sample_rate)) {
+            snprintf(job->result, sizeof(job->result), "Could not create %s", job->full_path[b]);
+            // The ones already open are closed, so nothing is left locked.
+            for (int i = 0; i < opened; ++i) wav_writer_close(&wav[i]);
+            return false;
+        }
+        opened++;
     }
 
-    static float buffers[FR_OUTPUT_CHANNELS][FR_MAX_BLOCK_SIZE];
-    float* ptrs[FR_OUTPUT_CHANNELS];
-    for (int c = 0; c < FR_OUTPUT_CHANNELS; ++c) ptrs[c] = buffers[c];
+    // The plugin writes into one flat set of channels; each bus reads its own
+    // stereo pair back out of it.
+    static float buffers[FR_MAX_RENDER_CHANNELS][FR_MAX_BLOCK_SIZE];
+    float* ptrs[FR_MAX_RENDER_CHANNELS];
+    for (int c = 0; c < FR_MAX_RENDER_CHANNELS; ++c) ptrs[c] = buffers[c];
     static MidiEvent block_events[RESAMPLE_MAX_EVENTS];
     static int block_offsets[RESAMPLE_MAX_EVENTS];
 
@@ -1051,7 +1281,7 @@ static bool resample_render(ResampleJob* job, int64_t* frames_done) {
         }
         int64_t remaining = script->total_frames - pos;
         int frames = remaining < job->block_size ? (int)remaining : job->block_size;
-        for (int c = 0; c < FR_OUTPUT_CHANNELS; ++c) memset(buffers[c], 0, (size_t)frames * sizeof(float));
+        for (int c = 0; c < job->channel_count; ++c) memset(buffers[c], 0, (size_t)frames * sizeof(float));
 
         // The events that land in this block, at their offset inside it.
         int n = 0;
@@ -1062,46 +1292,62 @@ static bool resample_render(ResampleJob* job, int64_t* frames_done) {
             n++;
             cursor++;
         }
-        host_plugin_process_events(job->plugin, block_events, block_offsets, n, ptrs, FR_OUTPUT_CHANNELS, frames);
+        host_plugin_process_events(job->plugin, block_events, block_offsets, n, ptrs, job->channel_count, frames);
 
-        for (int c = 0; c < FR_OUTPUT_CHANNELS; ++c) {
-            for (int i = 0; i < frames; ++i) {
-                float a = fabsf(buffers[c][i]);
-                if (a > peak) peak = a;
+        // Each bus takes its pair out of the flat channels and writes it.
+        int failed_bus = -1;
+        for (int b = 0; b < job->bus_count && write_ok; ++b) {
+            float* pair[FR_BUS_CHANNELS];
+            for (int c = 0; c < FR_BUS_CHANNELS; ++c) pair[c] = buffers[job->bus_channel[b] + c];
+            for (int c = 0; c < FR_BUS_CHANNELS; ++c) {
+                for (int i = 0; i < frames; ++i) {
+                    float a = fabsf(pair[c][i]);
+                    if (a > peak) peak = a;
+                }
             }
+            write_ok = wav_writer_write(&wav[b], pair, FR_BUS_CHANNELS, frames);
+            if (!write_ok) failed_bus = b;
         }
-        write_ok = wav_writer_write(&wav, ptrs, FR_OUTPUT_CHANNELS, frames);
+        if (!write_ok) {
+            snprintf(job->result, sizeof(job->result), "Writing %s failed after %.1f s of audio",
+                     job->full_path[failed_bus], (double)pos / script->sample_rate);
+        }
         pos += frames;
         job->progress_frames.store(pos);
     }
-    bool closed = wav_writer_close(&wav);
+    bool closed = true;
+    for (int b = 0; b < job->bus_count; ++b) {
+        if (!wav_writer_close(&wav[b]) && closed) {
+            closed = false;
+            snprintf(job->result, sizeof(job->result), "Writing %s failed after %.1f s of audio",
+                     job->full_path[b], (double)pos / script->sample_rate);
+        }
+    }
     job->peak = peak;
     *frames_done = pos;
-    if (!write_ok || !closed) {
-        snprintf(job->result, sizeof(job->result), "Writing %s failed after %.1f s of audio",
-                 job->full_path, (double)pos / script->sample_rate);
-        return false;
-    }
-    return true;
+    return write_ok && closed;
 }
 
-// Phase two: one file per segment, cut from the full WAV.
+// Phase two: one file per segment, cut from the full WAV of each bus into
+// that bus's own folder.
 static bool resample_split(ResampleJob* job) {
     const ResampleScript* script = job->script;
     job->phase.store(RESAMPLE_PHASE_SPLIT);
-    for (int i = 0; i < script->segment_count; ++i) {
-        if (job->cancel.load()) return true;
-        const ResampleSegment* seg = &script->segments[i];
-        char name[RESAMPLE_FILE_NAME_LEN];
-        resample_sample_file_name(job->prefix, job->dynamic_layers, seg, name, sizeof(name));
-        char path[FR_MAX_PATH];
-        plat_path_join(path, sizeof(path), job->out_dir, name);
-        if (!wav_copy_segment(job->full_path, seg->start_frame, seg->end_frame - seg->start_frame, path)) {
-            snprintf(job->result, sizeof(job->result), "Could not write %s", name);
-            return false;
+    for (int b = 0; b < job->bus_count; ++b) {
+        for (int i = 0; i < script->segment_count; ++i) {
+            if (job->cancel.load()) return true;
+            const ResampleSegment* seg = &script->segments[i];
+            char name[RESAMPLE_FILE_NAME_LEN];
+            resample_sample_file_name(job->prefix[b], job->dynamic_layers, seg, name, sizeof(name));
+            char path[FR_MAX_PATH];
+            plat_path_join(path, sizeof(path), job->out_dir[b], name);
+            if (!wav_copy_segment(job->full_path[b], seg->start_frame, seg->end_frame - seg->start_frame, path)) {
+                snprintf(job->result, sizeof(job->result), "Could not write %s", name);
+                return false;
+            }
+            job->files_written++;
+            job->split_done.store(job->files_written);
         }
-        job->files_written++;
-        job->split_done.store(job->files_written);
     }
     return true;
 }
@@ -1128,16 +1374,26 @@ static void resample_thread_main(void* user) {
     } else if (job->cancel.load()) {
         snprintf(job->result, sizeof(job->result), "Cancelled after %.1f s of audio.", audio_seconds);
         job->result_is_error = false;
-    } else if (job->split_samples) {
-        snprintf(job->result, sizeof(job->result),
-                 "Wrote %d samples to %s: %.1f s of audio in %.1f s (%.1fx realtime), peak %.1f dBFS.",
-                 job->files_written, job->out_dir, audio_seconds, job->elapsed_seconds, speed, peak_db);
-        job->result_is_error = false;
     } else {
-        // No split: the one long WAV is the whole of what the render made.
-        snprintf(job->result, sizeof(job->result),
-                 "Wrote %s to %s: %.1f s of audio in %.1f s (%.1fx realtime), peak %.1f dBFS.",
-                 plat_path_basename(job->full_path), job->out_dir, audio_seconds, job->elapsed_seconds, speed, peak_db);
+        // One bus names its folder; more than one names how many there were,
+        // as each wrote a folder of its own.
+        char where[FR_MAX_PATH + 32];
+        if (job->bus_count == 1) {
+            snprintf(where, sizeof(where), "%s", job->out_dir[0]);
+        } else {
+            snprintf(where, sizeof(where), "%d output busses", job->bus_count);
+        }
+        if (job->split_samples) {
+            snprintf(job->result, sizeof(job->result),
+                     "Wrote %d samples to %s: %.1f s of audio in %.1f s (%.1fx realtime), peak %.1f dBFS.",
+                     job->files_written, where, audio_seconds, job->elapsed_seconds, speed, peak_db);
+        } else {
+            // No split: the one long WAV per bus is the whole of what the
+            // render made.
+            snprintf(job->result, sizeof(job->result),
+                     "Wrote %s to %s: %.1f s of audio in %.1f s (%.1fx realtime), peak %.1f dBFS.",
+                     plat_path_basename(job->full_path[0]), where, audio_seconds, job->elapsed_seconds, speed, peak_db);
+        }
         job->result_is_error = false;
     }
     fr_log("resample: %s", job->result);
@@ -1148,9 +1404,15 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
                     int block_size, const ResampleConfig* cfg) {
     if (job->running.load()) return false;
     if (!plugin || !script || !script->built || block_size <= 0) return false;
+    if (cfg->bus_count < 1 || cfg->bus_count > FR_MAX_OUTPUT_BUSSES) return false;
     char err[FR_STATUS_LEN];
-    if (!resample_prefix(cfg, job->prefix, sizeof(job->prefix), err, sizeof(err))) return false;
-    if (!resample_output_dir(cfg, job->out_dir, sizeof(job->out_dir), err, sizeof(err))) return false;
+    job->bus_count = cfg->bus_count;
+    job->channel_count = resample_bus_channel_count(cfg);
+    for (int b = 0; b < job->bus_count; ++b) {
+        if (!resample_prefix(cfg, b, job->prefix[b], sizeof(job->prefix[b]), err, sizeof(err))) return false;
+        if (!resample_output_dir(cfg, b, job->out_dir[b], sizeof(job->out_dir[b]), err, sizeof(err))) return false;
+        job->bus_channel[b] = cfg->busses[b].channel;
+    }
 
     job->plugin = plugin;
     job->script = script;
@@ -1159,9 +1421,11 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
     job->split_samples = cfg->split_samples;
     // The script's, not the tab's: the files must say what was rendered.
     job->dynamic_layers = script->dynamic_layers;
-    char full_name[RESAMPLE_FILE_NAME_LEN];
-    snprintf(full_name, sizeof(full_name), "%s%s", job->prefix, RESAMPLE_FULL_FILE_SUFFIX);
-    plat_path_join(job->full_path, sizeof(job->full_path), job->out_dir, full_name);
+    for (int b = 0; b < job->bus_count; ++b) {
+        char full_name[RESAMPLE_FILE_NAME_LEN];
+        snprintf(full_name, sizeof(full_name), "%s%s", job->prefix[b], RESAMPLE_FULL_FILE_SUFFIX);
+        plat_path_join(job->full_path[b], sizeof(job->full_path[b]), job->out_dir[b], full_name);
+    }
 
     job->result[0] = '\0';
     job->result_is_error = false;
@@ -1178,8 +1442,14 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
         job->running.store(false);
         return false;
     }
-    fr_log("resample: rendering %d events, %d samples, to %s at %dx realtime (0 = unlimited), split %s",
-           script->count, script->segment_count, job->out_dir, job->speed, job->split_samples ? "on" : "off");
+    fr_log("resample: rendering %d events, %d samples, to %d output bus%s over %d channels at %dx realtime (0 = unlimited), split %s",
+           script->count, script->segment_count, job->bus_count, job->bus_count == 1 ? "" : "ses",
+           job->channel_count, job->speed, job->split_samples ? "on" : "off");
+    for (int b = 0; b < job->bus_count; ++b) {
+        char pair[16];
+        resample_bus_pair_label(job->bus_channel[b], pair, sizeof(pair));
+        fr_log("resample: bus %d '%s' reads outputs %s into %s", b + 1, cfg->busses[b].name, pair, job->out_dir[b]);
+    }
     return true;
 }
 

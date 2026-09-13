@@ -6,8 +6,16 @@
 // Build turns the configuration into a script: MIDI events at sample
 // positions plus a segment table that says where each wanted sample starts
 // and ends in the file. Render runs the plugin over the script on a worker
-// thread into one full WAV, then copies each segment out to its own file
-// named <Microphone>_<Instrument>_<Articulation>_<Note>_<Velocity>_RR<n>.wav.
+// thread into one full WAV per output bus, then copies each segment out to
+// its own file named
+// <Bus>_<Instrument>_<Articulation>_<Note>_<Velocity>_RR<n>.wav.
+//
+// Output busses: a run captures every microphone of a multi-miced library in
+// one pass. Each bus is one stereo pair of the plugin's outputs and is named
+// after the microphone it carries, so the plugin's own routing -- close to
+// outputs 1/2, tree to 3/4 -- decides what lands where. One pass of the
+// script fills every bus at once; each bus then gets a folder of its own,
+// named after it, holding its full WAV, its samples and its instrument.
 //
 // Pre-roll: a sampler that resets its round robin counter after silence
 // plays its first variation for every note we send. To capture variation n,
@@ -111,15 +119,35 @@ struct ResampleCcCurve {
     int   layer;                                 // with dynamic layers: the one layer it plays for; 0 = every layer
 };
 
+// --- Output busses --------------------------------------------------------------
+// One stereo pair of the plugin's outputs, named after the microphone the
+// plugin routes into it. The channel is the first of the pair, counted over
+// the plugin's output busses flattened into one list: 0 for outputs 1/2, 2
+// for 3/4, and so on. The name is the folder the bus writes to and the first
+// part of every file name it makes, so it takes the place the Microphone
+// field used to hold.
+struct ResampleBus {
+    char name[RESAMPLE_NAME_LEN];
+    int  channel;                  // first plugin output channel of the pair
+};
+
 // What the Resample tab edits. Lives in Settings so it survives a restart.
 struct ResampleConfig {
     char  instrument[RESAMPLE_NAME_LEN];
     char  articulation[RESAMPLE_NAME_LEN];
-    char  microphone[RESAMPLE_NAME_LEN];
+
+    // The output busses, one per microphone, edited in the Output busses tab.
+    // There is always at least one. monitor_bus is the one the speakers play
+    // while the plugin is live, as the device itself is stereo.
+    ResampleBus busses[FR_MAX_OUTPUT_BUSSES];
+    int   bus_count;
+    int   monitor_bus;
+
     // The root of the whole set of projects. Under it, a run writes to
-    // <root>\<Instrument>\<Articulation>\<Microphone>, so the naming fields
-    // put every take in a folder of its own. The samples and the instrument
-    // both go there unless the box of their section overrides it.
+    // <root>\<Instrument>\<Articulation>\<Bus>, so the naming fields and the
+    // bus put every take in a folder of its own. The samples and the
+    // instrument both go there unless the box of their section overrides it,
+    // and a bus is the last folder either way.
     char  root_dir[FR_MAX_PATH];
 
     char  low_note[RESAMPLE_NOTE_TEXT_LEN];        // "C3" style, C3 = middle C
@@ -261,20 +289,57 @@ struct ResampleJob {
     const ResampleScript*  script;
     int                    block_size;
     int                    speed;                   // realtime multiple, 0 = unlimited
-    char                   out_dir[FR_MAX_PATH];
-    char                   full_path[FR_MAX_PATH];      // the one long WAV
-    char                   prefix[RESAMPLE_FILE_NAME_LEN]; // Microphone_Instrument_Articulation
+
+    // One set per output bus: where it writes, the long WAV it fills, and
+    // the first part of every file name it makes. The render fills them all
+    // in one pass over the script.
+    int                    bus_count;
+    int                    bus_channel[FR_MAX_OUTPUT_BUSSES];   // first plugin channel of the pair
+    char                   out_dir[FR_MAX_OUTPUT_BUSSES][FR_MAX_PATH];
+    char                   full_path[FR_MAX_OUTPUT_BUSSES][FR_MAX_PATH];
+    char                   prefix[FR_MAX_OUTPUT_BUSSES][RESAMPLE_FILE_NAME_LEN]; // Bus_Instrument_Articulation
+    // The flat plugin channels the render asks for: one past the highest any
+    // bus reads, so a bus on outputs 5/6 is fetched without the pairs under
+    // it being written anywhere.
+    int                    channel_count;
+
     bool                   split_samples;
     bool                   dynamic_layers;          // the script's: names the files dyn<n> instead of RR<n>
 
     char   result[FR_STATUS_LEN];
     bool   result_is_error;
-    float  peak;
+    float  peak;                                    // the loudest of every bus
     double elapsed_seconds;
-    int    files_written;
+    int    files_written;                           // over every bus
 };
 
 void resample_config_defaults(ResampleConfig* cfg);
+
+// --- Output busses --------------------------------------------------------------
+
+// A bus at the end of the list, named "Mic <n>" and on the first stereo pair
+// no other bus reads. False when the list is full.
+bool resample_bus_add(ResampleConfig* cfg);
+
+// Takes one out. The last bus cannot go: a run needs somewhere to write.
+void resample_bus_remove(ResampleConfig* cfg, int index);
+
+// At least one bus, every channel a pair the plugin could carry, and the
+// monitor inside the list. Run over a configuration read from a file.
+void resample_bus_validate(ResampleConfig* cfg);
+
+// "1/2" for channel 0: the pair a bus reads, as the plugin's own routing
+// names it.
+void resample_bus_pair_label(int channel, char* out, size_t out_len);
+
+// Whether two busses read the same pair, or a bus has no usable name. The
+// tab marks them and a build refuses them, as either one would have two
+// busses write the same files.
+bool resample_bus_name_clashes(const ResampleConfig* cfg, int index);
+bool resample_bus_pair_clashes(const ResampleConfig* cfg, int index);
+
+// The flat plugin channels a run reads: one past the highest any bus needs.
+int resample_bus_channel_count(const ResampleConfig* cfg);
 
 // A value read from a file against the list the tab offers. The rate falls
 // back to 0, the device's own; the other two to what the caller gives, which
@@ -314,9 +379,9 @@ bool resample_preroll_on(const ResampleConfig* cfg);
 // The dropdown label for a preload size: "RAM" for 0, else "8192 frames".
 void resample_preload_label(int preload_frames, char* out, size_t out_len);
 
-// Bytes a render writes to the output folder: the full WAV and, when the
-// split runs, one file per sample, all 32 bit float with a header each.
-uint64_t resample_required_bytes(const ResampleScript* script, bool split_samples);
+// Bytes a render writes: the full WAV and, when the split runs, one file per
+// sample, all 32 bit float with a header each, for every one of the busses.
+uint64_t resample_required_bytes(const ResampleScript* script, bool split_samples, int bus_count);
 
 // --- Controller curves ---------------------------------------------------------
 
@@ -347,30 +412,40 @@ float resample_cc_value_at(const ResampleCcCurve* c, float x);
 bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sample_rate,
                     char* err, size_t err_len);
 
-// The file name a segment gets, from the naming fields of the configuration.
-void resample_segment_file_name(const ResampleConfig* cfg, const ResampleSegment* seg,
+// The file name a segment gets on one bus, from the naming fields.
+void resample_segment_file_name(const ResampleConfig* cfg, int bus, const ResampleSegment* seg,
                                 char* out, size_t out_len);
 
-// "Microphone_Instrument_Articulation" from the naming fields, cleaned for a
-// file name. False, with the reason in err, when a field is empty.
-bool resample_prefix(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
+// "Close_Instrument_Articulation" for one bus, cleaned for a file name.
+// False, with the reason in err, when a field or the bus name is empty.
+bool resample_prefix(const ResampleConfig* cfg, int bus, char* out, size_t out_len, char* err, size_t err_len);
 
-// <root>\<Instrument>\<Articulation>\<Microphone>: the folder a run writes to
-// when it follows the root project folder. False, with the reason in err,
-// when the root or one of the naming fields is empty.
-bool resample_root_target_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
+// <root>\<Instrument>\<Articulation>\<Bus>: the folder one bus writes to when
+// it follows the root project folder. False, with the reason in err, when
+// the root or one of the names is empty.
+bool resample_root_target_dir(const ResampleConfig* cfg, int bus, char* out, size_t out_len, char* err, size_t err_len);
 
 // A configuration read from a file written before the root project folder
 // existed: it names the two folders it wrote to and no root. When the
-// samples already went to <root>\<Instrument>\<Articulation>\<Microphone>,
-// that root is taken; otherwise the boxes that override the root go on. A
-// run keeps writing exactly where it did either way.
+// samples already went to <root>\<Instrument>\<Articulation>\<Bus>, that
+// root is taken; otherwise the boxes that override the root go on. A run
+// keeps writing exactly where it did either way.
 void resample_config_root_from_dirs(ResampleConfig* cfg);
 
-// Where the samples and where the instrument go: the folder above, or the
-// one picked in the tab when that section's box overrides the root.
-bool resample_output_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
-bool resample_export_dir(const ResampleConfig* cfg, char* out, size_t out_len, char* err, size_t err_len);
+// Puts the folders of a project made on another computer back on this one.
+// A folder is kept when anything above it exists, as the rest of the chain
+// is made when a run writes; one whose whole tree is missing -- another
+// computer's drive letter -- is replaced by the folder beside the exe, and
+// an override that pointed there is dropped so the folder follows the root
+// again. Reports how many were replaced, 0 when the project is at home.
+int resample_config_localize_dirs(ResampleConfig* cfg);
+
+// Where one bus puts its samples and where it puts its instrument: the
+// folder above, or, when that section's box overrides the root, the picked
+// folder with the bus's own name under it. A bus is the last folder either
+// way, so two microphones never write over one another.
+bool resample_output_dir(const ResampleConfig* cfg, int bus, char* out, size_t out_len, char* err, size_t err_len);
+bool resample_export_dir(const ResampleConfig* cfg, int bus, char* out, size_t out_len, char* err, size_t err_len);
 
 // Starts the worker. The caller has taken the plugin away from the audio
 // thread first and gives it back after resample_collect(). The output folder
