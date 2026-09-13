@@ -10,7 +10,9 @@ int main() {
     resample_config_defaults(cfg.get()); strcpy(cfg->instrument, "Synthetic"); strcpy(cfg->articulation, "Test"); cfg->bus_count = 1; strcpy(cfg->busses[0].name, "Main");
     strcpy(cfg->low_note, "C3"); strcpy(cfg->high_note, "D3"); cfg->step = 2;
     strcpy(cfg->velocities, "64, 127"); cfg->round_robins = 2;
-    cfg->hold_seconds = 0.1f; cfg->gap_seconds = 0.05f;
+    // Hold long enough that the streamed part of a note spans several WavPack
+    // blocks of INSTRUMENT_PACK_BLOCK_FRAMES, so the block size is exercised.
+    cfg->hold_seconds = 0.3f; cfg->gap_seconds = 0.05f;
     cfg->preroll = false; cfg->legato = false; cfg->dynamic_layers = false;
     cfg->delete_full_wav = false; cfg->split_samples = false; cfg->export_rzc = false;
     cfg->bit_depth = 24;

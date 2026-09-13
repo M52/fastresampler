@@ -621,8 +621,12 @@ static void instrument_pcm_pack(const float* src, uint8_t* dst, size_t sample_co
 
 // --- WavPack ---------------------------------------------------------------------
 // The streamed part of a sample is compressed the way FastSampler's own
-// export compresses it: at the bank's depth, normal mode, packed in blocks
-// of frames.
+// export compresses it: at the bank's depth, normal mode, in WavPack blocks
+// of this many frames, which is also the chunk the packer is fed in.
+// FastSampler's engine reads a stream in buffers of 4096, 8192 or 16384
+// frames, and a seek into the middle of a block decodes from the block's
+// start and throws the frames away, so every buffer start must be a block
+// edge. Left unset, WavPack would pick about 11000 frames a block.
 
 #define INSTRUMENT_PACK_BLOCK_FRAMES     4096
 #define INSTRUMENT_PACK_FIRST_CAPACITY   65536
@@ -674,6 +678,7 @@ static bool instrument_compress(const float* pcm, int frames, int channels, int 
     config.num_channels = channels;
     config.sample_rate = sample_rate;
     config.channel_mask = channels == 1 ? INSTRUMENT_WP_CHANNEL_MASK_MONO : INSTRUMENT_WP_CHANNEL_MASK_STEREO;
+    config.block_samples = INSTRUMENT_PACK_BLOCK_FRAMES;
 
     size_t samples = (size_t)frames * (size_t)channels;
     int32_t* ints = (int32_t*)malloc(samples * sizeof(int32_t));
