@@ -1059,15 +1059,21 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     int note_count = (high - low) / cfg->step + 1;
     int sustain_total = note_count * velocity_count * cfg->round_robins;
     int segment_total = sustain_total + transition_total;
+    if (segment_total > RESAMPLE_MAX_SEGMENTS) {
+        snprintf(err, err_len,
+                 "%d samples is more than the %d one run can hold; narrow the range, the velocities, the layers or the legato intervals",
+                 segment_total, RESAMPLE_MAX_SEGMENTS);
+        return false;
+    }
     // A sustain run maps every sample twice, as a loop and as a release; a
     // transition is one zone. The instrument holds as many zones as the
-    // segments make between them.
+    // segments make between them, up to the zone capacity of the pinned format.
+    const int zone_capacity = (int)(sizeof(FSIFile::zones) / sizeof(FSIZone));
     int zone_total = sustain_total * (cfg->dynamic_layers ? 2 : 1) + transition_total;
-    if (segment_total > RESAMPLE_MAX_SEGMENTS || zone_total > RESAMPLE_MAX_SEGMENTS) {
-        int over = zone_total > segment_total ? zone_total : segment_total;
+    if (zone_total > zone_capacity) {
         snprintf(err, err_len,
-                 "%d samples and %d zones is more than the %d one run can hold; narrow the range, the velocities, the layers or the legato intervals",
-                 segment_total, over, RESAMPLE_MAX_SEGMENTS);
+                 "%d zones is more than the %d an instrument can hold; narrow the range, the velocities, the layers or the legato intervals",
+                 zone_total, zone_capacity);
         return false;
     }
 
