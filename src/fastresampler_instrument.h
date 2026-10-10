@@ -22,11 +22,15 @@
 // note-off, as a looped sustain in the collection of its layer (dyn1, dyn2,
 // ...), and what rings out past the note-off as a release sample in a
 // collection of its own (dyn1-release, ...), which FastSampler plays when
-// the key comes up. Every zone ignores velocity for its level. Every
-// collection carries FastSampler's gain effect, driven by one controller
+// the key comes up. Every zone ignores velocity for its level. The sustains
+// and the moves carry FastSampler's gain effect, driven by one controller
 // through a curve that puts its layer at 0 dB at its own part of the range
 // and fades it to the floor either side, equal power against its
-// neighbours, so the controller moves through the layers.
+// neighbours, so the controller moves through the layers. The releases
+// carry Smart release instead, which starts each at the level its sustain
+// was sounding at. Every collection of a layer also morphs its spectrum
+// toward the same collection of the other layers on that controller, from
+// fingerprint files written beside the instrument (fastresampler_fingerprint.h).
 
 #include <stdint.h>
 #include <atomic>
@@ -47,8 +51,9 @@ struct InstrumentJob {
     std::atomic<bool> running;
     std::atomic<bool> cancel;
     std::atomic<bool> finished;
-    std::atomic<int>  progress;        // zones written to the bank, over every bus
-    std::atomic<int>  progress_total;  // zones every bank will hold together
+    std::atomic<int>  progress;        // zones written to the bank or measured for the morph, over every bus
+    std::atomic<int>  progress_total;  // the same, for every bus together
+    int               progress_done;   // what the busses already built counted of it
     std::atomic<int>  bus_done;        // instruments finished, so the tab can say "2 / 3"
     PlatThread        thread;
 

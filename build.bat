@@ -64,7 +64,7 @@ if not exist "%VST3_SDK_DIR%\pluginterfaces\base\funknown.h" (
     exit /b 1
 )
 
-set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "%VST3_SDK_DIR%" /I "3rdparty\fastsampler-shared\include" /I "3rdparty\fastsampler-shared\3rdparty\nanopb" /I "%WAVPACK_DIR%"
+set INCLUDES=/I "src" /I "3rdparty\imgui" /I "3rdparty\imgui\backends" /I "%VST3_SDK_DIR%" /I "3rdparty\fastsampler-shared\include" /I "3rdparty\fastsampler-shared\src" /I "3rdparty\fastsampler-shared\3rdparty\nanopb" /I "%WAVPACK_DIR%"
 set DEFINES=/DUNICODE /D_UNICODE /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /DPB_FIELD_32BIT /DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD /D_SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
 set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib shell32.lib dwmapi.lib "%WAVPACK_BUILD%\wavpackdll.lib"
 

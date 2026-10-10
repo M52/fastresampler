@@ -10,6 +10,7 @@
 #include "fastresampler_rzc.h"
 #include "fastresampler_wav.h"
 #include "fastresampler_loop.h"
+#include "fastresampler_fingerprint.h"
 #include "fastresampler_helpers.h"
 #include "fastresampler_log.h"
 
@@ -27,7 +28,10 @@
 // not silence. Started flat it steps from nothing to that level, which is a
 // click on every key-up. This is only long enough to take the step off: a
 // release is what rings out after the key, and a longer rise would eat the
-// one part of it that is loud.
+// one part of it that is loud. Smart release puts the sustain's own release
+// in its place whenever it finds the sustain sounding, as the release then
+// fades in against it (instrument_fill_smart_release_fx); this is what a
+// release plays with when there is nothing to read.
 #define INSTRUMENT_RELEASE_ATTACK_SECONDS 0.01f
 
 // A sustain's loop, with dynamic layers: it starts this long after the
@@ -47,15 +51,22 @@
 // FastSampler's loop crossfade shapes, as its .rzc names them: 2 is Equal Power.
 #define INSTRUMENT_XFADE_EQUAL_POWER   2
 
-// The crossfade of the dynamic layers: FastSampler's gain effect on every
-// collection, driven by one controller through a curve, between this floor
-// and 0 dB, with this much lag so the controller's 7-bit steps do not step
-// the level. The curves go in FastSampler's first curve group, so it draws
-// them over one another.
-#define INSTRUMENT_LAYER_FLOOR_DB      -36.0f
+// The crossfade of the dynamic layers: FastSampler's gain effect on the
+// sustains and the moves of every layer, driven by one controller through a
+// curve, between this floor and 0 dB, with this much lag so the
+// controller's 7-bit steps do not step the level. The curves go in
+// FastSampler's first curve group, so it draws them over one another.
+#define INSTRUMENT_LAYER_FLOOR_DB      -50.0f
 #define INSTRUMENT_LAYER_LAG_MS        10.0f
 #define INSTRUMENT_LAYER_CURVE_GROUP   1
 #define INSTRUMENT_HALF_PI             1.5707963f
+
+// The spectral morph between the layers, as FastSampler's panel starts it:
+// how long the morph takes to follow the controller, and the most the
+// filter may lift a band toward a brighter layer. See
+// fastresampler_fingerprint.h.
+#define INSTRUMENT_MORPH_SMOOTH_MS     30.0f
+#define INSTRUMENT_MORPH_MAX_BOOST_DB  12.0f
 
 // The mapping of one zone: its span of keys and velocities, and the part of
 // the full WAV it plays. A round robin run maps every segment once, whole.
@@ -161,6 +172,18 @@ static void instrument_collection_name(const ResampleScript* script, const Instr
         return;
     }
     snprintf(out, out_len, "%s%s", layer, plan->kind == INSTRUMENT_COL_RELEASE ? "-release" : "");
+}
+
+// The collection of one kind in one layer: its sustains, which are what its
+// releases belong to, its releases, or its moves of one interval. A layer
+// has exactly one of each.
+static int instrument_find_collection(const InstrumentCollectionPlan* plan, int count, int kind, int layer, int interval) {
+    for (int c = 0; c < count; ++c) {
+        if (plan[c].kind != kind || plan[c].layer != layer) continue;
+        if (kind == INSTRUMENT_COL_TRANSITION && plan[c].interval != interval) continue;
+        return c;
+    }
+    return -1;
 }
 
 // Which field of a segment a distinct list is taken over.
@@ -444,6 +467,12 @@ static int instrument_layer_controller(const ResampleConfig* cfg) {
     return MIDI_CC_MOD_WHEEL;
 }
 
+// Where layer k of n is at 0 dB over the controller's range, 0 to 1: at
+// k/n. The gain curves and the morph both place a layer here.
+static float instrument_layer_peak(int layer, int layer_count) {
+    return (float)layer / (float)layer_count;
+}
+
 // The gain curve of one layer over the controller's range, as the driver
 // reads it: 0 for the floor, 1 for 0 dB. Layer k of n is at 0 dB at k/n of
 // the range, the first from the bottom up to 1/n and the last at the top.
@@ -451,9 +480,9 @@ static int instrument_layer_controller(const ResampleConfig* cfg) {
 // an equal power law, so a note keeps its level while the controller moves.
 static void instrument_layer_curve(int layer, int layer_count, float* out) {
     float n = (float)layer_count;
-    float lo = (float)(layer - 1) / n;
-    float mid = (float)layer / n;
-    float hi = (float)(layer + 1) / n;
+    float lo = instrument_layer_peak(layer - 1, layer_count);
+    float mid = instrument_layer_peak(layer, layer_count);
+    float hi = instrument_layer_peak(layer + 1, layer_count);
     for (int p = 0; p < MOD_CURVE_POINTS; ++p) {
         float x = (float)p / (float)(MOD_CURVE_POINTS - 1);
         float amp;
@@ -474,6 +503,31 @@ static void instrument_layer_curve(int layer, int layer_count, float* out) {
     }
 }
 
+// A driver that sets one parameter of an effect from the controller, from
+// out_min at the bottom of its range to out_max at the top, in a straight
+// line until a curve is given it, with FastSampler's defaults for every
+// setting a controller does not use.
+static void instrument_fill_cc_driver(FSICollectionFXDriver* d, int target_param, int controller,
+                                      float out_min, float out_max) {
+    memset(d, 0, sizeof(*d));
+    d->target_param_idx = (uint32_t)target_param;
+    d->source_type = (uint32_t)FX_DRIVER_SOURCE_CC;
+    d->has_cc_number = true;         d->cc_number = controller;
+    d->has_lfo_rate = true;          d->lfo_rate = 1.0f;
+    d->has_lfo_waveform = true;      d->lfo_waveform = 0;
+    d->has_lfo_polyphonic = true;    d->lfo_polyphonic = true;
+    d->has_depth = true;             d->depth = 1.0f;
+    d->has_use_curve = true;         d->use_curve = false;
+    d->has_expanded = true;          d->expanded = false;
+    d->has_vel_source = true;        d->vel_source = 0;
+    d->has_out_min = true;           d->out_min = out_min;
+    d->has_out_max = true;           d->out_max = out_max;
+    d->has_range_initialized = true; d->range_initialized = true;
+    d->has_curve_group = true;       d->curve_group = 0;
+    d->has_hold_rise_ms = true;      d->hold_rise_ms = CFX_HOLD_RISE_DEFAULT_MS;
+    d->has_hold_fall_ms = true;      d->hold_fall_ms = CFX_HOLD_FALL_DEFAULT_MS;
+}
+
 // FastSampler's gain effect on one collection, its level driven by the
 // controller through the curve of the collection's layer.
 static void instrument_fill_layer_fx(FSICollectionFX* fx, int collection_index, int layer, int layer_count, int controller) {
@@ -488,24 +542,94 @@ static void instrument_fill_layer_fx(FSICollectionFX* fx, int collection_index, 
     fx->params[CFX_GAIN_LAG_MS] = INSTRUMENT_LAYER_LAG_MS;
     fx->drivers_count = 1;
     FSICollectionFXDriver* d = &fx->drivers[0];
-    d->target_param_idx = CFX_GAIN_LEVEL_DB;
-    d->source_type = (uint32_t)FX_DRIVER_SOURCE_CC;
-    d->has_cc_number = true;         d->cc_number = controller;
-    d->has_lfo_rate = true;          d->lfo_rate = 1.0f;
-    d->has_lfo_waveform = true;      d->lfo_waveform = 0;
-    d->has_lfo_polyphonic = true;    d->lfo_polyphonic = true;
-    d->has_depth = true;             d->depth = 1.0f;
-    d->has_use_curve = true;         d->use_curve = true;
-    d->has_expanded = true;          d->expanded = false;
-    d->has_vel_source = true;        d->vel_source = 0;
-    d->has_out_min = true;           d->out_min = INSTRUMENT_LAYER_FLOOR_DB;
-    d->has_out_max = true;           d->out_max = 0.0f;
-    d->has_range_initialized = true; d->range_initialized = true;
-    d->has_curve_group = true;       d->curve_group = INSTRUMENT_LAYER_CURVE_GROUP;
-    d->has_hold_rise_ms = true;      d->hold_rise_ms = CFX_HOLD_RISE_DEFAULT_MS;
-    d->has_hold_fall_ms = true;      d->hold_fall_ms = CFX_HOLD_FALL_DEFAULT_MS;
+    instrument_fill_cc_driver(d, CFX_GAIN_LEVEL_DB, controller, INSTRUMENT_LAYER_FLOOR_DB, 0.0f);
+    d->use_curve = true;
+    d->curve_group = INSTRUMENT_LAYER_CURVE_GROUP;
     d->curve_data_count = MOD_CURVE_POINTS;
     instrument_layer_curve(layer, layer_count, d->curve_data);
+}
+
+// FastSampler's spectral morph filter on one collection of a layer, the
+// morph driven straight by the controller. The collection's own place on
+// the morph is where its layer peaks, and the fingerprints it morphs toward
+// sit where theirs do (instrument_fill_morph_targets). Between two layers,
+// then, the lower one is bent toward the upper as it fades, the upper comes
+// in bent toward the lower, and each is itself at its own peak.
+static void instrument_fill_morph_fx(FSICollectionFX* fx, int collection_index, int layer, int layer_count, int controller) {
+    memset(fx, 0, sizeof(*fx));
+    fx->type = (uint32_t)COLLECTION_FX_SPECTRAL_MORPH;
+    fx->collection_index = (uint32_t)collection_index;
+    fx->params_count = CFX_SMF_MAX_BOOST + 1;
+    fx->params[CFX_STRENGTH] = 1.0f;
+    fx->params[CFX_SMF_MORPH] = 0.0f;
+    fx->params[CFX_SMF_SMOOTH_MS] = INSTRUMENT_MORPH_SMOOTH_MS;
+    fx->params[CFX_SMF_SELF_POS] = instrument_layer_peak(layer, layer_count);
+    fx->params[CFX_SMF_MAX_BOOST] = INSTRUMENT_MORPH_MAX_BOOST_DB;
+    fx->drivers_count = 1;
+    instrument_fill_cc_driver(&fx->drivers[0], CFX_SMF_MORPH, controller, 0.0f, 1.0f);
+}
+
+// A collection's fingerprint file: beside the instrument, named as its .rzc
+// is, and always a whole path, because FastSampler opens a morph target's
+// path as it stands. False when it would not fit out.
+static bool instrument_fingerprint_path(const InstrumentJob* job, const InstrumentCollectionPlan* plan,
+                                        char* out, size_t out_len) {
+    char collection_name[32];
+    instrument_collection_name(job->script, plan, collection_name, sizeof(collection_name));
+    char name[RESAMPLE_FILE_NAME_LEN];
+    snprintf(name, sizeof(name), "%s_%s.smfp", job->prefix, collection_name);
+    char path[FR_MAX_PATH];
+    plat_path_join(path, sizeof(path), job->out_dir, name);
+    return strlen(path) < sizeof(path) - 1 && plat_path_absolute(path, out, out_len);
+}
+
+// The fingerprints one collection of a layer morphs toward: the collection
+// of the same kind in every other layer -- its sustains, its releases, its
+// moves of the same interval -- each placed where that layer peaks. A layer
+// whose fingerprint was not written is left out, and the morph runs between
+// the layers that remain. False when none remain.
+static bool instrument_fill_morph_targets(FSISMFFingerprints* fp, const InstrumentJob* job,
+                                          const InstrumentCollectionPlan* plan, int collection_count,
+                                          int c, int file_index, const bool* fingerprinted) {
+    const pb_size_t capacity = (pb_size_t)(sizeof(fp->target_paths) / sizeof(fp->target_paths[0]));
+    int layers = job->script->round_robin_count;
+    memset(fp, 0, sizeof(*fp));
+    fp->collection_index = (uint32_t)file_index;
+    for (int k = 1; k <= layers && fp->target_paths_count < capacity; ++k) {
+        if (k == plan[c].layer) continue;
+        int target = instrument_find_collection(plan, collection_count, plan[c].kind, k, plan[c].interval);
+        if (target < 0 || !fingerprinted[target]) continue;
+        if (!instrument_fingerprint_path(job, &plan[target], fp->target_paths[fp->target_paths_count],
+                                         sizeof(fp->target_paths[0]))) continue;
+        fp->target_positions[fp->target_paths_count] = instrument_layer_peak(k, layers);
+        fp->target_paths_count++;
+    }
+    fp->target_positions_count = fp->target_paths_count;
+    return fp->target_paths_count > 0;
+}
+
+// --- The releases ------------------------------------------------------------------
+
+// FastSampler's Smart release on a collection of releases. At the key-up it
+// reads the level the layer's sustain was sounding at -- past that
+// collection's effects, so with whatever the crossfade had made of it --
+// starts the release there, and fades it in over the sustain's own release
+// as that fades out. These are the panel's defaults but for how far the
+// level may move, which is all the way: a layer the controller has all but
+// faded sits at the floor, and its release has to follow it down there.
+static void instrument_fill_smart_release_fx(FSICollectionFX* fx, int collection_index) {
+    memset(fx, 0, sizeof(*fx));
+    fx->type = (uint32_t)COLLECTION_FX_SMART_RELEASE;
+    fx->collection_index = (uint32_t)collection_index;
+    fx->params_count = CFX_SMART_RELEASE_PARAM_COUNT;
+    fx->params[CFX_STRENGTH] = 1.0f;
+    fx->params[CFX_SREL_LEVEL_ON] = 1.0f;
+    fx->params[CFX_SREL_LEVEL_DB] = SREL_MAX_MATCH_DB;
+    fx->params[CFX_SREL_LEVEL_AMOUNT] = 100.0f;
+    fx->params[CFX_SREL_LEVEL_OFFSET] = 0.0f;
+    fx->params[CFX_SREL_ATTACK_ON] = 1.0f;
+    fx->params[CFX_SREL_ATTACK_PCT] = 100.0f;
+    fx->params[CFX_SREL_ATTACK_BEND] = 0.0f;
 }
 
 // --- Legato --------------------------------------------------------------------
@@ -568,22 +692,6 @@ static void instrument_fill_legato_fx(FSICollectionFX* fx, int collection_index,
 // only honest answer, and the quiet one.
 static void instrument_link_band(const ResampleScript* script, int index, int* low, int* high) {
     *low = *high = script->intervals[index];
-}
-
-// The sustain collection of a layer, which is the one a layer's releases
-// belong to. Every layer has exactly one.
-static int instrument_find_sustain(const InstrumentCollectionPlan* plan, int count, int layer) {
-    for (int c = 0; c < count; ++c) {
-        if (plan[c].kind == INSTRUMENT_COL_SUSTAIN && plan[c].layer == layer) return c;
-    }
-    return -1;
-}
-
-static int instrument_find_transition(const InstrumentCollectionPlan* plan, int count, int layer, int interval) {
-    for (int c = 0; c < count; ++c) {
-        if (plan[c].kind == INSTRUMENT_COL_TRANSITION && plan[c].layer == layer && plan[c].interval == interval) return c;
-    }
-    return -1;
 }
 
 // --- The bank ------------------------------------------------------------------
@@ -812,7 +920,7 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
         }
         // The zones of the busses already built come first, so the bar runs
         // once over the whole export rather than starting again per bus.
-        job->progress.store(job->zones_written + z + 1);
+        job->progress.store(job->progress_done + z + 1);
     }
 
     if (ok && !job->cancel.load()) {
@@ -825,6 +933,96 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
     return ok;
 }
 
+// --- The fingerprints ------------------------------------------------------------
+
+// Whether the instrument morphs between its layers, which takes two.
+static bool instrument_morphs(const ResampleScript* script) {
+    return script->dynamic_layers && script->round_robin_count > 1;
+}
+
+// The steps one bus's build counts on the bar: every zone into the bank,
+// and every zone again when it is measured for the morph.
+static int instrument_progress_units(const ResampleScript* script, int zone_count) {
+    return instrument_morphs(script) ? zone_count * 2 : zone_count;
+}
+
+// One fingerprint file per collection of a layered run, beside the
+// instrument, as every collection is a morph target of the same collection
+// in the other layers. fingerprinted[c] says which were written. One that
+// could not be is only logged: the others morph between the layers that
+// remain, and the layers crossfade on gain either way. Returns how many
+// were written.
+static int instrument_write_fingerprints(InstrumentJob* job, WavReader* wav, const InstrumentZoneMap* map, int zone_count,
+                                         const char (*names)[MAX_NAME_LENGTH],
+                                         const InstrumentCollectionPlan* plan, int collection_count,
+                                         bool* fingerprinted) {
+    const ResampleScript* script = job->script;
+    for (int c = 0; c < collection_count; ++c) fingerprinted[c] = false;
+    if (!instrument_morphs(script)) return 0;
+
+    int64_t longest = 0;
+    for (int z = 0; z < zone_count; ++z) {
+        if (map[z].frame_count > longest) longest = map[z].frame_count;
+    }
+    FingerprintAnalyzer analyzer;
+    SMFPZoneEntry* entries = (SMFPZoneEntry*)calloc((size_t)zone_count, sizeof(SMFPZoneEntry));
+    if (!entries || !fingerprint_analyzer_init(&analyzer, longest, wav->channels)) {
+        free(entries);
+        fr_log("instrument: no room to measure the layers; they crossfade on gain alone");
+        return 0;
+    }
+
+    int written = 0, collections = 0, flat = 0;
+    for (int c = 0; c < collection_count && !job->cancel.load(); ++c) {
+        int count = 0;
+        bool readable = true;
+        // The zones of a collection are contiguous and the collections in
+        // order, so the zone's index keeps the bar moving forward.
+        for (int z = 0; z < zone_count && readable; ++z) {
+            if (map[z].collection != c) continue;
+            SMFPZoneEntry* e = &entries[count++];
+            memset(e, 0, sizeof(*e));
+            fr_strcpy(e->file_path, sizeof(e->file_path), names[z]);
+            e->total_frames = (uint32_t)map[z].frame_count;
+            e->sample_rate = (uint32_t)wav->sample_rate;
+            e->root_note = map[z].root_note;
+            e->low_velocity = map[z].low_velocity;
+            e->high_velocity = map[z].high_velocity;
+            readable = fingerprint_zone(&analyzer, wav, map[z].first_frame, e->total_frames,
+                                        map[z].loop_end > map[z].loop_start, map[z].loop_start, map[z].loop_end,
+                                        map[z].root_note, e->band_db, &e->analysis_frames);
+            if (readable && e->analysis_frames == 0) flat++;
+            job->progress.store(job->progress_done + zone_count + z + 1);
+        }
+        if (count == 0) continue;
+        collections++;
+        SMFPHeader header = {};
+        header.magic = SMFP_MAGIC_V4;
+        header.version = SMFP_VERSION;
+        header.zone_count = (uint32_t)count;
+        header.band_count = SMFP_BAND_COUNT;
+        instrument_collection_name(script, &plan[c], header.collection_name, sizeof(header.collection_name));
+        char path[FR_MAX_PATH];
+        if (!readable) {
+            fr_log("instrument: could not read %s to measure it; the other layers do not morph toward it",
+                   header.collection_name);
+        } else if (!instrument_fingerprint_path(job, &plan[c], path, sizeof(path))) {
+            fr_log("instrument: the fingerprint path of %s is too long; the other layers do not morph toward it",
+                   header.collection_name);
+        } else if (!smfp_save_file(path, &header, entries, (uint32_t)count)) {
+            fr_log("instrument: could not write %s", path);
+        } else {
+            fingerprinted[c] = true;
+            written++;
+        }
+    }
+    fingerprint_analyzer_free(&analyzer);
+    free(entries);
+    fr_log("instrument: wrote %d of %d fingerprints for the morph between the layers; %d zones too short to measure are flat",
+           written, collections, flat);
+    return written;
+}
+
 // --- The instrument ---------------------------------------------------------------
 
 static bool instrument_pb_write_callback(pb_ostream_t* stream, const uint8_t* buf, size_t count) {
@@ -833,9 +1031,14 @@ static bool instrument_pb_write_callback(pb_ostream_t* stream, const uint8_t* bu
 }
 
 // magic(4) + payload size(4) + the encoded FSIFile, as fastsampler_pb.cpp writes it.
+// fingerprinted says which collections left a fingerprint for the other
+// layers to morph toward.
 static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* map, int zone_count,
                                  const char (*names)[MAX_NAME_LENGTH],
-                                 const InstrumentCollectionPlan* plan, int collection_count) {
+                                 const InstrumentCollectionPlan* plan, int collection_count,
+                                 const bool* fingerprinted) {
+    static_assert(sizeof(((FSIFile*)0)->smf_fingerprints) / sizeof(FSISMFFingerprints) >= INSTRUMENT_MAX_COLLECTIONS,
+                  "every collection must be able to name its morph targets");
     const ResampleScript* script = job->script;
     FSIFile* msg = (FSIFile*)calloc(1, sizeof(FSIFile));
     if (!msg) {
@@ -881,22 +1084,39 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
         // index is its plan index.
         col->has_release_of = true;
         col->release_of = plan[c].kind == INSTRUMENT_COL_RELEASE
-                          ? (uint32_t)instrument_find_sustain(plan, collection_count, plan[c].layer) + 1
+                          ? (uint32_t)instrument_find_collection(plan, collection_count, INSTRUMENT_COL_SUSTAIN, plan[c].layer, 0) + 1
                           : 0;
     }
 
     msg->collection_fx_count = 0;
-    if (script->dynamic_layers && script->round_robin_count > 1) {
-        // Every collection, the releases and the moves too, gets the gain
-        // effect with the curve of its layer, so a release and a transition
-        // both come in at the level of the layer that was sounding.
+    msg->smf_fingerprints_count = 0;
+    if (script->dynamic_layers) {
+        // The sustains and the moves of every layer get the gain effect with
+        // the curve of their layer, so a move comes in at the level of the
+        // layer that was sounding. The releases get Smart release instead,
+        // which starts each at the level its sustain was sounding at, the
+        // crossfade included. With more than one layer, every collection
+        // also morphs toward the same collection of the others. A single
+        // layer has nothing to crossfade, but its releases still meet its
+        // sustain.
+        bool layered = script->round_robin_count > 1;
         int controller = instrument_layer_controller(&job->cfg);
         for (int c = 0; c < collection_count; ++c) {
             if (fsi_index[c] < 0) continue;
-            instrument_fill_layer_fx(&msg->collection_fx[msg->collection_fx_count++], fsi_index[c],
-                                     plan[c].layer, script->round_robin_count, controller);
+            if (plan[c].kind == INSTRUMENT_COL_RELEASE) {
+                instrument_fill_smart_release_fx(&msg->collection_fx[msg->collection_fx_count++], fsi_index[c]);
+            } else if (layered) {
+                instrument_fill_layer_fx(&msg->collection_fx[msg->collection_fx_count++], fsi_index[c],
+                                         plan[c].layer, script->round_robin_count, controller);
+            }
+            if (layered && instrument_fill_morph_targets(&msg->smf_fingerprints[msg->smf_fingerprints_count], job,
+                                                         plan, collection_count, c, fsi_index[c], fingerprinted)) {
+                msg->smf_fingerprints_count++;
+                instrument_fill_morph_fx(&msg->collection_fx[msg->collection_fx_count++], fsi_index[c],
+                                         plan[c].layer, script->round_robin_count, controller);
+            }
         }
-    } else if (!script->dynamic_layers && sustains > 1) {
+    } else if (sustains > 1) {
         // With more than one round robin, every sustain collection gets
         // FastSampler's round robin effect on one shared instrument counter:
         // each note advances the counter, and collection k sounds when it
@@ -935,7 +1155,7 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
                                       script, window_ms);
             int layer = script->dynamic_layers ? plan[c].layer : 1;
             for (int i = 0; i < script->interval_count; ++i) {
-                int target = instrument_find_transition(plan, collection_count, layer, script->intervals[i]);
+                int target = instrument_find_collection(plan, collection_count, INSTRUMENT_COL_TRANSITION, layer, script->intervals[i]);
                 if (target < 0 || fsi_index[target] < 0) continue;
                 int low, high;
                 instrument_link_band(script, i, &low, &high);
@@ -1218,7 +1438,7 @@ static bool instrument_build_one(InstrumentJob* job) {
         }
         // The mapping is the same for every bus, so the total is known as
         // soon as the first one is planned.
-        job->progress_total.store(zone_count * job->target_count);
+        job->progress_total.store(instrument_progress_units(script, zone_count) * job->target_count);
         ok = zone_count > 0;
         if (!ok) fr_strcpy(job->result, sizeof(job->result), "The run holds no samples to map");
         if (ok && zone_count > fsi_zone_capacity) {
@@ -1235,7 +1455,14 @@ static bool instrument_build_one(InstrumentJob* job) {
     if (ok) instrument_refine_loops(job, &wav, map, zone_count);
     if (ok) instrument_refine_arrivals(job, &wav, map, zone_count);
     if (ok) ok = instrument_write_fsb(job, &wav, map, zone_count, rows, names);
-    if (ok && !job->cancel.load()) ok = instrument_write_fsi(job, map, zone_count, names, plan, planned);
+    // The fingerprints are measured over the loops the bank carries, and
+    // written before the .fsi that names them.
+    bool fingerprinted[INSTRUMENT_MAX_COLLECTIONS] = {};
+    int fingerprints = 0;
+    if (ok && !job->cancel.load()) {
+        fingerprints = instrument_write_fingerprints(job, &wav, map, zone_count, names, plan, planned, fingerprinted);
+    }
+    if (ok && !job->cancel.load()) ok = instrument_write_fsi(job, map, zone_count, names, plan, planned, fingerprinted);
     // The .rzc names the split sample files, so a run that wrote none has
     // nothing for it to point at; the result says so rather than leaving
     // collections behind that cannot be opened.
@@ -1286,13 +1513,22 @@ static bool instrument_build_one(InstrumentJob* job) {
             snprintf(legato_note, sizeof(legato_note), " Legato over %d interval%s, the notes linked to the moves between them.",
                      script->interval_count, script->interval_count == 1 ? "" : "s");
         }
-        snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s%s, %d-bit, preload %s.%s%s%s",
+        // What the morph between the layers had to work with.
+        char morph_note[80];
+        morph_note[0] = '\0';
+        if (instrument_morphs(script) && fingerprints > 0) {
+            snprintf(morph_note, sizeof(morph_note), " The layers morph through %d fingerprints.", fingerprints);
+        } else if (instrument_morphs(script)) {
+            fr_strcpy(morph_note, sizeof(morph_note), " No fingerprints, so the layers crossfade on gain alone.");
+        }
+        snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s%s, %d-bit, preload %s.%s%s%s%s",
                  plat_path_basename(job->fsi_path), plat_path_basename(job->fsb_path), zone_count,
                  collection_count, collection_count == 1 ? "" : "s", link,
-                 job->cfg.bit_depth, preload, legato_note,
+                 job->cfg.bit_depth, preload, morph_note, legato_note,
                  rzc_note, job->full_wav_removed ? " The full WAV was removed." : "");
         job->result_is_error = false;
         job->zones_written += zone_count;
+        job->progress_done += instrument_progress_units(script, zone_count);
         job->instruments_written++;
     } else {
         job->result_is_error = true;
@@ -1390,8 +1626,9 @@ bool instrument_start(InstrumentJob* job, const ResampleScript* script, const Re
     job->cancel.store(false);
     job->finished.store(false);
     job->progress.store(0);
+    job->progress_done = 0;
     job->bus_done.store(0);
-    job->progress_total.store(script->segment_count * (script->dynamic_layers ? 2 : 1) * target_count);
+    job->progress_total.store(instrument_progress_units(script, script->segment_count * (script->dynamic_layers ? 2 : 1)) * target_count);
     job->running.store(true);
     if (!plat_thread_create(&job->thread, instrument_thread_main, job)) {
         job->running.store(false);

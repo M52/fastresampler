@@ -99,6 +99,12 @@
 #include "fastsampler_fsb.h"
 #include "fastsampler_pb.h"
 #include "fastsampler_formats.h"
+// The spectral fingerprint files a layered instrument's morph filter reads,
+// and the analysis FastSampler measures them with.
+#include "fastsampler_smfp.h"
+#include "fastsampler_smfp.cpp"
+#include "fastsampler_smfp_analysis.h"
+#include "fastsampler_smfp_analysis.cpp"
 // WavPack, from FastSampler's third-party folder: the bank builder
 // compresses the streamed part of every sample with it. The DLL sits next
 // to the exe, copied there by build.bat.
@@ -141,6 +147,8 @@
 #include "fastresampler_loop.cpp"
 #include "fastresampler_legato.h"
 #include "fastresampler_legato.cpp"
+#include "fastresampler_fingerprint.h"
+#include "fastresampler_fingerprint.cpp"
 #include "fastresampler_instrument.h"
 #include "fastresampler_instrument.cpp"
 #include "fastresampler_app.h"

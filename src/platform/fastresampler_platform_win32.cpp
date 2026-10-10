@@ -95,6 +95,15 @@ bool plat_path_is_dir(const char* path) {
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
+bool plat_path_absolute(const char* path, char* out, size_t out_len) {
+    wchar_t wpath[FR_MAX_PATH];
+    wchar_t wfull[FR_MAX_PATH];
+    if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) return false;
+    DWORD n = GetFullPathNameW(wpath, FR_MAX_PATH, wfull, NULL);
+    if (n == 0 || n >= FR_MAX_PATH) return false;
+    return plat_wide_to_utf8(wfull, out, (int)out_len);
+}
+
 bool plat_dir_create(const char* path) {
     wchar_t wpath[FR_MAX_PATH];
     if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) return false;

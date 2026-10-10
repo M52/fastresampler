@@ -1,8 +1,45 @@
 // Exercise the production instrument writer without loading a plugin.
 #include "../src/fastresampler_win32.cpp"
+#pragma warning(push, 0)
+#include "pb_decode.h"
+#include "pb_decode.c"
+#pragma warning(pop)
 #include <memory>
 #include <vector>
 #define REQUIRE(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); return 1; } } while (0)
+
+static const FSICollectionFX* find_fx(const FSIFile* msg, uint32_t collection, uint32_t type) {
+    for (pb_size_t i = 0; i < msg->collection_fx_count; ++i) {
+        if (msg->collection_fx[i].collection_index == collection && msg->collection_fx[i].type == type) return &msg->collection_fx[i];
+    }
+    return nullptr;
+}
+
+// Layer k of the layered run is the same note with its harmonics falling
+// off less steeply the higher k is, so every layer is brighter than the one
+// below, and each rings on for a moment past the note-off as its release.
+static bool write_layered_input(const ResampleScript* script, const char* path) {
+    std::vector<float> pcm((size_t)script->total_frames * 2, 0.0f);
+    for (int s = 0; s < script->segment_count; ++s) {
+        const ResampleSegment* seg = &script->segments[s];
+        float f0 = 440.0f * powf(2.0f, ((float)seg->note - 69.0f) / 12.0f);
+        float slope = 3.0f - (float)seg->round_robin;
+        for (int64_t f = seg->start_frame; f < seg->end_frame; ++f) {
+            float t = (float)(f - seg->start_frame) / 44100.0f;
+            float env = f < seg->off_frame ? 1.0f : exp(-(float)(f - seg->off_frame) / (0.1f * 44100.0f));
+            float v = 0.0f;
+            for (int h = 1; h <= 16 && f0 * (float)h < 20000.0f; ++h) {
+                v += powf(1.0f / (float)h, slope) * sinf(6.28318530718f * f0 * (float)h * t);
+            }
+            pcm[(size_t)f * 2] = pcm[(size_t)f * 2 + 1] = 0.05f * env * v;
+        }
+    }
+    WavWriter writer = {};
+    return wav_writer_open(&writer, path, 2, 44100) &&
+           wav_writer_write_interleaved(&writer, pcm.data(), (int)script->total_frames) &&
+           wav_writer_close(&writer);
+}
+
 int main() {
     const char* folder = "build/format-fixtures";
     CreateDirectoryA(folder, nullptr);
@@ -40,6 +77,114 @@ int main() {
         REQUIRE(instrument_build_one(job.get()));
         REQUIRE(job->zones_written == script->segment_count);
         puts(job->result);
+    }
+
+    // Three dynamic layers with releases: the sustains crossfade on gain from
+    // -50 dB, the releases carry Smart release instead, and every collection
+    // morphs toward the same collection of the other two layers through the
+    // fingerprint files written beside the instrument.
+    const int layers = 3;
+    auto dyn_cfg = std::make_unique<ResampleConfig>(*cfg);
+    dyn_cfg->dynamic_layers = true; dyn_cfg->round_robins = layers; strcpy(dyn_cfg->velocities, "100");
+    dyn_cfg->hold_seconds = 0.6f; dyn_cfg->gap_seconds = 0.4f;
+    auto layered = std::make_unique<ResampleScript>();
+    if (!resample_build(layered.get(), dyn_cfg.get(), 44100, error, sizeof(error))) { fprintf(stderr, "%s\n", error); return 1; }
+    REQUIRE(layered->dynamic_layers && layered->round_robin_count == layers);
+    REQUIRE(write_layered_input(layered.get(), "build/format-fixtures/layers.wav"));
+    static SMFPZoneEntry entries[64];
+    for (int preload : {0, 1024}) {
+        auto job = std::make_unique<InstrumentJob>();
+        job->cfg = *dyn_cfg; job->cfg.preload_frames = preload;
+        job->script = layered.get(); job->target_count = 1;
+        strcpy(job->full_wav_path, "build/format-fixtures/layers.wav");
+        strcpy(job->out_dir, folder);
+        snprintf(job->prefix, sizeof(job->prefix), "resampler-layers-%d", preload);
+        snprintf(job->fsi_path, sizeof(job->fsi_path), "%s/%s.fsi", folder, job->prefix);
+        snprintf(job->fsb_path, sizeof(job->fsb_path), "%s/%s.fsb", folder, job->prefix);
+        REQUIRE(instrument_build_one(job.get()));
+        REQUIRE(job->zones_written == layered->segment_count * 2);
+        REQUIRE(job->progress.load() == job->progress_total.load());
+        puts(job->result);
+
+        FILE* f = fopen(job->fsi_path, "rb");
+        REQUIRE(f);
+        std::vector<uint8_t> bytes;
+        uint8_t chunk[65536];
+        for (size_t n; (n = fread(chunk, 1, sizeof(chunk), f)) > 0;) bytes.insert(bytes.end(), chunk, chunk + n);
+        fclose(f);
+        REQUIRE(bytes.size() > 8);
+        uint32_t magic = 0;
+        memcpy(&magic, bytes.data(), 4);
+        REQUIRE(magic == FSI_MAGIC_PB);
+        FSIFile* msg = (FSIFile*)calloc(1, sizeof(FSIFile));
+        REQUIRE(msg);
+        pb_istream_t in = pb_istream_from_buffer(bytes.data() + 8, bytes.size() - 8);
+        REQUIRE(pb_decode(&in, FSIFile_fields, msg));
+
+        REQUIRE(msg->collections_count == (pb_size_t)(layers * 2));
+        REQUIRE(msg->smf_fingerprints_count == msg->collections_count);
+        for (pb_size_t c = 0; c < msg->collections_count; ++c) {
+            const FSICollection* col = &msg->collections[c];
+            bool release = strstr(col->name, "-release") != nullptr;
+            int layer = atoi(col->name + 3);
+            REQUIRE(layer >= 1 && layer <= layers);
+
+            const FSICollectionFX* gain = find_fx(msg, c, COLLECTION_FX_GAIN);
+            const FSICollectionFX* smart = find_fx(msg, c, COLLECTION_FX_SMART_RELEASE);
+            const FSICollectionFX* morph = find_fx(msg, c, COLLECTION_FX_SPECTRAL_MORPH);
+            REQUIRE(morph);
+            if (release) {
+                REQUIRE(!gain && smart);
+                REQUIRE(smart->params[CFX_SREL_LEVEL_ON] == 1.0f && smart->params[CFX_SREL_LEVEL_DB] == SREL_MAX_MATCH_DB);
+                REQUIRE(smart->params[CFX_SREL_ATTACK_ON] == 1.0f && smart->drivers_count == 0);
+            } else {
+                REQUIRE(gain && !smart);
+                REQUIRE(gain->drivers_count == 1 && gain->drivers[0].out_min == -50.0f && gain->drivers[0].out_max == 0.0f);
+            }
+            REQUIRE(morph->params[CFX_SMF_SELF_POS] == (float)layer / (float)layers);
+            REQUIRE(morph->drivers_count == 1 && morph->drivers[0].target_param_idx == CFX_SMF_MORPH);
+            REQUIRE(morph->drivers[0].source_type == FX_DRIVER_SOURCE_CC && !morph->drivers[0].use_curve);
+            REQUIRE(morph->drivers[0].out_min == 0.0f && morph->drivers[0].out_max == 1.0f);
+
+            // Its targets are the same collection of the other layers, placed
+            // where those peak, and each file holds that collection's zones.
+            const FSISMFFingerprints* fp = nullptr;
+            for (pb_size_t i = 0; i < msg->smf_fingerprints_count; ++i) {
+                if (msg->smf_fingerprints[i].collection_index == c) fp = &msg->smf_fingerprints[i];
+            }
+            REQUIRE(fp && fp->target_paths_count == (pb_size_t)(layers - 1) && fp->target_positions_count == fp->target_paths_count);
+            for (pb_size_t t = 0; t < fp->target_paths_count; ++t) {
+                char expected[128];
+                int target_layer = (int)(fp->target_positions[t] * (float)layers + 0.5f);
+                REQUIRE(target_layer != layer);
+                snprintf(expected, sizeof(expected), "%s_dyn%d%s.smfp", job->prefix, target_layer, release ? "-release" : "");
+                REQUIRE(strcmp(plat_path_basename(fp->target_paths[t]), expected) == 0);
+                REQUIRE(fp->target_paths[t][1] == ':');
+                SMFPHeader header = {};
+                uint32_t count = 0;
+                REQUIRE(smfp_load_file(fp->target_paths[t], &header, entries, 64, &count));
+                REQUIRE(count == col->zone_count && header.band_count == SMFP_BAND_COUNT);
+                for (uint32_t e = 0; e < count; ++e) REQUIRE(entries[e].analysis_frames > 0);
+            }
+        }
+
+        // The fingerprints tell the layers apart: toward 1.6 kHz, where the
+        // lowest layer's harmonics have fallen away, each layer is brighter
+        // than the one below.
+        const int high_band = SMFP_REF_BAND + 2;
+        float below = 0.0f;
+        for (int k = 1; k <= layers; ++k) {
+            char path[FR_MAX_PATH];
+            snprintf(path, sizeof(path), "%s/%s_dyn%d.smfp", folder, job->prefix, k);
+            SMFPHeader header = {};
+            uint32_t count = 0;
+            REQUIRE(smfp_load_file(path, &header, entries, 64, &count) && count > 0);
+            float level = entries[0].band_db[high_band];
+            printf("%s: %.1f dB at %.0f Hz\n", header.collection_name, level, smfp_band_center_hz(high_band));
+            if (k > 1) REQUIRE(level > below + 6.0f);
+            below = level;
+        }
+        free(msg);
     }
     return 0;
 }

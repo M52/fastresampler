@@ -57,6 +57,10 @@ bool plat_path_exists(const char* path);
 bool plat_path_is_dir(const char* path);
 bool plat_dir_create(const char* path);      // one level; true when it exists after
 
+// The whole path of a path that may be relative to the working folder.
+// False when it does not fit out.
+bool plat_path_absolute(const char* path, char* out, size_t out_len);
+
 // The free bytes on the disk that holds path. The folder need not exist
 // yet: the nearest folder above it that does is asked. False when none is
 // found or the disk does not say.

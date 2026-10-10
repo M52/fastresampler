@@ -842,9 +842,9 @@ static void ui_tab_resample(App* app, float scale) {
         if (targets > 1) {
             int bus = app->instrument_job.bus_done.load() + 1;
             if (bus > targets) bus = targets;
-            snprintf(overlay, sizeof(overlay), "Writing bank %d / %d of bus %d / %d", done, total, bus, targets);
+            snprintf(overlay, sizeof(overlay), "Building instrument %d / %d of bus %d / %d", done, total, bus, targets);
         } else {
-            snprintf(overlay, sizeof(overlay), "Writing bank %d / %d", done, total);
+            snprintf(overlay, sizeof(overlay), "Building instrument %d / %d", done, total);
         }
         ImGui::ProgressBar(total > 0 ? (float)done / (float)total : 0.0f, ImVec2(-1.0f, 0.0f), overlay);
         if (ui_red_button("Cancel##instrument", ImVec2(-1.0f, 0.0f))) instrument_cancel(&app->instrument_job);
@@ -860,8 +860,10 @@ static void ui_tab_resample(App* app, float scale) {
                     "audio when Detect is on.");
         } else if (app->resample_fsi_ready && app->resample_script.dynamic_layers) {
             ui_hint("Maps the samples across keys and velocities into a FastSampler instrument in the folder above: one looped zone "
-                    "collection per dynamic layer and one of release samples for each, every collection's gain driven by the "
-                    "layers' controller through a curve that crossfades them, equal power, from dyn1 at the bottom to the last at the top.");
+                    "collection per dynamic layer and one of release samples for each. The layers' gain is driven by their "
+                    "controller through curves that crossfade them, equal power, from dyn1 at the bottom to the last at the top, "
+                    "a spectral morph on the same controller carries each layer's tone into the next, and Smart release starts "
+                    "every release at the level its layer was sounding at.");
         } else if (app->resample_fsi_ready) {
             ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the folder above.");
         } else if (app->resample_full_wav_removed) {

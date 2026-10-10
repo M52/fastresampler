@@ -88,19 +88,39 @@ Layout of the window:
   crossfade at the join, both shrinking on a short hold; and what rings out
   past the note-off as a release sample in a collection of its own
   (`dyn1-release`, ...), which FastSampler plays when the key comes up. That
-  collection names its layer as the one whose releases it holds, and every
-  release zone gets a 10 ms attack: a release begins at the note-off of a
-  note that was still sounding, so started flat it would step from silence
-  to that level and click on every key-up.
+  collection names its layer as the one whose releases it holds, and carries
+  FastSampler's Smart release: at the key-up it reads the level the layer's
+  sustain was sounding at, the crossfade included, starts the release there,
+  and fades it in over the sustain's own release as that fades out. The level
+  may move as far as the effect allows, 60 dB, so the release of a layer the
+  controller had faded to the floor follows it there. Every release zone
+  keeps a 10 ms attack for when there is no sustain to read: a release begins
+  at the note-off of a note that was still sounding, so started flat it would
+  step from silence to that level and click on every key-up.
   Every zone has Ignore vel set, as the layers carry the dynamics. Every
-  collection, the release ones too, carries FastSampler's gain effect,
-  driven by the controller the layer curves were drawn for (the mod wheel
-  when none is) through a curve between -36 and 0 dB: layer k of n sits at
-  0 dB at k/n of the controller's range, the first from the bottom up to
-  1/n and the last at the top, and between two peaks the lower layer fades
-  out and the upper in by an equal power law, so the controller moves
-  through the layers at a steady level. The curves share FastSampler's first
-  curve group, so its editor draws them over one another.
+  other collection carries FastSampler's gain effect, driven by the
+  controller the layer curves were drawn for (the mod wheel when none is)
+  through a curve between -50 and 0 dB: layer k of n sits at 0 dB at k/n of
+  the controller's range, the first from the bottom up to 1/n and the last
+  at the top, and between two peaks the lower layer fades out and the upper
+  in by an equal power law, so the controller moves through the layers at a
+  steady level. The curves share FastSampler's first curve group, so its
+  editor draws them over one another.
+  A brighter layer would bring its high end in the moment it leaves the
+  floor, long before the controller reaches it, so with more than one layer
+  every collection, the releases too, also carries FastSampler's spectral
+  morph filter on the same controller. It is placed at its own layer's peak
+  and morphs toward the same collection of every other layer -- its
+  sustains, its releases, its moves of the same interval -- placed at
+  theirs: the upper layer comes in sounding like the lower one and turns
+  into itself as the controller reaches it. FastSampler measures a
+  collection's own spectrum as it loads it; the other layers' come from one
+  fingerprint file per collection beside the instrument (`<name>_dyn1.smfp`,
+  `<name>_dyn1-release.smfp`, ...), measured the way FastSampler measures
+  them. The instrument names those files by their whole path, because
+  FastSampler opens them as they stand: move the folder and the morph finds
+  nothing until the instrument is built again, while the layers still
+  crossfade on gain.
   Capture legato transitions, in the Legato section, adds the moves between
   the notes to the run; the rest of that section is only there while the box
   is on. After every note has been sampled, each capture
