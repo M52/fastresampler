@@ -9,6 +9,51 @@ instrument (VSTi) at a time, shows the plugin's own editor, sends it MIDI
 notes and controllers from a GUI keyboard and a set of sliders, and plays the
 plugin's output through WASAPI or ASIO.
 
+## Building
+
+Windows 10 or later, x64. It needs git and Visual Studio 2022 (any edition,
+or the Build Tools) with the "Desktop development with C++" workload, and
+nothing else:
+
+```bat
+git clone --recursive <repository URL> fastresampler
+cd fastresampler
+build.bat
+```
+
+In a clone made without `--recursive`, run
+`git submodule update --init --recursive` first. `build.bat` finds Visual
+Studio with `vswhere`, builds WavPack into `build\wavpack\`, compiles
+`build\fastresampler.exe` and copies `wavpackdll.dll` next to it.
+`build.bat format-tests` builds and runs `tests/format_fixture.cpp`, which
+writes a synthetic instrument through the production writer and exits 0 on
+success; `build.bat debug` builds without optimisation.
+
+The dependencies are under `3rdparty/`: git submodules pinned to a release,
+and the icon font and its names, which are kept in this repository:
+
+| Path | Project | Pinned at | Licence |
+|---|---|---|---|
+| `3rdparty/imgui` | Dear ImGui | `96b6eb77` (1.93.0 WIP) | MIT |
+| `3rdparty/vst3sdk/base`, `pluginterfaces`, `public.sdk` | VST 3 SDK | `v3.8.1_build_84` | MIT |
+| `3rdparty/wavpack` | WavPack | `5.9.0` | BSD 3-Clause |
+| `3rdparty/fastsampler-shared` | FastSampler file formats, with nanopb | see [FORMATS.md](FORMATS.md) | MIT; nanopb zlib |
+| `3rdparty/lucide` | Lucide icon font | in this repository | ISC |
+| `3rdparty/IconFontCppHeaders` | IconFontCppHeaders | in this repository | zlib |
+
+`VST3_SDK_DIR` points the build at another VST 3 SDK, version 3.8.1 or later:
+the folder that holds `base`, `pluginterfaces` and `public.sdk`.
+
+The WavPack and VST 3 SDK repositories hold some long file paths. If git
+stops with "Filename too long", clone to a shorter folder or run
+`git config --global core.longpaths true` and update the submodules again.
+
+## Licence
+
+FastResampler is under the MIT licence, see [LICENSE](LICENSE). The
+third-party code keeps its own licence, listed in the table above; the
+program shows every notice in its Licenses tab.
+
 Details about the project:
 - Windows 10, x64. Built with MSVC as a unity build: `build.bat` compiles the
   one translation-unit root `src/fastresampler_win32.cpp`, which `#include`s
@@ -18,9 +63,8 @@ Details about the project:
   plain old data structs, procedural functions, fixed-size arrays allocated up
   front, no OOP. The unavoidable classes are the VST3 interfaces a host has to
   implement (`IComponentHandler`, `IPlugFrame`) and the SDK's hosting helpers.
-- Dependencies: Dear ImGui (a git clone in `3rdparty/imgui`, not tracked) and
-  the VST3 SDK, version 3.8.1 or later (the first under the MIT licence), at
-  `W:\vst-sdk_3.8.1\VST_SDK\vst3sdk` or wherever `VST3_SDK_DIR` points. The
+- Dependencies: Dear ImGui, the VST3 SDK 3.8.1 (the first under the MIT
+  licence) and WavPack 5.9.0, all submodules (see Building). The
   ASIO SDK is not needed: the driver interface is declared in
   `src/platform/fastresampler_asio.h`. The VST 2 SDK is not needed either,
   and Steinberg no longer ships it: the plugin ABI (the `AEffect` structure,
@@ -47,12 +91,13 @@ Details about the project:
   project's own format, so FastSampler's parser is copied into
   `src/fastresampler_yaml.*` and nothing about the projects depends on that
   checkout.
-- WavPack comes from the same checkout (`3rdparty/wavpack-5.9.0-dll`), built
-  from source: `build.bat` calls FastSampler's `scripts/build-wavpack.bat`
-  into `build/wavpack/`, links that import library and copies that DLL next to
-  the exe. This project therefore gets FastSampler's fast entropy decoder. The
-  bank builder compresses the streamed part of every sample with it, the way
-  FastSampler's own export does.
+- WavPack is upstream 5.9.0, built from the submodule by
+  `scripts/build-wavpack.bat` into `build/wavpack/`; `build.bat` links that
+  import library and copies that DLL next to the exe. The bank builder
+  compresses the streamed part of every sample with it, the way FastSampler's
+  own export does. FastSampler's copy of WavPack differs only in its entropy
+  decoder, and this project only encodes, so its banks are the same byte for
+  byte.
 - Platform calls go through `src/platform/fastresampler_platform.h`. The audio
   backends (`src/platform/fastresampler_audio_*.cpp`) and the window glue
   (`src/fastresampler_view_win32.cpp`) are the only other files that may

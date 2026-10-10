@@ -1,7 +1,11 @@
 @echo off
 
 echo Configuring MSVC x64 build environment...
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VS_DIR="
+if exist "%VSWHERE%" for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_DIR=%%i"
+if not defined VS_DIR set "VS_DIR=C:\Program Files\Microsoft Visual Studio\2022\Community"
+call "%VS_DIR%\VC\Auxiliary\Build\vcvarsall.bat" x64
 if %ERRORLEVEL% neq 0 (
     echo Error: Failed to configure MSVC build environment.
     exit /b %ERRORLEVEL%
@@ -27,24 +31,23 @@ for %%x in (%*) do (
 
 if not exist build mkdir build
 
-if not exist "3rdparty\fastsampler-shared\include\fastsampler.pb.h" (
+for %%f in ("3rdparty\fastsampler-shared\include\fastsampler.pb.h" "3rdparty\imgui\imgui.h") do if not exist %%f (
     echo Error: Run git submodule update --init --recursive first.
     exit /b 1
 )
-if "%FASTSAMPLER_DIR%"=="" set FASTSAMPLER_DIR=%~dp0..\fastsampler
 
-set WAVPACK_DIR=%FASTSAMPLER_DIR%\3rdparty\wavpack-5.9.0-dll
+set WAVPACK_DIR=%~dp03rdparty\wavpack\include
 set WAVPACK_BUILD=%~dp0build\wavpack
-call "%FASTSAMPLER_DIR%\scripts\build-wavpack.bat" "%WAVPACK_BUILD%"
+call "%~dp0scripts\build-wavpack.bat" "%WAVPACK_BUILD%"
 if %ERRORLEVEL% neq 0 (
-    echo Error: Failed to build WavPack from "%FASTSAMPLER_DIR%".
+    echo Error: Failed to build WavPack.
     exit /b %ERRORLEVEL%
 )
 cd /d "%~dp0"
 
-if "%VST3_SDK_DIR%"=="" set VST3_SDK_DIR=W:\vst-sdk_3.8.1\VST_SDK\vst3sdk
+if "%VST3_SDK_DIR%"=="" set VST3_SDK_DIR=%~dp03rdparty\vst3sdk
 if not exist "%VST3_SDK_DIR%\pluginterfaces\base\funknown.h" (
-    echo Error: VST3 SDK not found at "%VST3_SDK_DIR%". Set VST3_SDK_DIR.
+    echo Error: VST3 SDK not found at "%VST3_SDK_DIR%". Run git submodule update --init --recursive or set VST3_SDK_DIR.
     exit /b 1
 )
 

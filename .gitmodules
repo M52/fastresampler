@@ -1,3 +1,18 @@
 [submodule "3rdparty/fastsampler-shared"]
 	path = 3rdparty/fastsampler-shared
 	url = https://git.omkserver.nl/Macaberz/fastsampler-shared.git
+[submodule "3rdparty/imgui"]
+	path = 3rdparty/imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "3rdparty/wavpack"]
+	path = 3rdparty/wavpack
+	url = https://github.com/dbry/WavPack.git
+[submodule "3rdparty/vst3sdk/base"]
+	path = 3rdparty/vst3sdk/base
+	url = https://github.com/steinbergmedia/vst3_base.git
+[submodule "3rdparty/vst3sdk/pluginterfaces"]
+	path = 3rdparty/vst3sdk/pluginterfaces
+	url = https://github.com/steinbergmedia/vst3_pluginterfaces.git
+[submodule "3rdparty/vst3sdk/public.sdk"]
+	path = 3rdparty/vst3sdk/public.sdk
+	url = https://github.com/steinbergmedia/vst3_public_sdk.git

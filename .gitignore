@@ -1,7 +1,6 @@
 build/
 bin/
 src/fastresampler_build.h
-3rdparty/imgui/
 *.obj
 *.pdb
 *.ilk
