@@ -1,4 +1,3 @@
-// #pragma once (removed for unity build)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,46 +12,26 @@
 #define RESAMPLE_DEFAULT_GAP_SECONDS         2.0f
 #define RESAMPLE_DEFAULT_PREROLL_GAP_SECONDS 1.0f
 #define RESAMPLE_DEFAULT_STEP                2
-// The highest rate common plugins render without complaint; 192 kHz is on the list.
 #define RESAMPLE_DEFAULT_SAMPLE_RATE         96000
-// Fast enough to be worth it, slow enough for a disk-streaming sampler to keep up.
 #define RESAMPLE_DEFAULT_RENDER_SPEED        4
-// What FastSampler's own export preloads by default.
 #define RESAMPLE_DEFAULT_PRELOAD_FRAMES      8192
-// Half the bank for a depth a sampled instrument rarely needs past.
 #define RESAMPLE_DEFAULT_BIT_DEPTH           16
 #define RESAMPLE_DEFAULT_OUTPUT_DIR_NAME     "samples"
 #define RESAMPLE_FULL_FILE_SUFFIX            "_full.wav"
-// What the one bus a fresh configuration has is called. A run with a single
-// microphone needs no more than this, and the name is still a folder.
 #define RESAMPLE_DEFAULT_BUS_NAME            "Close"
+#define RESAMPLE_CC_FIT_MAX_NODES            10
+#define RESAMPLE_CC_FIT_TOLERANCE            0.03f
 
-// Legato, the defaults of a capture. The source note is held long enough for
-// a slow attack to have settled before the move starts. The overlap is what
-// makes the plugin play a move at all: the note landed on goes down while
-// the note left is still held.
-//
-// The margin is the sustain a transition sample keeps either side of its
-// move: the note being left in front of the departure, the note landed on
-// past the arrival. It is room for FastSampler's two crossfades, not
-// something that is played as such: the sampler starts the transition one
-// fade-in before the departure and ends it one fade-out past the arrival,
-// so the margin only sets how long those fades are allowed to be. Half a
-// second lets a slow line blend over a long crossfade; a fast run never
-// reaches most of it.
 #define RESAMPLE_DEFAULT_LEGATO_SOURCE_HOLD_SECONDS 1.5f
 #define RESAMPLE_DEFAULT_LEGATO_OVERLAP_SECONDS     0.1f
 #define RESAMPLE_DEFAULT_LEGATO_HOLD_SECONDS        2.0f
 #define RESAMPLE_DEFAULT_LEGATO_MARGIN_SECONDS      0.5f
-// What a library takes to land on the note, when nothing says otherwise.
 #define RESAMPLE_LEGATO_ARRIVAL_MS                  120
 #define RESAMPLE_DEFAULT_LEGATO_ARRIVAL_MS          "120"
 #define RESAMPLE_MAX_LEGATO_ARRIVAL_MS              2000
 
 void resample_config_defaults(ResampleConfig* cfg) {
     memset(cfg, 0, sizeof(*cfg));
-    // One bus on the first stereo pair: what a plugin plays without any
-    // routing of its own.
     cfg->bus_count = 1;
     cfg->monitor_bus = 0;
     fr_strcpy(cfg->busses[0].name, sizeof(cfg->busses[0].name), RESAMPLE_DEFAULT_BUS_NAME);
@@ -68,9 +47,6 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->hold_seconds = RESAMPLE_DEFAULT_HOLD_SECONDS;
     cfg->gap_seconds = RESAMPLE_DEFAULT_GAP_SECONDS;
     cfg->legato = false;
-    // A step of 2 and every width to a fifth: the widths are what a slur
-    // needs to land on the right note, and the notes between two captured
-    // ones play the nearer move transposed, which keeps its width.
     cfg->legato_step = 2;
     fr_strcpy(cfg->legato_intervals, sizeof(cfg->legato_intervals), "1, 2, 3, 4, 5, 6, 7");
     fr_strcpy(cfg->legato_velocities, sizeof(cfg->legato_velocities), "64");
@@ -89,9 +65,6 @@ void resample_config_defaults(ResampleConfig* cfg) {
     cfg->bit_depth = RESAMPLE_DEFAULT_BIT_DEPTH;
     char dir[FR_MAX_PATH];
     plat_module_dir(dir, sizeof(dir));
-    // The samples and the instrument both go under the root, in a folder
-    // named after the take, until a box says otherwise; the picked folders
-    // start at the root as well, so a box that is ticked has a folder.
     plat_path_join(cfg->root_dir, sizeof(cfg->root_dir), dir, RESAMPLE_DEFAULT_OUTPUT_DIR_NAME);
     cfg->output_dir_override = false;
     cfg->export_dir_override = false;
@@ -99,13 +72,8 @@ void resample_config_defaults(ResampleConfig* cfg) {
     fr_strcpy(cfg->export_dir, sizeof(cfg->export_dir), cfg->root_dir);
 }
 
-// --- Output busses --------------------------------------------------------------
-
-// A name as a file and a folder carry it: what the naming fields and the bus
-// names are put through. False when nothing usable is left.
 static bool resample_sanitize_name(char* dst, size_t dst_size, const char* src);
 
-// Whether any bus other than skip already reads that pair.
 static bool resample_bus_pair_taken(const ResampleConfig* cfg, int channel, int skip) {
     for (int i = 0; i < cfg->bus_count; ++i) {
         if (i == skip) continue;
@@ -118,9 +86,6 @@ bool resample_bus_add(ResampleConfig* cfg) {
     if (cfg->bus_count >= FR_MAX_OUTPUT_BUSSES) return false;
     ResampleBus* bus = &cfg->busses[cfg->bus_count];
     memset(bus, 0, sizeof(*bus));
-    // The lowest pair nothing reads yet, so the busses line up with a
-    // plugin's outputs in order until one is moved by hand.
-    bus->channel = 0;
     for (int c = 0; c < FR_MAX_RENDER_CHANNELS; c += FR_BUS_CHANNELS) {
         if (!resample_bus_pair_taken(cfg, c, cfg->bus_count)) {
             bus->channel = c;
@@ -133,13 +98,10 @@ bool resample_bus_add(ResampleConfig* cfg) {
 }
 
 void resample_bus_remove(ResampleConfig* cfg, int index) {
-    // The last one stays: a run has to have somewhere to write.
     if (cfg->bus_count <= 1 || index < 0 || index >= cfg->bus_count) return;
     for (int i = index; i < cfg->bus_count - 1; ++i) cfg->busses[i] = cfg->busses[i + 1];
     cfg->bus_count--;
     memset(&cfg->busses[cfg->bus_count], 0, sizeof(cfg->busses[0]));
-    // The monitor follows the list: it moves up with the busses above the
-    // one that went, and steps back when it was the one removed at the end.
     if (cfg->monitor_bus > index) cfg->monitor_bus--;
     if (cfg->monitor_bus >= cfg->bus_count) cfg->monitor_bus = cfg->bus_count - 1;
 }
@@ -148,12 +110,10 @@ void resample_bus_validate(ResampleConfig* cfg) {
     cfg->bus_count = fr_clampi(cfg->bus_count, 0, FR_MAX_OUTPUT_BUSSES);
     for (int i = 0; i < cfg->bus_count; ++i) {
         ResampleBus* bus = &cfg->busses[i];
-        // A channel from a file is rounded down to the pair that holds it.
         bus->channel = fr_clampi(bus->channel, 0, FR_MAX_RENDER_CHANNELS - FR_BUS_CHANNELS);
         bus->channel -= bus->channel % FR_BUS_CHANNELS;
         if (!bus->name[0]) snprintf(bus->name, sizeof(bus->name), "Mic %d", i + 1);
     }
-    // A file with no busses at all: the one a fresh configuration has.
     if (cfg->bus_count == 0) {
         cfg->bus_count = 1;
         fr_strcpy(cfg->busses[0].name, sizeof(cfg->busses[0].name), RESAMPLE_DEFAULT_BUS_NAME);
@@ -174,8 +134,6 @@ bool resample_bus_name_clashes(const ResampleConfig* cfg, int index) {
         char other[RESAMPLE_NAME_LEN];
         if (i == index) continue;
         if (!resample_sanitize_name(other, sizeof(other), cfg->busses[i].name)) continue;
-        // The folder is what must differ, and folders do not tell case
-        // apart, so "Close" and "close" are the same bus twice.
         if (fr_stricmp(mine, other) == 0) return true;
     }
     return false;
@@ -197,32 +155,27 @@ int resample_bus_channel_count(const ResampleConfig* cfg) {
     return highest;
 }
 
-int resample_valid_sample_rate(int value) {
-    for (int i = 0; i < RESAMPLE_RATE_OPTION_COUNT; ++i) {
-        if (g_resample_rate_options[i] == value) return value;
+static int resample_valid_option(const int* options, int count, int value, int fallback) {
+    for (int i = 0; i < count; ++i) {
+        if (options[i] == value) return value;
     }
-    return 0;
+    return fallback;
+}
+
+int resample_valid_sample_rate(int value) {
+    return resample_valid_option(g_resample_rate_options, RESAMPLE_RATE_OPTION_COUNT, value, 0);
 }
 
 int resample_valid_render_speed(int value, int fallback) {
-    for (int i = 0; i < RESAMPLE_SPEED_OPTION_COUNT; ++i) {
-        if (g_resample_speed_options[i] == value) return value;
-    }
-    return fallback;
+    return resample_valid_option(g_resample_speed_options, RESAMPLE_SPEED_OPTION_COUNT, value, fallback);
 }
 
 int resample_valid_preload_frames(int value, int fallback) {
-    for (int i = 0; i < RESAMPLE_PRELOAD_OPTION_COUNT; ++i) {
-        if (g_resample_preload_options[i] == value) return value;
-    }
-    return fallback;
+    return resample_valid_option(g_resample_preload_options, RESAMPLE_PRELOAD_OPTION_COUNT, value, fallback);
 }
 
 int resample_valid_bit_depth(int value, int fallback) {
-    for (int i = 0; i < RESAMPLE_BIT_DEPTH_OPTION_COUNT; ++i) {
-        if (g_resample_bit_depth_options[i] == value) return value;
-    }
-    return fallback;
+    return resample_valid_option(g_resample_bit_depth_options, RESAMPLE_BIT_DEPTH_OPTION_COUNT, value, fallback);
 }
 
 void resample_preload_label(int preload_frames, char* out, size_t out_len) {
@@ -235,14 +188,13 @@ void resample_preload_label(int preload_frames, char* out, size_t out_len) {
 
 uint64_t resample_required_bytes(const ResampleScript* script, bool split_samples, int bus_count) {
     uint64_t frame_bytes = (uint64_t)FR_BUS_CHANNELS * sizeof(float);
-    uint64_t total = (uint64_t)script->total_frames * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
+    uint64_t total = (uint64_t)script->total_frames * frame_bytes + WAV_HEADER_SIZE;
     if (split_samples) {
         for (int i = 0; i < script->segment_count; ++i) {
             const ResampleSegment* seg = &script->segments[i];
-            total += (uint64_t)(seg->end_frame - seg->start_frame) * frame_bytes + RESAMPLE_WAV_HEADER_BYTES;
+            total += (uint64_t)(seg->end_frame - seg->start_frame) * frame_bytes + WAV_HEADER_SIZE;
         }
     }
-    // Every bus writes the same files into a folder of its own.
     if (bus_count < 1) bus_count = 1;
     return total * (uint64_t)bus_count;
 }
@@ -262,8 +214,6 @@ void resample_sample_suffix(bool dynamic_layers, const ResampleSegment* seg, boo
     char layer[RESAMPLE_LAYER_SUFFIX_LEN];
     resample_layer_suffix(dynamic_layers, seg->round_robin, layer, sizeof(layer));
     if (seg->kind == RESAMPLE_SEG_TRANSITION) {
-        // The two notes of the move, the one left first. A run without
-        // dynamic layers captures every move once, so it names no layer.
         char source[8];
         midi_note_name(seg->source_note, source, sizeof(source));
         if (dynamic_layers) {
@@ -283,8 +233,6 @@ void resample_sample_file_name(const char* prefix, bool dynamic_layers, const Re
     snprintf(out, out_len, "%s%s", prefix, suffix);
 }
 
-// The layers a run plays every note at: the dynamic layers, or one. The
-// moves are captured once per layer, and once for a round robin run.
 static int resample_layer_count(const ResampleConfig* cfg) {
     return cfg->dynamic_layers ? cfg->round_robins : 1;
 }
@@ -302,13 +250,6 @@ const char* resample_step_label(int step) {
     if (step < 1 || step > RESAMPLE_MAX_STEP) return "?";
     return labels[step - 1];
 }
-
-// --- Controller curves --------------------------------------------------------------
-
-// The fit of a bezier to painted values stops at this many nodes, or when
-// no point is further off than the tolerance.
-#define RESAMPLE_CC_FIT_MAX_NODES 10
-#define RESAMPLE_CC_FIT_TOLERANCE 0.03f
 
 float resample_cc_span(const ResampleConfig* cfg, float* preroll, float* hold, float* gap) {
     float pre = resample_preroll_on(cfg) && cfg->round_robins > 1 ? (float)(cfg->round_robins - 1) * cfg->preroll_gap_seconds : 0.0f;
@@ -333,28 +274,18 @@ void resample_cc_set_constant(ResampleCcCurve* c, float value) {
     c->curvature[1] = 0.0f;
 }
 
-bool resample_cc_add(ResampleConfig* cfg) {
+bool resample_cc_add(ResampleConfig* cfg, int controller) {
     if (cfg->cc_curve_count >= RESAMPLE_MAX_CC_CURVES) return false;
-    // After a curve tied to a layer, the same controller for the next layer;
-    // the last layer's curve, and every other case, takes the lowest
-    // controller no curve has yet, from the mod wheel up.
-    int controller = MIDI_CC_MOD_WHEEL;
+    controller = fr_clampi(controller, 0, MIDI_VALUE_MAX);
     int layer = 0;
     const ResampleCcCurve* last = cfg->cc_curve_count > 0 ? &cfg->cc_curves[cfg->cc_curve_count - 1] : nullptr;
-    if (cfg->dynamic_layers && last && last->layer > 0 && last->layer < cfg->round_robins) {
-        controller = last->controller;
+    if (cfg->dynamic_layers && last && last->controller == controller && last->layer > 0 &&
+        last->layer < cfg->round_robins) {
         layer = last->layer + 1;
-    } else {
-        for (int i = 0; i < cfg->cc_curve_count; ++i) {
-            if (cfg->cc_curves[i].controller == controller) {
-                ++controller;
-                i = -1;   // the next candidate is checked against every curve again
-            }
-        }
     }
     ResampleCcCurve* c = &cfg->cc_curves[cfg->cc_curve_count++];
     memset(c, 0, sizeof(*c));
-    c->controller = controller > MIDI_VALUE_MAX ? MIDI_VALUE_MAX : controller;
+    c->controller = controller;
     c->layer = layer;
     c->is_bezier = true;
     c->constant = MIDI_VALUE_MAX;
@@ -383,15 +314,11 @@ void resample_cc_from_bezier(ResampleCcCurve* c) {
         float y0 = c->node_y[seg], y1 = c->node_y[seg + 1];
         float cy = c->curvature[seg];
         float t = x1 > x0 ? fr_clampf((x - x0) / (x1 - x0), 0.0f, 1.0f) : 0.0f;
-        // A quadratic bezier: the control point sits at the segment's middle
-        // in x, at the curvature in y.
         float y = (1.0f - t) * (1.0f - t) * y0 + 2.0f * (1.0f - t) * t * cy + t * t * y1;
         c->values[p] = fr_clampf(y, 0.0f, 1.0f);
     }
 }
 
-// The control point of one segment that best fits the values under it: a
-// least squares fit of the quadratic's middle term.
 static void resample_cc_fit_segment(ResampleCcCurve* c, int seg) {
     float x0 = c->node_x[seg], x1 = c->node_x[seg + 1];
     float y0 = c->node_y[seg], y1 = c->node_y[seg + 1];
@@ -409,6 +336,21 @@ static void resample_cc_fit_segment(ResampleCcCurve* c, int seg) {
     c->curvature[seg] = den > 0.0001f ? fr_clampf(num / den, 0.0f, 1.0f) : 0.5f * (y0 + y1);
 }
 
+void resample_cc_insert_node(ResampleCcCurve* c, float x, float y) {
+    if (c->node_count >= RESAMPLE_CC_MAX_NODES) return;
+    int at = 0;
+    while (at < c->node_count && c->node_x[at] < x) ++at;
+    for (int i = c->node_count; i > at; --i) {
+        c->node_x[i] = c->node_x[i - 1];
+        c->node_y[i] = c->node_y[i - 1];
+        c->curvature[i] = c->curvature[i - 1];
+    }
+    c->node_x[at] = x;
+    c->node_y[at] = y;
+    c->curvature[at] = y;
+    c->node_count++;
+}
+
 void resample_cc_fit_bezier(ResampleCcCurve* c) {
     const int last = RESAMPLE_CC_CURVE_POINTS - 1;
     c->node_count = 2;
@@ -418,8 +360,6 @@ void resample_cc_fit_bezier(ResampleCcCurve* c) {
     c->node_y[1] = c->values[last];
     c->curvature[1] = 0.0f;
     resample_cc_fit_segment(c, 0);
-    // A node where the fit is worst, until it is close enough everywhere.
-    // The curve passes through its nodes, so the worst point never sits on one.
     while (c->node_count < RESAMPLE_CC_FIT_MAX_NODES) {
         ResampleCcCurve probe = *c;
         resample_cc_from_bezier(&probe);
@@ -433,18 +373,7 @@ void resample_cc_fit_bezier(ResampleCcCurve* c) {
             }
         }
         if (worst < 0 || max_err < RESAMPLE_CC_FIT_TOLERANCE) break;
-        float nx = (float)worst / (float)last;
-        int at = 0;
-        while (at < c->node_count && c->node_x[at] < nx) ++at;
-        for (int i = c->node_count; i > at; --i) {
-            c->node_x[i] = c->node_x[i - 1];
-            c->node_y[i] = c->node_y[i - 1];
-            c->curvature[i] = c->curvature[i - 1];
-        }
-        c->node_x[at] = nx;
-        c->node_y[at] = c->values[worst];
-        c->curvature[at] = c->values[worst];
-        c->node_count++;
+        resample_cc_insert_node(c, (float)worst / (float)last, c->values[worst]);
         for (int s = 0; s < c->node_count - 1; ++s) resample_cc_fit_segment(c, s);
     }
 }
@@ -466,9 +395,6 @@ float resample_cc_value_at(const ResampleCcCurve* c, float x) {
     return c->values[i] + (c->values[i + 1] - c->values[i]) * frac;
 }
 
-// A naming field as it goes into a file name: the characters Windows refuses
-// and the underscore, which separates the fields, become '-'; outer spaces
-// go. False when nothing is left.
 static bool resample_sanitize_name(char* dst, size_t dst_size, const char* src) {
     size_t o = 0;
     const char* s = src;
@@ -484,8 +410,6 @@ static bool resample_sanitize_name(char* dst, size_t dst_size, const char* src) 
     return o > 0;
 }
 
-// The name of one bus, cleaned for a file and a folder. False, with the
-// reason in err, when the bus is out of range or its name is empty.
 static bool resample_bus_name(const ResampleConfig* cfg, int bus, char* out, size_t out_len,
                               char* err, size_t err_len) {
     if (bus < 0 || bus >= cfg->bus_count) {
@@ -537,10 +461,6 @@ bool resample_root_target_dir(const ResampleConfig* cfg, int bus, char* out, siz
     return true;
 }
 
-// The root a folder implies: the part of it above
-// <Instrument>\<Articulation>\<Bus>. False when it does not end in those
-// three names. The bus is the first one, which is what a configuration
-// written before the busses existed carried its microphone into.
 static bool resample_root_of_dir(const ResampleConfig* cfg, const char* dir, char* out, size_t out_len) {
     char names[3][RESAMPLE_NAME_LEN];
     if (cfg->bus_count < 1) return false;
@@ -554,9 +474,9 @@ static bool resample_root_of_dir(const ResampleConfig* cfg, const char* dir, cha
         size_t len = strlen(work);
         while (len > 0 && (work[len - 1] == '\\' || work[len - 1] == '/')) work[--len] = '\0';
         const char* base = plat_path_basename(work);
-        if (base == work) return false;             // nothing left above it
+        if (base == work) return false;
         if (fr_stricmp(base, names[i]) != 0) return false;
-        work[base - work] = '\0';                   // the folder goes, its separator with it
+        work[base - work] = '\0';
     }
     size_t len = strlen(work);
     while (len > 1 && (work[len - 1] == '\\' || work[len - 1] == '/') && !(len == 3 && work[1] == ':')) {
@@ -572,7 +492,6 @@ void resample_config_root_from_dirs(ResampleConfig* cfg) {
     if (resample_root_of_dir(cfg, cfg->output_dir, root, sizeof(root))) {
         fr_strcpy(cfg->root_dir, sizeof(cfg->root_dir), root);
         cfg->output_dir_override = false;
-        // The instrument follows the samples when it went with them.
         cfg->export_dir_override = fr_stricmp(cfg->output_dir, cfg->export_dir) != 0;
     } else {
         cfg->output_dir_override = true;
@@ -580,10 +499,6 @@ void resample_config_root_from_dirs(ResampleConfig* cfg) {
     }
 }
 
-// Whether a folder could be written on this computer: it is there already,
-// or something above it is and the rest is made when a run writes. False
-// only when nothing in the whole chain exists, which is what another
-// computer's drive letter looks like from here.
 static bool resample_dir_reachable(const char* dir) {
     if (!dir || !dir[0]) return false;
     char work[FR_MAX_PATH];
@@ -592,14 +507,13 @@ static bool resample_dir_reachable(const char* dir) {
         if (plat_path_is_dir(work)) return true;
         size_t len = strlen(work);
         while (len > 0 && (work[len - 1] == '\\' || work[len - 1] == '/')) work[--len] = '\0';
-        // "D:" on its own is the drive, and the drive is where the walk ends.
         if (len == 2 && work[1] == ':') {
             work[len] = PLAT_PATH_SEP;
             work[len + 1] = '\0';
             return plat_path_is_dir(work);
         }
         const char* base = plat_path_basename(work);
-        if (base == work) return false;    // nothing above it left to try
+        if (base == work) return false;
         work[base - work] = '\0';
     }
 }
@@ -617,8 +531,6 @@ int resample_config_localize_dirs(ResampleConfig* cfg) {
         root_moved = true;
         replaced++;
     }
-    // An override that cannot be written falls back to the root, which is
-    // where a fresh configuration sends both of them anyway.
     bool output_dropped = false;
     bool export_dropped = false;
     if (cfg->output_dir_override && !resample_dir_reachable(cfg->output_dir)) {
@@ -631,10 +543,6 @@ int resample_config_localize_dirs(ResampleConfig* cfg) {
         export_dropped = true;
         replaced++;
     }
-    // A folder that does not override the root is only the picker's starting
-    // point. It is left alone at home, and follows the root when the root
-    // moved or its own box was just dropped, so the picker never opens on
-    // another computer's drive.
     if ((root_moved || output_dropped) && !cfg->output_dir_override) {
         fr_strcpy(cfg->output_dir, sizeof(cfg->output_dir), cfg->root_dir);
     }
@@ -644,9 +552,6 @@ int resample_config_localize_dirs(ResampleConfig* cfg) {
     return replaced;
 }
 
-// A picked folder with the bus's own name under it. The bus is the last
-// folder wherever a run writes, so two microphones never land on one
-// another's files.
 static bool resample_picked_bus_dir(const ResampleConfig* cfg, int bus, const char* picked,
                                     char* out, size_t out_len, char* err, size_t err_len) {
     char name[RESAMPLE_NAME_LEN];
@@ -685,15 +590,10 @@ void resample_segment_file_name(const ResampleConfig* cfg, int bus, const Resamp
     resample_sample_file_name(prefix, cfg->dynamic_layers, seg, out, out_len);
 }
 
-// Whether a curve plays during a pass: every curve does, unless the run has
-// dynamic layers and the curve is tied to another one.
 static bool resample_cc_plays(const ResampleConfig* cfg, const ResampleCcCurve* curve, int layer) {
     return !cfg->dynamic_layers || curve->layer == 0 || curve->layer == layer;
 }
 
-// "40, 60 100" to a sorted list of distinct velocities in 1..127. The label
-// names the field in the messages: the notes' velocities, or the legato
-// ones.
 static int resample_parse_velocities(const char* label, const char* text, int* out, int max_count,
                                      char* err, size_t err_len) {
     int count = 0;
@@ -724,7 +624,6 @@ static int resample_parse_velocities(const char* label, const char* text, int* o
         snprintf(err, err_len, "%s: give at least one, like \"40, 60\"", label);
         return 0;
     }
-    // Ascending, so the file goes soft to loud within each note.
     for (int i = 1; i < count; ++i) {
         int v = out[i];
         int j = i;
@@ -737,9 +636,6 @@ static int resample_parse_velocities(const char* label, const char* text, int* o
     return count;
 }
 
-// "1, 2" to the signed intervals a legato run records: -2, -1, 1, 2. The
-// widths go in as magnitudes, and each is recorded both ways, as a move up
-// and a move down are two different performances.
 static int resample_parse_intervals(const char* text, int* out, int max_count, char* err, size_t err_len) {
     int widths[RESAMPLE_MAX_LEGATO_INTERVALS];
     int width_count = 0;
@@ -783,16 +679,12 @@ static int resample_parse_intervals(const char* text, int* out, int max_count, c
         }
         widths[j] = v;
     }
-    // Ascending and signed: the widest move down first, the widest move up
-    // last, so a link table built from the list reads in order.
     int count = 0;
     for (int i = width_count - 1; i >= 0; --i) out[count++] = -widths[i];
     for (int i = 0; i < width_count; ++i) out[count++] = widths[i];
     return count;
 }
 
-// A list of times in milliseconds, "333, 250, 100". One value stands for
-// every velocity; any other count has to match them one for one.
 static int resample_parse_ms(const char* text, int* out, int max_count, char* err, size_t err_len) {
     int count = 0;
     const char* s = text;
@@ -818,7 +710,6 @@ static int resample_parse_ms(const char* text, int* out, int max_count, char* er
     return count;
 }
 
-// False when the script is full.
 static bool resample_add(ResampleScript* script, int64_t frame, MidiEvent midi) {
     if (script->count >= RESAMPLE_MAX_EVENTS) return false;
     ResampleEvent* e = &script->events[script->count];
@@ -829,9 +720,6 @@ static bool resample_add(ResampleScript* script, int64_t frame, MidiEvent midi) 
     return true;
 }
 
-// By frame, and for one frame in the order they were added: the controller
-// values of a window go in before its notes, so the sampler has them when
-// the note starts.
 static int resample_event_compare(const void* a, const void* b) {
     const ResampleEvent* x = (const ResampleEvent*)a;
     const ResampleEvent* y = (const ResampleEvent*)b;
@@ -840,14 +728,6 @@ static int resample_event_compare(const void* a, const void* b) {
     return 0;
 }
 
-// The controller events of one sample's window, from its first pre-roll
-// note to the end of its gap. The curve's time starts at the longest
-// pre-roll, so the real note-on lands on the same point of it for every
-// round robin; a shorter pre-roll starts further along the curve. An event
-// goes out when the 7-bit value differs from the last one sent on that
-// controller, so a flat curve costs one event. With dynamic layers only the
-// curves of this pass's layer, and the ones tied to none, are read. False
-// when the script is full.
 static bool resample_add_cc(ResampleScript* script, const ResampleConfig* cfg, int layer, int64_t window_start,
                             int64_t note_on, int64_t window_end, double sample_rate, float span_seconds,
                             float preroll_seconds, int64_t tick_frames, int* last_value) {
@@ -874,9 +754,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     script->count = 0;
     script->segment_count = 0;
 
-    // Every bus must name a file and a folder no other bus names, and must
-    // read a pair no other bus reads: either clash would have two
-    // microphones write over one another.
     if (cfg->bus_count < 1) {
         fr_strcpy(err, err_len, "Add an output bus in the Output busses tab");
         return false;
@@ -965,8 +842,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             snprintf(err, err_len, "CC curves: a CC%d curve is tied to layer %d, and there are %d", cc, a->layer, cfg->round_robins);
             return false;
         }
-        // Two curves on one controller are fine when each plays for a layer
-        // of its own; they clash when some pass would read both.
         for (int j = 0; j < i; ++j) {
             const ResampleCcCurve* b = &cfg->cc_curves[j];
             if (b->controller != cc) continue;
@@ -980,8 +855,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         }
     }
 
-    // The legato part: the intervals, the velocities the note landed on is
-    // played at, and the time each of those takes to land.
     int intervals[2 * RESAMPLE_MAX_LEGATO_INTERVALS];
     int interval_count = 0;
     int legato_velocities[RESAMPLE_MAX_LEGATO_VELOCITIES];
@@ -1031,8 +904,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             fr_strcpy(err, err_len, "Legato: the sustain either side must fit inside the hold of the note left");
             return false;
         }
-        // Every capture has to reach one margin past the landing, or the
-        // sample the instrument cuts from it stops before the note it lands on.
         for (int i = 0; i < legato_velocity_count; ++i) {
             float needed = (float)arrivals[i] / 1000.0f + cfg->legato_margin_seconds;
             if (needed > cfg->legato_hold_seconds) {
@@ -1044,8 +915,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         for (int source = low; source <= high; source += cfg->legato_step) {
             for (int i = 0; i < interval_count; ++i) {
                 int target = source + intervals[i];
-                // A move onto a key the run does not sample has no sustain
-                // to land on, so it is left out.
                 if (target < low || target > high) continue;
                 transition_total += legato_velocity_count * layer_count;
             }
@@ -1065,9 +934,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
                  segment_total, RESAMPLE_MAX_SEGMENTS);
         return false;
     }
-    // A sustain run maps every sample twice, as a loop and as a release; a
-    // transition is one zone. The instrument holds as many zones as the
-    // segments make between them, up to the zone capacity of the pinned format.
     const int zone_capacity = (int)(sizeof(FSIFile::zones) / sizeof(FSIZone));
     int zone_total = sustain_total * (cfg->dynamic_layers ? 2 : 1) + transition_total;
     if (zone_total > zone_capacity) {
@@ -1082,9 +948,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     int64_t preroll_hold_frames = (int64_t)((double)RESAMPLE_PREROLL_HOLD_SECONDS * sample_rate + 0.5);
     int64_t preroll_gap_frames = (int64_t)((double)cfg->preroll_gap_seconds * sample_rate + 0.5);
 
-    // The controller curves: their span, how often they are read, and the
-    // value last sent on each controller, so the first tick of the run
-    // always sends one.
     float preroll_seconds;
     float span_seconds = resample_cc_span(cfg, &preroll_seconds, nullptr, nullptr);
     int64_t tick_frames = (int64_t)((double)RESAMPLE_CC_TICK_SECONDS * sample_rate + 0.5);
@@ -1092,29 +955,15 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     int last_value[MIDI_VALUE_MAX + 1];
     for (int k = 0; k <= MIDI_VALUE_MAX; ++k) last_value[k] = -1;
 
-    // The lead-in every capture is given so a painted curve is read over the
-    // same run-up to each note-on. Without curves it would be silence, so it
-    // is only spent when there is a curve to read.
     int64_t cc_lead_frames = cfg->cc_curve_count > 0
                              ? (int64_t)((double)preroll_seconds * sample_rate + 0.5) : 0;
 
     bool fits = true;
     int64_t t = 0;
     for (int note = low; note <= high; note += cfg->step) {
-        // The sampler advances its round robin on every note-on it is sent,
-        // the captured ones included, and counts per note. This is how far
-        // that counter has been carried on this note, so a window pre-rolls
-        // only the difference between where it stands and the variation
-        // wanted. Captures then walk the variations in order and ask for no
-        // pre-roll note at all; one is only sent if the count falls out of
-        // step. Counting the captured note is the whole point: pre-rolling
-        // rr - 1 notes every time landed on variations 1, 3, 1, 5, 5 of
-        // five, so two of them were sampled twice and two never at all.
         int played = 0;
         for (int v = 0; v < velocity_count; ++v) {
             for (int rr = 1; rr <= cfg->round_robins; ++rr) {
-                // The window of this sample: the lead-in, the real note, the
-                // gap. The controllers go in first.
                 int preroll_notes = preroll ? ((rr - 1 - played) % cfg->round_robins + cfg->round_robins)
                                               % cfg->round_robins : 0;
                 int64_t note_lead = (int64_t)preroll_notes * preroll_gap_frames;
@@ -1123,9 +972,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
                 int64_t window_end = note_on + hold_frames + gap_frames;
                 fits = fits && resample_add_cc(script, cfg, rr, t, note_on, window_end, sample_rate,
                                                span_seconds, preroll_seconds, tick_frames, last_value);
-                // Carry the counter to the variation wanted with short notes
-                // that each ring out before the next. They end one gap before
-                // the captured note-on, whatever the lead-in is.
                 int64_t p = note_on - note_lead;
                 for (int i = 0; i < preroll_notes; ++i) {
                     fits = fits && resample_add(script, p, midi_make(MIDI_STATUS_NOTE_ON, 0, note, velocities[v]));
@@ -1151,11 +997,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         }
     }
 
-    // The moves, after every note has been sampled. One capture holds the
-    // note it leaves, puts the note it lands on down over it, and lets the
-    // first go; the sample runs from one margin before that second note-on
-    // to where the second note is released, and the instrument build cuts
-    // it to one margin either side of the move it finds inside.
     if (cfg->legato) {
         int64_t source_hold_frames = (int64_t)((double)cfg->legato_source_hold_seconds * sample_rate + 0.5);
         int64_t overlap_frames = (int64_t)((double)cfg->legato_overlap_seconds * sample_rate + 0.5);
@@ -1187,10 +1028,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
                         seg->interval = (int8_t)intervals[i];
                         seg->velocity = (uint8_t)velocity;
                         seg->round_robin = (uint8_t)layer;
-                        // Where the move is taken to leave and to land, until
-                        // the instrument build reads both out of the audio.
-                        // Nothing moves before the key that asked for it went
-                        // down, so the note-on is the nominal departure.
                         seg->departure_frame = margin_frames;
                         seg->arrival_frame = margin_frames + (int64_t)((double)arrivals[v] * sample_rate / 1000.0 + 0.5);
                         fits = fits && resample_add(script, source_on, midi_make(MIDI_STATUS_NOTE_ON, 0, source, velocity));
@@ -1204,7 +1041,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         }
     }
 
-    // Whatever still rings is cut at the end of the file.
     fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, MIDI_CC_ALL_NOTES_OFF, 0));
     fits = fits && resample_add(script, t, midi_make(MIDI_STATUS_CONTROL_CHANGE, 0, MIDI_CC_ALL_SOUND_OFF, 0));
     if (!fits) {
@@ -1214,8 +1050,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         script->segment_count = 0;
         return false;
     }
-    // The controller events were added per window, out of order with the
-    // notes; the render walks the list from front to back.
     qsort(script->events, (size_t)script->count, sizeof(ResampleEvent), resample_event_compare);
 
     script->total_frames = t;
@@ -1244,11 +1078,6 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     return true;
 }
 
-// --- The worker ------------------------------------------------------------------
-
-// Phase one: the plugin over the whole script, every bus captured in the one
-// pass, into one full WAV each. False when writing failed; a cancel ends
-// early and returns true.
 static bool resample_render(ResampleJob* job, int64_t* frames_done) {
     const ResampleScript* script = job->script;
     WavWriter wav[FR_MAX_OUTPUT_BUSSES];
@@ -1256,15 +1085,12 @@ static bool resample_render(ResampleJob* job, int64_t* frames_done) {
     for (int b = 0; b < job->bus_count; ++b) {
         if (!wav_writer_open(&wav[b], job->full_path[b], FR_BUS_CHANNELS, (int)script->sample_rate)) {
             snprintf(job->result, sizeof(job->result), "Could not create %s", job->full_path[b]);
-            // The ones already open are closed, so nothing is left locked.
             for (int i = 0; i < opened; ++i) wav_writer_close(&wav[i]);
             return false;
         }
         opened++;
     }
 
-    // The plugin writes into one flat set of channels; each bus reads its own
-    // stereo pair back out of it.
     static float buffers[FR_MAX_RENDER_CHANNELS][FR_MAX_BLOCK_SIZE];
     float* ptrs[FR_MAX_RENDER_CHANNELS];
     for (int c = 0; c < FR_MAX_RENDER_CHANNELS; ++c) ptrs[c] = buffers[c];
@@ -1277,10 +1103,6 @@ static bool resample_render(ResampleJob* job, int64_t* frames_done) {
     bool write_ok = true;
     uint64_t pace_start_ms = plat_ms_now();
     while (pos < script->total_frames && write_ok && !job->cancel.load()) {
-        // Hold the render to the chosen multiple of realtime: the wall clock
-        // must have reached the audio position over the speed before the
-        // next block. A sleep that overshoots is caught up by the blocks that
-        // follow, so the average holds and no block ever runs early.
         if (job->speed > 0) {
             double target_ms = (double)pos / script->sample_rate / (double)job->speed * 1000.0;
             while ((double)(plat_ms_now() - pace_start_ms) < target_ms && !job->cancel.load()) plat_sleep_ms(1);
@@ -1289,7 +1111,6 @@ static bool resample_render(ResampleJob* job, int64_t* frames_done) {
         int frames = remaining < job->block_size ? (int)remaining : job->block_size;
         for (int c = 0; c < job->channel_count; ++c) memset(buffers[c], 0, (size_t)frames * sizeof(float));
 
-        // The events that land in this block, at their offset inside it.
         int n = 0;
         while (cursor < script->count && script->events[cursor].frame < pos + frames) {
             block_events[n] = script->events[cursor].midi;
@@ -1300,7 +1121,6 @@ static bool resample_render(ResampleJob* job, int64_t* frames_done) {
         }
         host_plugin_process_events(job->plugin, block_events, block_offsets, n, ptrs, job->channel_count, frames);
 
-        // Each bus takes its pair out of the flat channels and writes it.
         int failed_bus = -1;
         for (int b = 0; b < job->bus_count && write_ok; ++b) {
             float* pair[FR_BUS_CHANNELS];
@@ -1334,8 +1154,6 @@ static bool resample_render(ResampleJob* job, int64_t* frames_done) {
     return write_ok && closed;
 }
 
-// Phase two: one file per segment, cut from the full WAV of each bus into
-// that bus's own folder.
 static bool resample_split(ResampleJob* job) {
     const ResampleScript* script = job->script;
     job->phase.store(RESAMPLE_PHASE_SPLIT);
@@ -1372,7 +1190,7 @@ static void resample_thread_main(void* user) {
     double speed = job->elapsed_seconds > 0.0 ? audio_seconds / job->elapsed_seconds : 0.0;
     float peak_db = job->peak > 0.000001f ? 20.0f * log10f(job->peak) : -120.0f;
     if (!ok) {
-        job->result_is_error = true;   // result already says what failed
+        job->result_is_error = true;
     } else if (job->cancel.load() && job->split_samples) {
         snprintf(job->result, sizeof(job->result), "Cancelled after %.1f s of audio and %d sample files.",
                  audio_seconds, job->files_written);
@@ -1381,8 +1199,6 @@ static void resample_thread_main(void* user) {
         snprintf(job->result, sizeof(job->result), "Cancelled after %.1f s of audio.", audio_seconds);
         job->result_is_error = false;
     } else {
-        // One bus names its folder; more than one names how many there were,
-        // as each wrote a folder of its own.
         char where[FR_MAX_PATH + 32];
         if (job->bus_count == 1) {
             snprintf(where, sizeof(where), "%s", job->out_dir[0]);
@@ -1394,8 +1210,6 @@ static void resample_thread_main(void* user) {
                      "Wrote %d samples to %s: %.1f s of audio in %.1f s (%.1fx realtime), peak %.1f dBFS.",
                      job->files_written, where, audio_seconds, job->elapsed_seconds, speed, peak_db);
         } else {
-            // No split: the one long WAV per bus is the whole of what the
-            // render made.
             snprintf(job->result, sizeof(job->result),
                      "Wrote %s to %s: %.1f s of audio in %.1f s (%.1fx realtime), peak %.1f dBFS.",
                      plat_path_basename(job->full_path[0]), where, audio_seconds, job->elapsed_seconds, speed, peak_db);
@@ -1425,7 +1239,6 @@ bool resample_start(ResampleJob* job, HostPlugin* plugin, const ResampleScript* 
     job->block_size = block_size > FR_MAX_BLOCK_SIZE ? FR_MAX_BLOCK_SIZE : block_size;
     job->speed = cfg->render_speed < 0 ? 0 : cfg->render_speed;
     job->split_samples = cfg->split_samples;
-    // The script's, not the tab's: the files must say what was rendered.
     job->dynamic_layers = script->dynamic_layers;
     for (int b = 0; b < job->bus_count; ++b) {
         char full_name[RESAMPLE_FILE_NAME_LEN];

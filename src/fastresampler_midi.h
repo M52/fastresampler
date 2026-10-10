@@ -1,7 +1,4 @@
 #pragma once
-// A single-producer, single-consumer ring of MIDI events. The UI thread pushes
-// (GUI keyboard, CC sliders), the audio thread pops at the start of each
-// block. Capacity is a power of two so the indices wrap with a mask.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -9,16 +6,16 @@
 #include "fastresampler_constants.h"
 
 struct MidiEvent {
-    uint8_t status;    // MIDI_STATUS_* without the channel nibble
-    uint8_t channel;   // 0..15
-    uint8_t data0;     // note / controller / bend LSB
-    uint8_t data1;     // velocity / value / bend MSB
+    uint8_t status;
+    uint8_t channel;
+    uint8_t data0;
+    uint8_t data1;
 };
 
 struct MidiQueue {
     MidiEvent events[FR_MIDI_QUEUE_CAPACITY];
-    std::atomic<uint32_t> head;   // next slot the producer writes
-    std::atomic<uint32_t> tail;   // next slot the consumer reads
+    std::atomic<uint32_t> head;
+    std::atomic<uint32_t> tail;
 };
 
 static_assert((FR_MIDI_QUEUE_CAPACITY & (FR_MIDI_QUEUE_CAPACITY - 1)) == 0,
@@ -29,7 +26,6 @@ inline void midi_queue_init(MidiQueue* q) {
     q->tail.store(0, std::memory_order_relaxed);
 }
 
-// Producer side. Returns false when the ring is full; the event is dropped.
 inline bool midi_queue_push(MidiQueue* q, MidiEvent e) {
     uint32_t head = q->head.load(std::memory_order_relaxed);
     uint32_t tail = q->tail.load(std::memory_order_acquire);
@@ -39,7 +35,6 @@ inline bool midi_queue_push(MidiQueue* q, MidiEvent e) {
     return true;
 }
 
-// Consumer side. Returns false when the ring is empty.
 inline bool midi_queue_pop(MidiQueue* q, MidiEvent* out) {
     uint32_t tail = q->tail.load(std::memory_order_relaxed);
     uint32_t head = q->head.load(std::memory_order_acquire);
@@ -58,13 +53,8 @@ inline MidiEvent midi_make(uint8_t status, int channel, int data0, int data1) {
     return e;
 }
 
-// --- Note names -------------------------------------------------------------
-// FastSampler's convention: middle C (60) is C3, so note 0 is C-2 and
-// note 127 is G8. Accidentals are '#' or 'b'.
-
-// "C#3" or "Db-1" to a MIDI note; -1 when the text is not a note.
 inline int midi_note_parse(const char* text) {
-    static const int letter_pc[7] = { 9, 11, 0, 2, 4, 5, 7 };   // A B C D E F G
+    static const int letter_pc[7] = { 9, 11, 0, 2, 4, 5, 7 };
     const char* s = text;
     while (*s == ' ') ++s;
     char letter = *s;
@@ -96,9 +86,6 @@ inline const char* midi_note_name(int note, char* buf, size_t buf_size) {
     return buf;
 }
 
-// --- Controller names -------------------------------------------------------
-
-// The name of a controller with a standard meaning, else an empty string.
 inline const char* midi_cc_name(int cc) {
     switch (cc) {
         case 0:   return "Bank select";
@@ -128,7 +115,6 @@ inline const char* midi_cc_name(int cc) {
     }
 }
 
-// "CC1 Mod wheel", or "CC3" for a controller without a name.
 inline void midi_cc_label(int cc, char* buf, size_t buf_size) {
     const char* name = midi_cc_name(cc);
     if (name[0]) {
@@ -136,10 +122,4 @@ inline void midi_cc_label(int cc, char* buf, size_t buf_size) {
     } else {
         snprintf(buf, buf_size, "CC%d", cc);
     }
-}
-
-// A white key: no sharp in its name.
-inline bool midi_note_is_white(int note) {
-    int pc = note % SEMITONES_PER_OCTAVE;
-    return pc == 0 || pc == 2 || pc == 4 || pc == 5 || pc == 7 || pc == 9 || pc == 11;
 }

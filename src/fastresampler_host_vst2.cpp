@@ -1,6 +1,3 @@
-// #pragma once (removed for unity build)
-// See fastresampler_host_vst2.h.
-
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,18 +7,12 @@
 #include "fastresampler_log.h"
 #include "platform/fastresampler_platform.h"
 
-// The most MIDI events one block carries: what the queue can hold.
 #define VST2_MAX_EVENTS FR_MIDI_QUEUE_CAPACITY
 
-// The fewest channel buffers handed to the plugin. A plugin with no input
-// may still read inputs[0], so a silent pair is always there.
 #define VST2_MIN_CHANNELS 2
 
-// Room for the strings a plugin writes: the ABI says 64 bytes, some write more.
 #define VST2_STRING_LEN 256
 
-// The event list as the plugin reads it: the header of Vst2Events, then
-// room for every pointer instead of the two the ABI declares.
 struct Vst2EventList {
     int32_t    num_events;
     intptr_t   reserved;
@@ -32,22 +23,20 @@ struct Vst2Plugin {
     void*        library;
     Vst2Effect*  effect;
     char         path[FR_MAX_PATH];
-    char         dir[FR_MAX_PATH];         // what the plugin gets as its directory
+    char         dir[FR_MAX_PATH];
 
     double       sample_rate;
     int          block_size;
     bool         offline;
-    bool         open;                     // VST2_EFF_OPEN done
-    bool         mains_on;                 // VST2_EFF_MAINS_CHANGED 1 sent
-    bool         processing;               // VST2_EFF_START_PROCESS sent
-    bool         in_process;               // inside process_replacing
-    bool         io_changed;               // the plugin reported other inputs or outputs
+    bool         open;
+    bool         mains_on;
+    bool         processing;
+    bool         in_process;
+    bool         io_changed;
 
-    // The plugin's buffers, block_size frames per channel, made on setup.
-    // The inputs stay silent.
     float**      inputs;
     float**      outputs;
-    int          input_count;              // buffers, at least VST2_MIN_CHANNELS
+    int          input_count;
     int          output_count;
 
     Vst2EventList events;
@@ -61,9 +50,6 @@ struct Vst2Plugin {
     int          editor_height;
 };
 
-// The plugin being created: its entry point calls the host back before
-// there is an effect to hang the instance on. Loads run on the UI thread
-// only, so one slot is enough.
 static Vst2Plugin* g_vst2_loading = nullptr;
 
 static Vst2Plugin* vst2_from_effect(Vst2Effect* effect) {
@@ -75,8 +61,6 @@ static intptr_t vst2_dispatch(Vst2Plugin* p, int32_t opcode, int32_t index = 0, 
                               void* ptr = nullptr, float opt = 0.0f) {
     return p->effect->dispatcher(p->effect, opcode, index, value, ptr, opt);
 }
-
-// --- The host, as the plugin sees it -------------------------------------------
 
 static intptr_t vst2_can_do(const char* feature) {
     static const char* const yes[] = {
@@ -107,16 +91,11 @@ static intptr_t VST2_CALL vst2_audio_master(Vst2Effect* effect, int32_t opcode, 
             if (!p || !p->in_process) return VST2_PROCESS_LEVEL_USER;
             return p->offline ? VST2_PROCESS_LEVEL_OFFLINE : VST2_PROCESS_LEVEL_REALTIME;
         case VST2_AM_GET_AUTOMATION_STATE:
-            return 1;   // off
+            return 1;
         case VST2_AM_IO_CHANGED:
-            // The plugin has other inputs or outputs than it had: a sampler
-            // told to send its microphones to more outputs says so here.
-            // The buffers are made again on the next setup, and the
-            // application reconfigures once it has the plugin to itself.
             if (p) p->io_changed = true;
             return 1;
         case VST2_AM_SIZE_WINDOW:
-            // The editor wants another size: the view resizes its parent.
             if (!p || !p->editor_open || index <= 0 || value <= 0) return 0;
             p->editor_width = index;
             p->editor_height = (int)value;
@@ -137,20 +116,15 @@ static intptr_t VST2_CALL vst2_audio_master(Vst2Effect* effect, int32_t opcode, 
         case VST2_AM_UPDATE_DISPLAY:
             return 1;
         default:
-            // Automation, edits, idle requests and the deprecated calls:
-            // nothing to do for a host without automation.
             return 0;
     }
 }
-
-// --- Loading -------------------------------------------------------------------
 
 static void vst2_fail(char* err, size_t err_len, const char* msg) {
     fr_strcpy(err, err_len, msg);
     fr_log("vst2: %s", msg);
 }
 
-// A string the plugin writes for an opcode; empty when it writes none.
 static void vst2_read_string(Vst2Plugin* p, int32_t opcode, char* out, size_t out_len) {
     char buf[VST2_STRING_LEN];
     memset(buf, 0, sizeof(buf));
@@ -164,8 +138,6 @@ static bool vst2_is_instrument(Vst2Plugin* p, intptr_t category) {
     return (p->effect->flags & VST2_FLAG_IS_SYNTH) != 0 || category == VST2_CATEGORY_SYNTH;
 }
 
-// The name the list and the header show: the effect's own, else the
-// product's, else the file's.
 static void vst2_read_name(Vst2Plugin* p, char* out, size_t out_len) {
     vst2_read_string(p, VST2_EFF_GET_EFFECT_NAME, out, out_len);
     if (out[0]) return;
@@ -175,15 +147,10 @@ static void vst2_read_name(Vst2Plugin* p, char* out, size_t out_len) {
     fr_strip_plugin_ext(out);
 }
 
-// Loads the DLL, creates the plugin and opens it. What load and probe share.
 static bool vst2_open(Vst2Plugin* p, const char* path, char* err, size_t err_len) {
     fr_strcpy(p->path, sizeof(p->path), path);
     fr_strcpy(p->dir, sizeof(p->dir), path);
-    size_t cut = 0;
-    for (size_t i = 0; p->dir[i]; ++i) {
-        if (p->dir[i] == '\\' || p->dir[i] == '/') cut = i + 1;
-    }
-    p->dir[cut] = '\0';
+    p->dir[plat_path_basename(p->dir) - p->dir] = '\0';
 
     p->library = plat_library_load(path, err, err_len);
     if (!p->library) return false;
@@ -211,7 +178,6 @@ static bool vst2_open(Vst2Plugin* p, const char* path, char* err, size_t err_len
     return true;
 }
 
-// Undoes vst2_open: stops, closes and frees the DLL.
 static void vst2_close(Vst2Plugin* p) {
     if (p->effect && p->open) {
         if (p->processing) vst2_dispatch(p, VST2_EFF_STOP_PROCESS);
@@ -313,7 +279,7 @@ Vst2Plugin* vst2_plugin_load(const char* path, double sample_rate, int block_siz
     if (vendor_version == 0) vendor_version = e->version;
     if (vendor_version != 0) snprintf(info->version, sizeof(info->version), "%d", (int)vendor_version);
     fr_strcpy(info->category, sizeof(info->category), "Instrument (VST 2)");
-    info->has_midi_mapping = true;   // every MIDI message reaches a VST 2 plugin as it is
+    info->has_midi_mapping = true;
     info->has_controller = (e->flags & VST2_FLAG_HAS_EDITOR) != 0;
 
     vst2_dispatch(p, VST2_EFF_SET_PROCESS_PRECISION, 0, VST2_PRECISION_FLOAT);
@@ -369,10 +335,6 @@ bool vst2_plugin_setup_processing(Vst2Plugin* p, double sample_rate, int block_s
     vst2_dispatch(p, VST2_EFF_START_PROCESS);
     p->processing = true;
     info->latency_frames = p->effect->initial_delay;
-    // The channel counts are read here, not only on the first setup: a
-    // plugin whose state was put back may have more outputs now. A VST 2
-    // plugin has no busses, so its output channels are the flat list
-    // already and they count as one bus.
     info->output_channels = p->effect->num_outputs;
     info->total_output_channels = p->effect->num_outputs > FR_MAX_RENDER_CHANNELS
                                       ? FR_MAX_RENDER_CHANNELS : p->effect->num_outputs;
@@ -380,11 +342,6 @@ bool vst2_plugin_setup_processing(Vst2Plugin* p, double sample_rate, int block_s
     return true;
 }
 
-// --- State ---------------------------------------------------------------------
-
-// The whole bank as one chunk, when the plugin keeps its state that way.
-// It writes the size and leaves the bytes in memory of its own, which stay
-// its until the next call, so they are copied straight into the block.
 static bool vst2_add_chunk_part(Vst2Plugin* p, StateBuffer* out) {
     if (!(p->effect->flags & VST2_FLAG_PROGRAM_CHUNKS)) return false;
     void* bytes = nullptr;
@@ -393,7 +350,6 @@ static bool vst2_add_chunk_part(Vst2Plugin* p, StateBuffer* out) {
     return state_add_part(out, STATE_PART_VST2_CHUNK, bytes, (size_t)size);
 }
 
-// Every parameter, one float each, for a plugin that keeps no chunks.
 static bool vst2_add_params_part(Vst2Plugin* p, StateBuffer* out) {
     int count = p->effect->num_params;
     if (count <= 0 || !p->effect->get_parameter) return false;
@@ -439,9 +395,6 @@ bool vst2_plugin_set_state(Vst2Plugin* p, const void* data, size_t size, HostPlu
         return false;
     }
 
-    // The plugin takes its state suspended, the way it would in a host
-    // opening a song; the setup below starts it again on the outputs it
-    // has then.
     if (p->processing) {
         vst2_dispatch(p, VST2_EFF_STOP_PROCESS);
         p->processing = false;
@@ -455,8 +408,6 @@ bool vst2_plugin_set_state(Vst2Plugin* p, const void* data, size_t size, HostPlu
     size_t bytes_size = 0;
     bool restored = false;
     if (state_find_part(data, size, STATE_PART_VST2_CHUNK, &bytes, &bytes_size)) {
-        // A bank chunk carries the programs as well, so the program number
-        // saved beside it is left alone: the plugin picks its own.
         vst2_dispatch(p, VST2_EFF_SET_CHUNK, 0, (intptr_t)bytes_size, (void*)bytes);
         restored = true;
     } else if (state_find_part(data, size, STATE_PART_VST2_PARAMS, &bytes, &bytes_size)) {
@@ -488,8 +439,6 @@ bool vst2_plugin_set_state(Vst2Plugin* p, const void* data, size_t size, HostPlu
         fr_strcpy(err, err_len, "The saved plugin state holds nothing this plugin can take.");
     }
 
-    // Whatever the plugin reported while it read its state is answered by
-    // this setup, which makes the buffers again for the outputs it has now.
     p->io_changed = false;
     if (!vst2_plugin_setup_processing(p, p->sample_rate, p->block_size, p->offline, info)) {
         fr_strcpy(err, err_len, "The plugin refused to start again with its saved state.");
@@ -507,8 +456,6 @@ bool vst2_plugin_take_io_change(Vst2Plugin* p) {
     return changed;
 }
 
-// --- Processing (audio thread) -------------------------------------------------
-
 static void vst2_add_midi(Vst2Plugin* p, const MidiEvent& m, int sample_offset) {
     if (p->events.num_events >= VST2_MAX_EVENTS) return;
     Vst2MidiEvent* e = &p->midi_events[p->events.num_events];
@@ -523,11 +470,9 @@ static void vst2_add_midi(Vst2Plugin* p, const MidiEvent& m, int sample_offset) 
     p->events.events[p->events.num_events++] = (Vst2Event*)e;
 }
 
-// Runs one block once this block's events are queued.
 static void vst2_run_block(Vst2Plugin* p, float* const* outputs, int channel_count, int frames) {
     if (p->events.num_events > 0) vst2_dispatch(p, VST2_EFF_PROCESS_EVENTS, 0, 0, &p->events);
 
-    // Silent inputs and clean outputs every block: a plugin may write either.
     for (int c = 0; c < p->input_count; ++c) memset(p->inputs[c], 0, (size_t)frames * sizeof(float));
     for (int c = 0; c < p->output_count; ++c) memset(p->outputs[c], 0, (size_t)frames * sizeof(float));
 
@@ -535,15 +480,9 @@ static void vst2_run_block(Vst2Plugin* p, float* const* outputs, int channel_cou
     p->effect->process_replacing(p->effect, p->inputs, p->outputs, frames);
     p->in_process = false;
 
-    // A VST 2 plugin has one flat set of output channels, which is already
-    // the list this program picks its stereo pairs out of: outputs 3/4 of a
-    // multi-miced instrument are channels 2 and 3.
     int plugin_channels = p->effect->num_outputs;
     for (int c = 0; c < channel_count; ++c) {
         int src = c;
-        // A mono plugin feeds both of the first pair; past that a channel
-        // the plugin does not have is silence, not a copy of another
-        // microphone.
         if (src >= plugin_channels) {
             if (src != 1 || plugin_channels != 1) continue;
             src = 0;
@@ -576,9 +515,6 @@ void vst2_plugin_process_events(Vst2Plugin* p, const MidiEvent* events, const in
     vst2_run_block(p, outputs, channel_count, frames);
 }
 
-// --- Editor --------------------------------------------------------------------
-
-// The editor's size as the plugin reports it now; false when it reports none.
 static bool vst2_editor_rect(Vst2Plugin* p, int* width, int* height) {
     Vst2Rect* rect = nullptr;
     vst2_dispatch(p, VST2_EFF_EDIT_GET_RECT, 0, 0, &rect);
@@ -606,12 +542,9 @@ bool vst2_plugin_editor_attach(Vst2Plugin* p, void* parent_window, HostResizeFn 
     if (!p->effect || !parent_window) return false;
     p->resize_fn = resize_fn;
     p->resize_user = user;
-    // The return value is not trusted: plugins answer 0 for an editor that
-    // did open. The rectangle after the open says what happened.
     vst2_dispatch(p, VST2_EFF_EDIT_OPEN, 0, 0, parent_window);
     p->editor_open = true;
 
-    // Some plugins only know their size once the editor is open.
     int w = 0, h = 0;
     if (vst2_editor_rect(p, &w, &h) && (w != p->editor_width || h != p->editor_height)) {
         p->editor_width = w;
@@ -629,10 +562,6 @@ void vst2_plugin_editor_close(Vst2Plugin* p) {
     p->resize_user = nullptr;
 }
 
-bool vst2_plugin_editor_is_open(const Vst2Plugin* p) {
-    return p->editor_open;
-}
-
 void vst2_plugin_editor_idle(Vst2Plugin* p) {
     if (p->editor_open && p->effect) vst2_dispatch(p, VST2_EFF_EDIT_IDLE);
 }
@@ -646,8 +575,6 @@ void vst2_plugin_editor_size(Vst2Plugin* p, int* width, int* height) {
     *width = p->editor_width;
     *height = p->editor_height;
 }
-
-// --- The scan's probe ------------------------------------------------------------
 
 bool vst2_probe(const char* path, char* name, size_t name_len, bool* is_instrument, char* err, size_t err_len) {
     err[0] = '\0';

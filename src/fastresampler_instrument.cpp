@@ -1,7 +1,3 @@
-// #pragma once (removed for unity build)
-// See fastresampler_instrument.h. The FastSampler format headers and the
-// nanopb runtime are included by the unity root before this file.
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,89 +6,42 @@
 #include "fastresampler_rzc.h"
 #include "fastresampler_wav.h"
 #include "fastresampler_loop.h"
+#include "fastresampler_legato.h"
 #include "fastresampler_fingerprint.h"
 #include "fastresampler_helpers.h"
 #include "fastresampler_log.h"
 
-// The bank is written at the depth the tab picked, 16 or 24 bit: the two the
-// format carries, and the two FastSampler's own export offers. Two or three
-// little-endian bytes per sample, packed, at both depths.
-
-// A zone's release in seconds. Zones in FastSampler default to none, which
-// cuts a note at the key-up; a short tail keeps a mapped instrument playable
-// before the user has touched anything.
-#define INSTRUMENT_ZONE_RELEASE_SECONDS 0.25f
-
-// A release sample's attack. It begins at the note-off of a note that was
-// still sounding, so its first sample is whatever level the note had got to,
-// not silence. Started flat it steps from nothing to that level, which is a
-// click on every key-up. This is only long enough to take the step off: a
-// release is what rings out after the key, and a longer rise would eat the
-// one part of it that is loud. Smart release puts the sustain's own release
-// in its place whenever it finds the sustain sounding, as the release then
-// fades in against it (instrument_fill_smart_release_fx); this is what a
-// release plays with when there is nothing to read.
+#define INSTRUMENT_ZONE_RELEASE_SECONDS   0.25f
 #define INSTRUMENT_RELEASE_ATTACK_SECONDS 0.01f
 
-// A sustain's loop, with dynamic layers: it starts this long after the
-// note-on and ends this long before the note-off, so the attack and the
-// last moments of the hold stay out of it, and crosses over the loop point
-// for this long, equal power, so the join does not click. Both give way on
-// a hold too short for them.
-//
-// These are where the loop starts out, not where it ends up: once the full
-// WAV is open, instrument_refine_loops() moves both points onto the
-// waveform -- loop_start to where the attack has settled and the level
-// matches across the wrap, loop_end to the nearest loop length that
-// crossfades in phase. See fastresampler_loop.h. A zone the analysis cannot
-// read, or cannot find stable phase in, keeps the timed points below.
 #define INSTRUMENT_LOOP_MARGIN_SECONDS 0.25f
 #define INSTRUMENT_LOOP_XFADE_SECONDS  0.2f
-// FastSampler's loop crossfade shapes, as its .rzc names them: 2 is Equal Power.
 #define INSTRUMENT_XFADE_EQUAL_POWER   2
 
-// The crossfade of the dynamic layers: FastSampler's gain effect on the
-// sustains and the moves of every layer, driven by one controller through a
-// curve, between this floor and 0 dB, with this much lag so the
-// controller's 7-bit steps do not step the level. The curves go in
-// FastSampler's first curve group, so it draws them over one another.
 #define INSTRUMENT_LAYER_FLOOR_DB      -50.0f
 #define INSTRUMENT_LAYER_LAG_MS        10.0f
 #define INSTRUMENT_LAYER_CURVE_GROUP   1
 #define INSTRUMENT_HALF_PI             1.5707963f
 
-// The spectral morph between the layers, as FastSampler's panel starts it:
-// how long the morph takes to follow the controller, and the most the
-// filter may lift a band toward a brighter layer. See
-// fastresampler_fingerprint.h.
 #define INSTRUMENT_MORPH_SMOOTH_MS     30.0f
 #define INSTRUMENT_MORPH_MAX_BOOST_DB  12.0f
 
-// The mapping of one zone: its span of keys and velocities, and the part of
-// the full WAV it plays. A round robin run maps every segment once, whole.
-// A dynamic layer run maps a sustain twice: the held note as a looped
-// sustain, and what rings out past the note-off as a release sample. A
-// transition is one zone, cut at the blend past where it lands.
 struct InstrumentZoneMap {
-    int segment;             // index into the script's segments
+    int segment;
     int low_note, high_note, root_note;
     int low_velocity, high_velocity;
-    int collection;          // 0-based; the zones of one collection are contiguous
-    bool release;            // the release half: from the note-off to the end
-    bool transition;         // a transition between two notes; root_note is the one it leaves
-    int64_t first_frame;     // in the full WAV
+    int collection;
+    bool release;
+    bool transition;
+    int64_t first_frame;
     int64_t frame_count;
-    uint32_t loop_start;     // a looped sustain, relative to first_frame; both 0 without a loop
+    uint32_t loop_start;
     uint32_t loop_end;
     uint32_t xfade_frames;
-    uint32_t departure;      // a transition: where it departs, from first_frame
-    uint32_t arrival;        // a transition: where it lands, from first_frame
+    uint32_t departure;
+    uint32_t arrival;
 };
 
-// --- The collections of a run -----------------------------------------------------
-// One per round robin or dynamic layer, then one per layer's releases, then
-// one per layer and legato interval. Collection c holds a contiguous run of
-// zones either way, as FSICollection.first_zone_index needs.
 enum InstrumentCollectionKind {
     INSTRUMENT_COL_SUSTAIN = 0,
     INSTRUMENT_COL_RELEASE,
@@ -103,20 +52,14 @@ enum InstrumentCollectionKind {
 
 struct InstrumentCollectionPlan {
     int kind;
-    int layer;       // 1-based
-    int interval;    // a transition: the interval it holds
+    int layer;
+    int interval;
 };
 
-// The transitions are captured once per dynamic layer, and once for every other
-// run: a round robin run gives all its sustain collections the same
-// transitions.
 static int instrument_transition_layers(const ResampleScript* script) {
     return script->dynamic_layers ? script->round_robin_count : 1;
 }
 
-// Returns how many collections the run needs, filling out with as many as it
-// holds: the caller reports a run that asks for more than the format can
-// carry rather than dropping the rest.
 static int instrument_plan(const ResampleScript* script, InstrumentCollectionPlan* out, int max_out) {
     int count = 0;
     for (int k = 1; k <= script->round_robin_count; ++k) {
@@ -127,12 +70,6 @@ static int instrument_plan(const ResampleScript* script, InstrumentCollectionPla
         }
         count++;
     }
-    // The releases of a layered run sit in a collection of their own, so the
-    // sample map does not lay them under the notes they belong to, where they
-    // are hard to even pick out. A legato run too: the collection names its
-    // layer as the one whose releases it holds, which is how FastSampler
-    // still knows to hold a release back for a note a transition has taken over --
-    // the mark that says so is on the layer, not on the releases.
     if (script->dynamic_layers) {
         for (int k = 1; k <= script->round_robin_count; ++k) {
             if (count < max_out) {
@@ -159,7 +96,6 @@ static int instrument_plan(const ResampleScript* script, InstrumentCollectionPla
     return count;
 }
 
-// "RR1", "dyn1", "dyn1-release", "leg+2" or "dyn1-leg-1".
 static void instrument_collection_name(const ResampleScript* script, const InstrumentCollectionPlan* plan,
                                        char* out, size_t out_len) {
     char layer[RESAMPLE_LAYER_SUFFIX_LEN];
@@ -174,9 +110,6 @@ static void instrument_collection_name(const ResampleScript* script, const Instr
     snprintf(out, out_len, "%s%s", layer, plan->kind == INSTRUMENT_COL_RELEASE ? "-release" : "");
 }
 
-// The collection of one kind in one layer: its sustains, which are what its
-// releases belong to, its releases, or its moves of one interval. A layer
-// has exactly one of each.
 static int instrument_find_collection(const InstrumentCollectionPlan* plan, int count, int kind, int layer, int interval) {
     for (int c = 0; c < count; ++c) {
         if (plan[c].kind != kind || plan[c].layer != layer) continue;
@@ -186,15 +119,12 @@ static int instrument_find_collection(const InstrumentCollectionPlan* plan, int 
     return -1;
 }
 
-// Which field of a segment a distinct list is taken over.
 enum InstrumentField {
     INSTRUMENT_FIELD_NOTE = 0,
     INSTRUMENT_FIELD_VELOCITY,
     INSTRUMENT_FIELD_SOURCE
 };
 
-// Whether a segment belongs to the part of the run a mapping is working on.
-// A layer or an interval of 0 keeps every one of them.
 static bool instrument_segment_matches(const ResampleSegment* seg, int kind, int layer, int interval) {
     if (seg->kind != kind) return false;
     if (layer != 0 && seg->round_robin != layer) return false;
@@ -202,7 +132,6 @@ static bool instrument_segment_matches(const ResampleSegment* seg, int kind, int
     return true;
 }
 
-// Sorted distinct values of one field over the segments a filter keeps.
 static int instrument_distinct(const ResampleScript* script, int kind, int layer, int interval,
                                int field, int* out, int max_out) {
     int count = 0;
@@ -226,8 +155,6 @@ static int instrument_distinct(const ResampleScript* script, int kind, int layer
     return count;
 }
 
-// The key range a sampled note covers. A key between two samples goes to the
-// nearer one; the middle key of an even gap goes up, so it is pitched down.
 static void instrument_note_span(const int* notes, int count, int index, int* low, int* high) {
     if (index == 0) {
         *low = notes[0];
@@ -248,9 +175,6 @@ static void instrument_velocity_span(const int* velocities, int count, int index
     *high = index == count - 1 ? MIDI_VALUE_MAX : velocities[index];
 }
 
-// The sustain zones of one collection: every sampled note at every sampled
-// velocity, as the held note or as what rings out past its note-off.
-// Returns how many were written.
 static int instrument_map_sustains(const ResampleScript* script, InstrumentZoneMap* out, int collection,
                                    int layer, bool release) {
     int notes[MIDI_NOTE_COUNT];
@@ -274,7 +198,7 @@ static int instrument_map_sustains(const ResampleScript* script, InstrumentZoneM
                     break;
                 }
             }
-            if (seg < 0) continue;   // a run that was cut short
+            if (seg < 0) continue;
             const ResampleSegment* s = &script->segments[seg];
             InstrumentZoneMap* z = &out[count];
             memset(z, 0, sizeof(*z));
@@ -288,8 +212,6 @@ static int instrument_map_sustains(const ResampleScript* script, InstrumentZoneM
                 z->first_frame = s->off_frame;
                 z->frame_count = s->end_frame - s->off_frame;
             } else if (script->dynamic_layers) {
-                // The held note, looped. The margins shrink on a short
-                // hold, and the crossfade fits inside what is left.
                 z->first_frame = s->start_frame;
                 z->frame_count = s->off_frame - s->start_frame;
                 int64_t m = margin < z->frame_count / 4 ? margin : z->frame_count / 4;
@@ -309,12 +231,6 @@ static int instrument_map_sustains(const ResampleScript* script, InstrumentZoneM
     return count;
 }
 
-// The transition zones of one collection: every note a transition of this
-// interval was captured from, at every legato velocity. The key that plays
-// one is the note it is left from, so that is the zone's root and what its
-// span covers. The zone stops a blend past where the transition lands: what
-// follows in the capture is the note landed on, which the sustain plays from
-// there.
 static int instrument_map_transitions(const ResampleScript* script, InstrumentZoneMap* out, int collection,
                                       int layer, int interval) {
     int sources[MIDI_NOTE_COUNT];
@@ -360,9 +276,6 @@ static int instrument_map_transitions(const ResampleScript* script, InstrumentZo
     return count;
 }
 
-// The zones in file order, collection by collection. Each collection's zones
-// are contiguous, as FSICollection.first_zone_index needs. A release with
-// nothing past the note-off, from a run without a gap, is left out.
 static int instrument_map(const ResampleScript* script, InstrumentZoneMap* out,
                           const InstrumentCollectionPlan* plan, int collection_count) {
     int zone_count = 0;
@@ -378,9 +291,6 @@ static int instrument_map(const ResampleScript* script, InstrumentZoneMap* out,
     return zone_count;
 }
 
-// The zone's name, which is also its bank row's name: the sample file name,
-// "-release" before the extension for a release, shortened from the front
-// when it would not fit the format's 63 characters.
 static void instrument_zone_name(const char* prefix, const ResampleScript* script, const InstrumentZoneMap* map,
                                  char* out, size_t out_len) {
     const ResampleSegment* seg = &script->segments[map->segment];
@@ -395,28 +305,6 @@ static void instrument_zone_name(const char* prefix, const ResampleScript* scrip
     snprintf(out, out_len, "%s%s", short_prefix, suffix);
 }
 
-// A zone as FastSampler reads it. The frames are those of the file the zone
-// plays, and offset is where the zone's part of that file begins: 0 in the
-// bank, where every zone is a sample of its own, and the note-off of the
-// split file for a release in an .rzc. A dynamic layer run's zones ignore
-// velocity for their level, as the layers carry the dynamics, and so do a
-// legato run's: there the key is pressed at whatever velocity picks the
-// transition, and a slur played softly to make it slow must not come out
-// quiet as well. A transition always does, as its level belongs to the one
-// that was captured.
-//
-// A release carries an attack of its own, short, because it starts at the
-// note-off of a note that was still sounding and would otherwise step from
-// silence to that level on every key-up.
-//
-// A transition carries no envelope of its own and two more frames.
-// departureframe and arrivalframe are the two bounds of the transition, and
-// FastSampler's legato effect shapes every edge from them: it starts the
-// voice one fade-in before the departure, fading the note being left across
-// that same time, and fades the voice out at the arrival while the sustain
-// of the note landed on rises, so neither sustain sounds while the pitch is
-// on its way between them. A zone attack or release here would double one
-// of those fades with a curve that is not its complement.
 static void instrument_fill_zone(FSIZone* dst, const char* name, const InstrumentZoneMap* map, uint32_t offset,
                                  bool ignore_velocity) {
     uint32_t frames = (uint32_t)map->frame_count;
@@ -456,10 +344,6 @@ static void instrument_fill_zone(FSIZone* dst, const char* name, const Instrumen
     dst->has_departureframe = true;     dst->departureframe = map->transition ? offset + map->departure : 0;
 }
 
-// --- The crossfade of the layers --------------------------------------------------
-
-// The controller the instrument crossfades its layers on: the one the curves
-// tied to a layer were drawn for, else the mod wheel.
 static int instrument_layer_controller(const ResampleConfig* cfg) {
     for (int i = 0; i < cfg->cc_curve_count; ++i) {
         if (cfg->cc_curves[i].layer > 0) return cfg->cc_curves[i].controller;
@@ -467,17 +351,10 @@ static int instrument_layer_controller(const ResampleConfig* cfg) {
     return MIDI_CC_MOD_WHEEL;
 }
 
-// Where layer k of n is at 0 dB over the controller's range, 0 to 1: at
-// k/n. The gain curves and the morph both place a layer here.
 static float instrument_layer_peak(int layer, int layer_count) {
     return (float)layer / (float)layer_count;
 }
 
-// The gain curve of one layer over the controller's range, as the driver
-// reads it: 0 for the floor, 1 for 0 dB. Layer k of n is at 0 dB at k/n of
-// the range, the first from the bottom up to 1/n and the last at the top.
-// Between the peaks of two layers the lower fades out and the upper in by
-// an equal power law, so a note keeps its level while the controller moves.
 static void instrument_layer_curve(int layer, int layer_count, float* out) {
     float n = (float)layer_count;
     float lo = instrument_layer_peak(layer - 1, layer_count);
@@ -503,10 +380,6 @@ static void instrument_layer_curve(int layer, int layer_count, float* out) {
     }
 }
 
-// A driver that sets one parameter of an effect from the controller, from
-// out_min at the bottom of its range to out_max at the top, in a straight
-// line until a curve is given it, with FastSampler's defaults for every
-// setting a controller does not use.
 static void instrument_fill_cc_driver(FSICollectionFXDriver* d, int target_param, int controller,
                                       float out_min, float out_max) {
     memset(d, 0, sizeof(*d));
@@ -528,8 +401,6 @@ static void instrument_fill_cc_driver(FSICollectionFXDriver* d, int target_param
     d->has_hold_fall_ms = true;      d->hold_fall_ms = CFX_HOLD_FALL_DEFAULT_MS;
 }
 
-// FastSampler's gain effect on one collection, its level driven by the
-// controller through the curve of the collection's layer.
 static void instrument_fill_layer_fx(FSICollectionFX* fx, int collection_index, int layer, int layer_count, int controller) {
     static_assert(sizeof(FSICollectionFXDriver::curve_data) / sizeof(float) >= MOD_CURVE_POINTS,
                   "the driver's curve must hold FastSampler's curve points");
@@ -549,12 +420,6 @@ static void instrument_fill_layer_fx(FSICollectionFX* fx, int collection_index, 
     instrument_layer_curve(layer, layer_count, d->curve_data);
 }
 
-// FastSampler's spectral morph filter on one collection of a layer, the
-// morph driven straight by the controller. The collection's own place on
-// the morph is where its layer peaks, and the fingerprints it morphs toward
-// sit where theirs do (instrument_fill_morph_targets). Between two layers,
-// then, the lower one is bent toward the upper as it fades, the upper comes
-// in bent toward the lower, and each is itself at its own peak.
 static void instrument_fill_morph_fx(FSICollectionFX* fx, int collection_index, int layer, int layer_count, int controller) {
     memset(fx, 0, sizeof(*fx));
     fx->type = (uint32_t)COLLECTION_FX_SPECTRAL_MORPH;
@@ -569,9 +434,6 @@ static void instrument_fill_morph_fx(FSICollectionFX* fx, int collection_index, 
     instrument_fill_cc_driver(&fx->drivers[0], CFX_SMF_MORPH, controller, 0.0f, 1.0f);
 }
 
-// A collection's fingerprint file: beside the instrument, named as its .rzc
-// is, and always a whole path, because FastSampler opens a morph target's
-// path as it stands. False when it would not fit out.
 static bool instrument_fingerprint_path(const InstrumentJob* job, const InstrumentCollectionPlan* plan,
                                         char* out, size_t out_len) {
     char collection_name[32];
@@ -583,11 +445,6 @@ static bool instrument_fingerprint_path(const InstrumentJob* job, const Instrume
     return strlen(path) < sizeof(path) - 1 && plat_path_absolute(path, out, out_len);
 }
 
-// The fingerprints one collection of a layer morphs toward: the collection
-// of the same kind in every other layer -- its sustains, its releases, its
-// moves of the same interval -- each placed where that layer peaks. A layer
-// whose fingerprint was not written is left out, and the morph runs between
-// the layers that remain. False when none remain.
 static bool instrument_fill_morph_targets(FSISMFFingerprints* fp, const InstrumentJob* job,
                                           const InstrumentCollectionPlan* plan, int collection_count,
                                           int c, int file_index, const bool* fingerprinted) {
@@ -608,15 +465,6 @@ static bool instrument_fill_morph_targets(FSISMFFingerprints* fp, const Instrume
     return fp->target_paths_count > 0;
 }
 
-// --- The releases ------------------------------------------------------------------
-
-// FastSampler's Smart release on a collection of releases. At the key-up it
-// reads the level the layer's sustain was sounding at -- past that
-// collection's effects, so with whatever the crossfade had made of it --
-// starts the release there, and fades it in over the sustain's own release
-// as that fades out. These are the panel's defaults but for how far the
-// level may move, which is all the way: a layer the controller has all but
-// faded sits at the floor, and its release has to follow it down there.
 static void instrument_fill_smart_release_fx(FSICollectionFX* fx, int collection_index) {
     memset(fx, 0, sizeof(*fx));
     fx->type = (uint32_t)COLLECTION_FX_SMART_RELEASE;
@@ -632,19 +480,6 @@ static void instrument_fill_smart_release_fx(FSICollectionFX* fx, int collection
     fx->params[CFX_SREL_ATTACK_BEND] = 0.0f;
 }
 
-// --- Legato --------------------------------------------------------------------
-
-// FastSampler's legato effect on one sustain collection, with the sampler's
-// own defaults for every fade and the two things this run knows better.
-// The fades are clamped to the margin, which is all the room a transition
-// has for them. When the run captured the transitions at more than one
-// velocity, those
-// layers are the library's legato speeds, and the sampler's own reading of
-// the playing speed is what should pick between them; a single layer is
-// played at the velocity of the note, as any zone is.
-//
-// The shape is equal power: the two sides of each crossfade are separate
-// takes of the same note, which add as power rather than as amplitude.
 static void instrument_fill_legato_fx(FSICollectionFX* fx, int collection_index, const ResampleScript* script,
                                       float window_ms) {
     memset(fx, 0, sizeof(*fx));
@@ -678,33 +513,10 @@ static void instrument_fill_legato_fx(FSICollectionFX* fx, int collection_index,
     fx->params[CFX_LEGATO_RETURN_LENGTH_FAST] = 100.0f;
 }
 
-// The intervals one link row answers for: its own, and nothing else.
-//
-// A row used to cover the widths either side of the one it was recorded at,
-// so a leap the run never captured still played the nearest move it did.
-// That is wrong, and audibly so. A move is a recording of two particular
-// notes, and it is played at the note it is left from, so the note it lands
-// on is fixed: answer a fourth with the move of a second and the transition
-// arrives a tone above the key that was pressed, which is then heard under
-// the sustain of the right note as a passing note that was never played.
-// An interval with no recording of its own gets no link, so FastSampler
-// resolves no move and changes note without one -- no move at all being the
-// only honest answer, and the quiet one.
-static void instrument_link_band(const ResampleScript* script, int index, int* low, int* high) {
-    *low = *high = script->intervals[index];
-}
-
-// --- The bank ------------------------------------------------------------------
-
-// The bytes one sample takes at a bank's depth. Anything but 16 is 24, which
-// is how the format's own reader reads the field.
 static int instrument_bytes_per_sample(int bits) {
     return bits == 16 ? 2 : 3;
 }
 
-// One float sample as the bank's integer at that depth. Both clamps are
-// needed: the first keeps the multiply in range, the second holds the
-// positive rail, which is one step below the scale.
 static int32_t instrument_sample_int(float s, int bits) {
     float   scale = bits == 16 ? PCM_ENCODE_16BIT : PCM_ENCODE_24BIT;
     int32_t low   = bits == 16 ? PCM_MIN_16BIT : PCM_MIN_24BIT;
@@ -715,7 +527,6 @@ static int32_t instrument_sample_int(float s, int bits) {
     return v;
 }
 
-// Float frames to the bank's packed little-endian samples at that depth.
 static void instrument_pcm_pack(const float* src, uint8_t* dst, size_t sample_count, int bits) {
     size_t bytes = (size_t)instrument_bytes_per_sample(bits);
     for (size_t i = 0; i < sample_count; ++i) {
@@ -727,22 +538,11 @@ static void instrument_pcm_pack(const float* src, uint8_t* dst, size_t sample_co
     }
 }
 
-// --- WavPack ---------------------------------------------------------------------
-// The streamed part of a sample is compressed the way FastSampler's own
-// export compresses it: at the bank's depth, normal mode, in WavPack blocks
-// of this many frames, which is also the chunk the packer is fed in.
-// FastSampler's engine reads a stream in buffers of 4096, 8192 or 16384
-// frames, and a seek into the middle of a block decodes from the block's
-// start and throws the frames away, so every buffer start must be a block
-// edge. Left unset, WavPack would pick about 11000 frames a block.
-
 #define INSTRUMENT_PACK_BLOCK_FRAMES     4096
 #define INSTRUMENT_PACK_FIRST_CAPACITY   65536
-// WAVE channel masks: front-centre for mono, front-left and front-right for stereo.
 #define INSTRUMENT_WP_CHANNEL_MASK_MONO   4
 #define INSTRUMENT_WP_CHANNEL_MASK_STEREO 3
 
-// Where the encoder puts its blocks: one growing buffer per stream.
 struct InstrumentPackBuffer {
     uint8_t* data;
     size_t   size;
@@ -769,8 +569,6 @@ static int instrument_pack_output(void* id, void* data, int32_t count) {
     return 1;
 }
 
-// Float frames to one WavPack stream. False, with nothing kept, when the
-// library refused; the log says what it said.
 static bool instrument_compress(const float* pcm, int frames, int channels, int sample_rate, int bits,
                                 InstrumentPackBuffer* out) {
     memset(out, 0, sizeof(*out));
@@ -810,12 +608,6 @@ static bool instrument_compress(const float* pcm, int frames, int channels, int 
     return ok;
 }
 
-// The bank: every zone is its own stored sample. In RAM mode each sample is
-// held whole in the preload block and nothing streams. Otherwise each sample
-// keeps its first preload frames in the block and the rest follows, WavPack
-// compressed, in a stream of its own: FastSampler's own layout for a sample
-// one zone plays. Rows are written in zone order because the loader pairs
-// row i with zone i.
 static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const InstrumentZoneMap* map, int zone_count,
                                  FSBZoneEntry* rows, const char (*names)[MAX_NAME_LENGTH]) {
     FILE* f = fopen(job->fsb_path, "wb");
@@ -837,17 +629,10 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
     header.bps = (uint32_t)bits;
     header.preload_offset = sizeof(FSBHeader) + sizeof(FSBZoneEntry) * (uint64_t)zone_count;
 
-    // Placeholders; the header and the rows are rewritten once the sizes are known.
     bool ok = fwrite(&header, sizeof(header), 1, f) == 1;
     ok = ok && fwrite(rows, sizeof(FSBZoneEntry), (size_t)zone_count, f) == (size_t)zone_count;
+    if (!ok) snprintf(job->result, sizeof(job->result), "Could not write %s", job->fsb_path);
 
-    // The preload block: the resident head of every sample, one after the other.
-    //
-    // A legato voice starts deep inside its sample: a transition one fade-in
-    // before its departure, a sustain landed on past its attack, at the
-    // legato effect's landing start. Both keep the same resident headroom
-    // ahead of them that any note has at its start, or their first block
-    // waits on the disk. FastSampler's own exporter applies the same rule.
     const ResampleScript* script = job->script;
     int64_t land_start = (int64_t)((double)LEGATO_DEFAULT_START_MS * wav->sample_rate / 1000.0 + 0.5);
     uint64_t preload_frame = 0;
@@ -887,13 +672,11 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
         row->sample_frames = (uint32_t)frames;
         row->stream_offset = 0;
         row->stream_size = 0;
-        row->stream_first_frame = (uint64_t)preload;   // the stream, when there is one, starts past the preload
+        row->stream_first_frame = (uint64_t)preload;
         preload_frame += (uint64_t)preload;
     }
     header.preload_size = preload_frame * (uint64_t)channels * (uint64_t)bytes_per_sample;
 
-    // The streams: what each sample holds past its preload. The file position
-    // is counted here rather than asked, so a bank past 2 GB keeps its offsets.
     uint64_t write_pos = header.preload_offset + header.preload_size;
     for (int z = 0; z < zone_count && ok; ++z) {
         if (job->cancel.load()) break;
@@ -918,8 +701,6 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
                 break;
             }
         }
-        // The zones of the busses already built come first, so the bar runs
-        // once over the whole export rather than starting again per bus.
         job->progress.store(job->progress_done + z + 1);
     }
 
@@ -933,25 +714,14 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
     return ok;
 }
 
-// --- The fingerprints ------------------------------------------------------------
-
-// Whether the instrument morphs between its layers, which takes two.
 static bool instrument_morphs(const ResampleScript* script) {
     return script->dynamic_layers && script->round_robin_count > 1;
 }
 
-// The steps one bus's build counts on the bar: every zone into the bank,
-// and every zone again when it is measured for the morph.
 static int instrument_progress_units(const ResampleScript* script, int zone_count) {
     return instrument_morphs(script) ? zone_count * 2 : zone_count;
 }
 
-// One fingerprint file per collection of a layered run, beside the
-// instrument, as every collection is a morph target of the same collection
-// in the other layers. fingerprinted[c] says which were written. One that
-// could not be is only logged: the others morph between the layers that
-// remain, and the layers crossfade on gain either way. Returns how many
-// were written.
 static int instrument_write_fingerprints(InstrumentJob* job, WavReader* wav, const InstrumentZoneMap* map, int zone_count,
                                          const char (*names)[MAX_NAME_LENGTH],
                                          const InstrumentCollectionPlan* plan, int collection_count,
@@ -976,8 +746,6 @@ static int instrument_write_fingerprints(InstrumentJob* job, WavReader* wav, con
     for (int c = 0; c < collection_count && !job->cancel.load(); ++c) {
         int count = 0;
         bool readable = true;
-        // The zones of a collection are contiguous and the collections in
-        // order, so the zone's index keeps the bar moving forward.
         for (int z = 0; z < zone_count && readable; ++z) {
             if (map[z].collection != c) continue;
             SMFPZoneEntry* e = &entries[count++];
@@ -1023,16 +791,11 @@ static int instrument_write_fingerprints(InstrumentJob* job, WavReader* wav, con
     return written;
 }
 
-// --- The instrument ---------------------------------------------------------------
-
 static bool instrument_pb_write_callback(pb_ostream_t* stream, const uint8_t* buf, size_t count) {
     FILE* f = (FILE*)stream->state;
     return fwrite(buf, 1, count, f) == count;
 }
 
-// magic(4) + payload size(4) + the encoded FSIFile, as fastsampler_pb.cpp writes it.
-// fingerprinted says which collections left a fingerprint for the other
-// layers to morph toward.
 static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* map, int zone_count,
                                  const char (*names)[MAX_NAME_LENGTH],
                                  const InstrumentCollectionPlan* plan, int collection_count,
@@ -1048,10 +811,6 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
     snprintf(msg->instrument_name, sizeof(msg->instrument_name), "%s %s", job->cfg.instrument, job->cfg.articulation);
     fr_strcpy(msg->fsb_path, sizeof(msg->fsb_path), plat_path_basename(job->fsb_path));
 
-    // The collections the plan asked for, each over a contiguous run of
-    // zones. One left without zones is dropped, so the file's index of each
-    // that stays is kept for its effects. The stable id is the plan's own
-    // index, which the link rows name either end by.
     int fsi_index[INSTRUMENT_MAX_COLLECTIONS];
     int sustain_step[INSTRUMENT_MAX_COLLECTIONS];
     int sustains = 0;
@@ -1073,15 +832,10 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
         col->zone_count = (uint32_t)count;
         col->modulator_count = 0;
         col->first_zone_index = (uint32_t)first;
-        // A collection of transitions is only ever reached through a link, never
-        // from the keyboard.
         col->has_flags = true;
         col->flags = plan[c].kind == INSTRUMENT_COL_TRANSITION ? COLLECTION_FLAG_REFERENCED : 0;
         col->has_stable_id = true;  col->stable_id = (uint32_t)(c + 1);
         col->has_output_bus = true; col->output_bus = 0;
-        // Whose releases these are: the sustain collection of the same layer,
-        // which the plan lays down first, one per layer, so that layer's own
-        // index is its plan index.
         col->has_release_of = true;
         col->release_of = plan[c].kind == INSTRUMENT_COL_RELEASE
                           ? (uint32_t)instrument_find_collection(plan, collection_count, INSTRUMENT_COL_SUSTAIN, plan[c].layer, 0) + 1
@@ -1091,14 +845,6 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
     msg->collection_fx_count = 0;
     msg->smf_fingerprints_count = 0;
     if (script->dynamic_layers) {
-        // The sustains and the moves of every layer get the gain effect with
-        // the curve of their layer, so a move comes in at the level of the
-        // layer that was sounding. The releases get Smart release instead,
-        // which starts each at the level its sustain was sounding at, the
-        // crossfade included. With more than one layer, every collection
-        // also morphs toward the same collection of the others. A single
-        // layer has nothing to crossfade, but its releases still meet its
-        // sustain.
         bool layered = script->round_robin_count > 1;
         int controller = instrument_layer_controller(&job->cfg);
         for (int c = 0; c < collection_count; ++c) {
@@ -1117,12 +863,6 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
             }
         }
     } else if (sustains > 1) {
-        // With more than one round robin, every sustain collection gets
-        // FastSampler's round robin effect on one shared instrument counter:
-        // each note advances the counter, and collection k sounds when it
-        // stands at k. That is how FastSampler links round robin
-        // collections; no link rows are involved. The moves are shared by
-        // all of them and take no turn of their own.
         for (int c = 0; c < collection_count; ++c) {
             if (fsi_index[c] < 0 || sustain_step[c] == 0) continue;
             FSICollectionFX* fx = &msg->collection_fx[msg->collection_fx_count++];
@@ -1135,19 +875,12 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
             fx->params[CFX_RR_END] = (float)sustains;
             fx->params[CFX_RR_ACTIVATE_STEP] = (float)sustain_step[c];
             fx->params[CFX_RR_GLOBAL_COUNTER] = 1.0f;
-            fx->params[CFX_RR_MODE] = 0.0f;   // sequence
+            fx->params[CFX_RR_MODE] = 0.0f;
         }
     }
 
-    // The legato effect on every sustain collection, and one link row per
-    // interval from it to the collection of moves that answers for that
-    // interval. A layered run gives each layer its own moves; every other
-    // run shares the one set.
     msg->collection_links_count = 0;
     if (script->legato) {
-        // The capture's overlap is how long the note left stayed down after
-        // the next went down, so a key that comes up that soon before the
-        // next goes down still counts as the note a move leaves from.
         float window_ms = job->cfg.legato_overlap_seconds * 1000.0f;
         for (int c = 0; c < collection_count; ++c) {
             if (fsi_index[c] < 0 || plan[c].kind != INSTRUMENT_COL_SUSTAIN) continue;
@@ -1157,17 +890,13 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
             for (int i = 0; i < script->interval_count; ++i) {
                 int target = instrument_find_collection(plan, collection_count, INSTRUMENT_COL_TRANSITION, layer, script->intervals[i]);
                 if (target < 0 || fsi_index[target] < 0) continue;
-                int low, high;
-                instrument_link_band(script, i, &low, &high);
                 FSICollectionLink* link = &msg->collection_links[msg->collection_links_count++];
                 memset(link, 0, sizeof(*link));
                 link->owner_id = (uint32_t)(c + 1);
                 link->target_id = (uint32_t)(target + 1);
-                link->interval_low = low;
-                link->interval_high = high;
+                link->interval_low = script->intervals[i];
+                link->interval_high = script->intervals[i];
                 link->owner_fx_type = (uint32_t)COLLECTION_FX_LEGATO;
-                // No flags: a move is played at the note it is left from,
-                // which is the note its zones are mapped and rooted on.
                 link->has_flags = true;
                 link->flags = 0;
             }
@@ -1207,14 +936,6 @@ static bool instrument_write_fsi(InstrumentJob* job, const InstrumentZoneMap* ma
     return ok;
 }
 
-// --- The readable zone collections -----------------------------------------------
-
-// One .rzc per collection, beside the instrument: its zones, each naming
-// the sample file the split wrote for it. A split file spans the whole
-// segment, so a sustain's zone plays its front and a release's zone the
-// part past the note-off. The zones are filled by the same function the
-// .fsi uses, so the two agree by construction. FastSampler opens the paths
-// as they stand, so they go in whole rather than relative to the file.
 static bool instrument_write_rzc(InstrumentJob* job, const InstrumentZoneMap* map, int zone_count,
                                  const char (*names)[MAX_NAME_LENGTH],
                                  const InstrumentCollectionPlan* plan, int collection_count) {
@@ -1228,8 +949,6 @@ static bool instrument_write_rzc(InstrumentJob* job, const InstrumentZoneMap* ma
         return false;
     }
 
-    // The split samples the zones name are in the folder the render wrote
-    // to for this bus, which is the bus being built now.
     char sample_dir[FR_MAX_PATH];
     char dir_err[FR_STATUS_LEN];
     if (!resample_output_dir(&job->cfg, job->target, sample_dir, sizeof(sample_dir), dir_err, sizeof(dir_err))) {
@@ -1266,13 +985,6 @@ static bool instrument_write_rzc(InstrumentJob* job, const InstrumentZoneMap* ma
     return ok;
 }
 
-// --- The worker ------------------------------------------------------------------
-
-// The loop points the clock gave every sustain, moved onto the waveform.
-// One analyser serves the whole run, sized for the longest held note, and
-// each zone reads its own hold once. A zone the analysis declines is left
-// exactly as instrument_map() left it, so the worst case here is the
-// instrument this builder made before the analysis existed.
 static void instrument_refine_loops(InstrumentJob* job, WavReader* wav, InstrumentZoneMap* map, int zone_count) {
     int64_t longest = 0;
     int looped = 0;
@@ -1322,13 +1034,6 @@ static void instrument_refine_loops(InstrumentJob* job, WavReader* wav, Instrume
            analysed - aligned);
 }
 
-
-// The arrival the clock gave every transition, moved onto the waveform: the
-// frame the move really lands on the note it goes to, which is where
-// FastSampler hands over to that note's sustain. One analyser serves the
-// whole run, sized for the longest capture. A zone the analysis cannot read,
-// or cannot hear the two notes apart in, keeps the nominal time, so the
-// worst case here is the instrument the nominal times alone would have made.
 static void instrument_refine_arrivals(InstrumentJob* job, WavReader* wav, InstrumentZoneMap* map, int zone_count) {
     const ResampleScript* script = job->script;
     if (!job->cfg.legato_detect_arrival || !script->legato) return;
@@ -1365,19 +1070,12 @@ static void instrument_refine_arrivals(InstrumentJob* job, WavReader* wav, Instr
         read++;
         score_sum += r.score;
         if (!r.found) continue;
-        // Neither bound can fall before the key that asked for the move went
-        // down, and the move has to leave before it lands.
         int64_t departure = r.departure;
         if (departure < note_on) departure = note_on;
         if (departure > captured - 1) departure = captured - 1;
         int64_t arrival = r.arrival;
         if (arrival < departure) arrival = departure;
         if (arrival > captured - 1) arrival = captured - 1;
-        // The sample keeps one margin either side of the move: the note
-        // being left in front of the departure, the note landed on past the
-        // arrival. The departure is never before the key that asked for the
-        // move, which is one margin into the capture, so the cut never
-        // reaches before what was analysed.
         int64_t first = departure - margin;
         if (first < 0) first = 0;
         int64_t wanted = arrival + margin;
@@ -1401,16 +1099,10 @@ static void instrument_refine_arrivals(InstrumentJob* job, WavReader* wav, Instr
            read - moved);
 }
 
-// One instrument, from the full WAV of one output bus. The job's target
-// fields say which; the caller has pointed them at it.
 static bool instrument_build_one(InstrumentJob* job) {
     const ResampleScript* script = job->script;
-    // The count runs over the whole export, so this bus's own share of it is
-    // what it had written before this build started, taken off at the end.
     int rzc_before = job->rzc_written;
 
-    // At most two zones per segment: a sustain is a held note and a release,
-    // a transition is one zone.
     size_t capacity = (size_t)script->segment_count * 2;
     InstrumentZoneMap* map = (InstrumentZoneMap*)calloc(capacity, sizeof(InstrumentZoneMap));
     FSBZoneEntry* rows = (FSBZoneEntry*)calloc(capacity, sizeof(FSBZoneEntry));
@@ -1436,8 +1128,6 @@ static bool instrument_build_one(InstrumentJob* job) {
             instrument_zone_name(job->prefix, script, &map[z], names[z], MAX_NAME_LENGTH);
             if (z == 0 || map[z].collection != map[z - 1].collection) collection_count++;
         }
-        // The mapping is the same for every bus, so the total is known as
-        // soon as the first one is planned.
         job->progress_total.store(instrument_progress_units(script, zone_count) * job->target_count);
         ok = zone_count > 0;
         if (!ok) fr_strcpy(job->result, sizeof(job->result), "The run holds no samples to map");
@@ -1450,22 +1140,15 @@ static bool instrument_build_one(InstrumentJob* job) {
         ok = wav_reader_open(&wav, job->full_wav_path);
         if (!ok) snprintf(job->result, sizeof(job->result), "Could not read %s", plat_path_basename(job->full_wav_path));
     }
-    // The loops and the arrivals move onto the waveform before anything is
-    // written, so the bank, the .fsi and the .rzc all carry the same points.
     if (ok) instrument_refine_loops(job, &wav, map, zone_count);
     if (ok) instrument_refine_arrivals(job, &wav, map, zone_count);
     if (ok) ok = instrument_write_fsb(job, &wav, map, zone_count, rows, names);
-    // The fingerprints are measured over the loops the bank carries, and
-    // written before the .fsi that names them.
     bool fingerprinted[INSTRUMENT_MAX_COLLECTIONS] = {};
     int fingerprints = 0;
     if (ok && !job->cancel.load()) {
         fingerprints = instrument_write_fingerprints(job, &wav, map, zone_count, names, plan, planned, fingerprinted);
     }
     if (ok && !job->cancel.load()) ok = instrument_write_fsi(job, map, zone_count, names, plan, planned, fingerprinted);
-    // The .rzc names the split sample files, so a run that wrote none has
-    // nothing for it to point at; the result says so rather than leaving
-    // collections behind that cannot be opened.
     if (ok && !job->cancel.load() && job->cfg.export_rzc && job->cfg.split_samples) {
         ok = instrument_write_rzc(job, map, zone_count, names, plan, planned);
     }
@@ -1475,8 +1158,6 @@ static bool instrument_build_one(InstrumentJob* job) {
         fr_strcpy(job->result, sizeof(job->result), "Cancelled; the instrument files are incomplete.");
         job->result_is_error = true;
     } else if (ok) {
-        // The bank now holds every sample the full WAV was rendered for, and
-        // the reader is closed, so the file can go when the tab asked for it.
         if (job->cfg.delete_full_wav) {
             if (plat_file_delete(job->full_wav_path)) {
                 job->full_wav_removed = true;
@@ -1494,11 +1175,9 @@ static bool instrument_build_one(InstrumentJob* job) {
         } else if (job->cfg.export_rzc) {
             fr_strcpy(rzc_note, sizeof(rzc_note), " No .rzc: they name the split samples, which this run did not write.");
         }
-        // What links the collections: the counter of the round robins, or
-        // the controller the layers crossfade on.
         char link[64];
         link[0] = '\0';
-        if (script->dynamic_layers && script->round_robin_count > 1) {
+        if (instrument_morphs(script)) {
             snprintf(link, sizeof(link), ": %d looped layers with releases, crossfaded on CC%d",
                      script->round_robin_count, instrument_layer_controller(&job->cfg));
         } else if (script->dynamic_layers) {
@@ -1506,14 +1185,12 @@ static bool instrument_build_one(InstrumentJob* job) {
         } else if (script->round_robin_count > 1) {
             fr_strcpy(link, sizeof(link), " linked by a round robin effect");
         }
-        // What the moves added, when the run captured any.
         char legato_note[96];
         legato_note[0] = '\0';
         if (script->legato) {
             snprintf(legato_note, sizeof(legato_note), " Legato over %d interval%s, the notes linked to the moves between them.",
                      script->interval_count, script->interval_count == 1 ? "" : "s");
         }
-        // What the morph between the layers had to work with.
         char morph_note[80];
         morph_note[0] = '\0';
         if (instrument_morphs(script) && fingerprints > 0) {
@@ -1540,15 +1217,9 @@ static bool instrument_build_one(InstrumentJob* job) {
     return ok && !job->cancel.load();
 }
 
-// Every output bus in turn: the same mapping, cut from that bus's own full
-// WAV into that bus's own folder. One that fails stops the rest, because a
-// half exported set is worse than one that says what went wrong.
 static void instrument_thread_main(void* user) {
     InstrumentJob* job = (InstrumentJob*)user;
     bool ok = true;
-    char first_result[FR_STATUS_LEN];
-    first_result[0] = '\0';
-
     for (int t = 0; t < job->target_count && ok; ++t) {
         const InstrumentTarget* target = &job->targets[t];
         job->target = t;
@@ -1565,17 +1236,12 @@ static void instrument_thread_main(void* user) {
             fr_log("instrument: bus %d of %d, '%s'", t + 1, job->target_count, target->bus_name);
         }
         ok = instrument_build_one(job);
-        // The first bus's line is the one a single-bus run reports as is.
-        if (t == 0) fr_strcpy(first_result, sizeof(first_result), job->result);
-        // Kept for the ledger: with more than one bus the summary is a
-        // single line, and this is where the detail of each one stays.
         if (job->target_count > 1 && job->bus_result_count < FR_MAX_OUTPUT_BUSSES) {
             snprintf(job->bus_result[job->bus_result_count], FR_STATUS_LEN, "%s: %s", target->bus_name, job->result);
             job->bus_result_count++;
         }
         job->bus_done.store(job->instruments_written);
         if (!ok && job->target_count > 1) {
-            // Say which microphone stopped it; the reason is already there.
             char why[FR_STATUS_LEN];
             fr_strcpy(why, sizeof(why), job->result);
             snprintf(job->result, sizeof(job->result), "Output bus '%s': %s", target->bus_name, why);
@@ -1583,14 +1249,11 @@ static void instrument_thread_main(void* user) {
     }
 
     if (ok && job->target_count > 1) {
-        // One line for the set: the detail of each bus is already in the log.
         snprintf(job->result, sizeof(job->result),
                  "Wrote %d instruments, one per output bus: %d zones over %d folders, %d-bit.%s",
                  job->instruments_written, job->zones_written, job->instruments_written,
                  job->cfg.bit_depth, job->full_wav_removed ? " The full WAVs were removed." : "");
         job->result_is_error = false;
-    } else if (ok) {
-        fr_strcpy(job->result, sizeof(job->result), first_result);
     }
     job->finished.store(true);
 }
@@ -1604,8 +1267,6 @@ bool instrument_start(InstrumentJob* job, const ResampleScript* script, const Re
     job->cfg = *cfg;
     job->target_count = target_count;
     for (int t = 0; t < target_count; ++t) job->targets[t] = targets[t];
-    // The worker points these at each target in turn; the first is set here
-    // so a caller that reads them before the thread runs sees the first bus.
     job->target = 0;
     fr_strcpy(job->full_wav_path, sizeof(job->full_wav_path), targets[0].full_wav_path);
     fr_strcpy(job->out_dir, sizeof(job->out_dir), targets[0].out_dir);

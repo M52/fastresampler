@@ -1,6 +1,4 @@
 #pragma once
-// Logging: one line to the debugger and to fastresampler.log next to the exe.
-// Not for the audio thread.
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -21,7 +19,7 @@ inline void fr_log(const char* fmt, ...) {
     char line[1024];
     va_list args;
     va_start(args, fmt);
-    int n = vsnprintf(line, sizeof(line) - 2, fmt, args);
+    int n = vsnprintf(line, sizeof(line) - 1, fmt, args);
     va_end(args);
     if (n < 0) return;
     if (n > (int)sizeof(line) - 2) n = (int)sizeof(line) - 2;

@@ -1,12 +1,4 @@
 #pragma once
-// A small YAML reader: mappings, sequences, scalars and literal blocks, into
-// nodes cut from one bump arena. The parser is FastSampler's, copied here so
-// FastResampler owns the format it saves its projects in. Only the file
-// loading differs: FastSampler hands the parser a reserved scratch buffer,
-// this one reads into a heap block that yaml_file_release() frees.
-//
-// Writing is plain fprintf: a project file is a flat mapping, so nothing
-// more than "key: value" lines and a sequence of curves is needed.
 
 #include <stdint.h>
 #include <stddef.h>
@@ -59,7 +51,6 @@ inline const char* yaml_arena_strdup(YamlArena* arena, const char* str, size_t l
     return dst;
 }
 
-// Find a child of a mapping node by its key.
 inline YamlNode* yaml_find_child(YamlNode* node, const char* key) {
     if (!node || node->type != YAML_MAPPING) return NULL;
     for (YamlNode* child = node->first_child; child; child = child->next_sibling) {
@@ -70,7 +61,6 @@ inline YamlNode* yaml_find_child(YamlNode* node, const char* key) {
     return NULL;
 }
 
-// The string value of a scalar child of a mapping node.
 inline const char* yaml_get_string(YamlNode* node, const char* key, const char* default_val = "") {
     YamlNode* child = yaml_find_child(node, key);
     if (child && child->type == YAML_SCALAR && child->value) {
@@ -79,7 +69,6 @@ inline const char* yaml_get_string(YamlNode* node, const char* key, const char* 
     return default_val;
 }
 
-// The integer value of a scalar child.
 inline int yaml_get_int(YamlNode* node, const char* key, int default_val = 0) {
     YamlNode* child = yaml_find_child(node, key);
     if (child && child->type == YAML_SCALAR && child->value) {
@@ -88,7 +77,6 @@ inline int yaml_get_int(YamlNode* node, const char* key, int default_val = 0) {
     return default_val;
 }
 
-// The float value of a scalar child.
 inline float yaml_get_float(YamlNode* node, const char* key, float default_val = 0.0f) {
     YamlNode* child = yaml_find_child(node, key);
     if (child && child->type == YAML_SCALAR && child->value) {
@@ -97,7 +85,6 @@ inline float yaml_get_float(YamlNode* node, const char* key, float default_val =
     return default_val;
 }
 
-// The bool value of a scalar child.
 inline bool yaml_get_bool(YamlNode* node, const char* key, bool default_val = false) {
     YamlNode* child = yaml_find_child(node, key);
     if (child && child->type == YAML_SCALAR && child->value) {
@@ -113,11 +100,6 @@ inline bool yaml_get_bool(YamlNode* node, const char* key, bool default_val = fa
 
 YamlNode* yaml_parse(const char* yaml_str, YamlArena* arena);
 
-// --- Whole-file loading -----------------------------------------------------
-// A file is read into one heap block that holds the text, the nodes and the
-// strings cut from them; the nodes point into it, so the block lives until
-// yaml_file_release().
-
 struct YamlFile {
     YamlNode* root;
     YamlArena arena;
@@ -129,10 +111,8 @@ inline void yaml_file_release(YamlFile* file) {
     memset(file, 0, sizeof(*file));
 }
 
-// Room the arena needs past the text itself, for the nodes and their strings.
 #define YAML_ARENA_SLACK (2 * 1024 * 1024)
 
-// Largest file the loader reads. A project is a few kilobytes.
 #define YAML_FILE_MAX_BYTES (16 * 1024 * 1024)
 
 inline bool yaml_load_file(const char* path, YamlFile* out) {

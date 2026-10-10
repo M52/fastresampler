@@ -1,4 +1,3 @@
-// #pragma once (removed for unity build)
 #include <stdio.h>
 #include <string.h>
 #include "fastresampler_project.h"
@@ -7,13 +6,8 @@
 #include "fastresampler_log.h"
 #include "platform/fastresampler_platform.h"
 
-// The version of the file format. It goes in every file so a later reader
-// can tell what it has. Version 2 names the plugin the project was made
-// with and the file its state is in; a version 1 file holds neither and
-// loads with no plugin, the way it always did.
 #define PROJECT_FILE_VERSION 2
 
-// Times are written in milliseconds, the unit the sliders read in.
 #define PROJECT_MAX_TIME_MS 600000
 
 void project_dir(char* out, size_t out_len) {
@@ -37,27 +31,21 @@ bool project_clean_name(const char* name, char* out, size_t out_len) {
     return o > 0;
 }
 
-// The project's own file, or the one beside it the extension names.
-static bool project_path_with_ext(const char* name, const char* ext, char* out, size_t out_len) {
+static bool project_file_path(const char* dir, const char* name, const char* ext, char* out, size_t out_len) {
     char clean[FR_PROJECT_NAME_LEN];
     if (!project_clean_name(name, clean, sizeof(clean))) return false;
     char file[FR_PROJECT_NAME_LEN + 16];
     snprintf(file, sizeof(file), "%s%s", clean, ext);
-    char dir[FR_MAX_PATH];
-    project_dir(dir, sizeof(dir));
     plat_path_join(out, out_len, dir, file);
     return true;
 }
 
-bool project_path(const char* name, char* out, size_t out_len) {
-    return project_path_with_ext(name, FR_PROJECT_EXT, out, out_len);
+void project_name_of_path(const char* path, char* out, size_t out_len) {
+    fr_strcpy(out, out_len, plat_path_basename(path));
+    size_t len = strlen(out);
+    size_t ext_len = strlen(FR_PROJECT_EXT);
+    if (len > ext_len && plat_path_has_ext(out, FR_PROJECT_EXT)) out[len - ext_len] = '\0';
 }
-
-bool project_state_path(const char* name, char* out, size_t out_len) {
-    return project_path_with_ext(name, FR_PROJECT_STATE_EXT, out, out_len);
-}
-
-// --- The plugin's state file ---------------------------------------------------
 
 void project_plugin_init(ProjectPlugin* p) {
     p->present = false;
@@ -72,14 +60,9 @@ void project_plugin_release(ProjectPlugin* p) {
     p->present = false;
 }
 
-// The block to <name>.fstate. The name of the file is what goes in the YAML.
-static bool project_write_state(const ProjectPlugin* plugin, const char* name, char* state_file,
+static bool project_write_state(const ProjectPlugin* plugin, const char* path, char* state_file,
                                 size_t state_file_len) {
     state_file[0] = '\0';
-    char path[FR_MAX_PATH];
-    if (!project_state_path(name, path, sizeof(path))) return false;
-    // Nothing to keep: an older state of this project would be read back
-    // into the wrong plugin, so it goes.
     if (!plugin->present || plugin->state.size == 0) {
         if (plat_path_exists(path)) plat_file_delete(path);
         return false;
@@ -102,11 +85,7 @@ static bool project_write_state(const ProjectPlugin* plugin, const char* name, c
     return true;
 }
 
-// The block back out of <name>.fstate. A missing file is not an error: the
-// project then comes back with the plugin loaded but its own settings.
-static void project_read_state(ProjectPlugin* plugin, const char* name) {
-    char path[FR_MAX_PATH];
-    if (!project_state_path(name, path, sizeof(path))) return;
+static void project_read_state(ProjectPlugin* plugin, const char* path) {
     uint64_t size = 0;
     uint64_t mtime = 0;
     if (!plat_file_stat(path, &size, &mtime)) return;
@@ -136,41 +115,77 @@ static void project_read_state(ProjectPlugin* plugin, const char* name) {
     fr_log("project: read %d bytes of plugin state from %s", (int)plugin->state.size, path);
 }
 
-void project_scan(ProjectList* list) {
-    list->count = 0;
-    char dir[FR_MAX_PATH];
-    project_dir(dir, sizeof(dir));
+static bool project_entry_before(const ProjectEntry* a, const ProjectEntry* b) {
+    if (a->is_dir != b->is_dir) return a->is_dir;
+    return fr_stricmp(a->name, b->name) < 0;
+}
+
+void project_browser_open(ProjectBrowser* b, const char* dir) {
+    char clean[FR_MAX_PATH];
+    fr_strcpy(clean, sizeof(clean), dir);
+    size_t len = strlen(clean);
+    while (len > 3 && (clean[len - 1] == '\\' || clean[len - 1] == '/')) clean[--len] = '\0';
+    char selected[FR_MAX_PATH];
+    selected[0] = '\0';
+    bool same_dir = fr_stricmp(b->dir, clean) == 0;
+    if (same_dir && b->selected >= 0 && b->selected < b->count) {
+        fr_strcpy(selected, sizeof(selected), b->entries[b->selected].name);
+    }
+    fr_strcpy(b->dir, sizeof(b->dir), clean);
+    dir = b->dir;
+    b->count = 0;
+    b->selected = -1;
 
     PlatDirIter it;
     if (!plat_dir_open(&it, dir)) return;
-    while (plat_dir_next(&it)) {
-        if (it.is_dir) continue;
-        if (!plat_path_has_ext(it.name, FR_PROJECT_EXT)) continue;
-        if (list->count >= FR_MAX_PROJECTS) break;
-
-        char name[FR_PROJECT_NAME_LEN];
-        fr_strcpy(name, sizeof(name), it.name);
-        size_t len = strlen(name);
-        size_t ext_len = strlen(FR_PROJECT_EXT);
-        if (len > ext_len) name[len - ext_len] = '\0';
-        if (!name[0]) continue;
-
-        // In place, by name: the list is short and the combo shows it sorted.
-        int i = list->count;
-        while (i > 0 && fr_stricmp(list->names[i - 1], name) > 0) {
-            memcpy(list->names[i], list->names[i - 1], sizeof(list->names[0]));
+    while (plat_dir_next(&it) && b->count < FR_MAX_PROJECTS) {
+        if (it.name[0] == '.') continue;
+        if (!it.is_dir && !plat_path_has_ext(it.name, FR_PROJECT_EXT)) continue;
+        ProjectEntry entry;
+        fr_strcpy(entry.name, sizeof(entry.name), it.name);
+        entry.is_dir = it.is_dir;
+        int i = b->count;
+        while (i > 0 && project_entry_before(&entry, &b->entries[i - 1])) {
+            b->entries[i] = b->entries[i - 1];
             --i;
         }
-        fr_strcpy(list->names[i], sizeof(list->names[0]), name);
-        list->count++;
+        b->entries[i] = entry;
+        b->count++;
     }
     plat_dir_close(&it);
+    if (selected[0]) project_browser_select(b, selected);
 }
 
-// --- Writing -------------------------------------------------------------------
+void project_browser_select(ProjectBrowser* b, const char* name) {
+    b->selected = -1;
+    for (int i = 0; i < b->count; ++i) {
+        if (fr_stricmp(b->entries[i].name, name) == 0) b->selected = i;
+    }
+}
 
-// A quoted value. The reader takes the outer quotes off and everything
-// between them as written, so a path keeps its separators.
+bool project_browser_parent(const char* dir, char* out, size_t out_len) {
+    fr_strcpy(out, out_len, dir);
+    size_t len = strlen(out);
+    while (len > 0 && (out[len - 1] == '\\' || out[len - 1] == '/')) out[--len] = '\0';
+    char* base = out + (plat_path_basename(out) - out);
+    if (base == out || base[0] == '\0') return false;
+    *base = '\0';
+    len = strlen(out);
+    bool drive_root = len == 3 && out[1] == ':';
+    if (!drive_root) {
+        while (len > 0 && (out[len - 1] == '\\' || out[len - 1] == '/')) out[--len] = '\0';
+    }
+    if (len == 0) return false;
+    if (out[0] == '\\' && out[1] == '\\' && !strchr(out + 2, '\\') && !strchr(out + 2, '/')) return false;
+    return true;
+}
+
+void project_browser_entry_path(const ProjectBrowser* b, int index, char* out, size_t out_len) {
+    out[0] = '\0';
+    if (index < 0 || index >= b->count) return;
+    plat_path_join(out, out_len, b->dir, b->entries[index].name);
+}
+
 static void project_write_string(FILE* f, const char* key, const char* value) {
     fprintf(f, "%s: \"%s\"\n", key, value);
 }
@@ -179,16 +194,15 @@ static int project_ms(float seconds) {
     return (int)(seconds * 1000.0f + 0.5f);
 }
 
-bool project_save(const ResampleConfig* cfg, const ProjectPlugin* plugin, const char* name,
-                  char* err, size_t err_len) {
-    char path[FR_MAX_PATH];
-    if (!project_path(name, path, sizeof(path))) {
+bool project_save(const ResampleConfig* cfg, const ProjectPlugin* plugin, const char* dir, const char* name,
+                  char* path, size_t path_len, char* err, size_t err_len) {
+    char state_path[FR_MAX_PATH];
+    if (!project_file_path(dir, name, FR_PROJECT_EXT, path, path_len) ||
+        !project_file_path(dir, name, FR_PROJECT_STATE_EXT, state_path, sizeof(state_path))) {
         fr_strcpy(err, err_len, "Give the project a name.");
         return false;
     }
-    char dir[FR_MAX_PATH];
-    project_dir(dir, sizeof(dir));
-    if (!plat_dir_create(dir)) {
+    if (!plat_dir_create_all(dir)) {
         snprintf(err, err_len, "The folder %s could not be made.", dir);
         return false;
     }
@@ -199,16 +213,11 @@ bool project_save(const ResampleConfig* cfg, const ProjectPlugin* plugin, const 
         return false;
     }
 
-    // The plugin's state file is written first: the YAML names it, and a
-    // name in there that points at nothing would be read back as a state
-    // that failed to load.
     char state_file[FR_PROJECT_NAME_LEN + 16];
-    project_write_state(plugin, name, state_file, sizeof(state_file));
+    project_write_state(plugin, state_path, state_file, sizeof(state_file));
 
     fprintf(f, "# FastResampler resampling project\n");
     fprintf(f, "version: %d\n", PROJECT_FILE_VERSION);
-    // The plugin the project was made with, so a load brings back the same
-    // one in the same state. The state itself is in the file named here.
     if (plugin->present) {
         fprintf(f, "plugin:\n");
         fprintf(f, "  format: %d\n", plugin->format);
@@ -219,8 +228,6 @@ bool project_save(const ResampleConfig* cfg, const ProjectPlugin* plugin, const 
     }
     project_write_string(f, "instrument", cfg->instrument);
     project_write_string(f, "articulation", cfg->articulation);
-    // The output busses, one per microphone. A file that holds none is read
-    // as the one bus a fresh project has.
     fprintf(f, "monitor_bus: %d\n", cfg->monitor_bus);
     fprintf(f, "busses:\n");
     for (int i = 0; i < cfg->bus_count; ++i) {
@@ -267,8 +274,6 @@ bool project_save(const ResampleConfig* cfg, const ProjectPlugin* plugin, const 
         fprintf(f, "    layer: %d\n", c->layer);
         fprintf(f, "    bezier: %s\n", c->is_bezier ? "true" : "false");
         fprintf(f, "    constant: %d\n", c->constant);
-        // The nodes are x, y and the curvature of the segment after them;
-        // the values are what plays. Both are one line of numbers.
         fprintf(f, "    node_count: %d\n", c->node_count);
         fprintf(f, "    nodes: \"");
         for (int k = 0; k < c->node_count; ++k) {
@@ -287,17 +292,12 @@ bool project_save(const ResampleConfig* cfg, const ProjectPlugin* plugin, const 
     return true;
 }
 
-// --- Reading -------------------------------------------------------------------
-
-// A time in milliseconds from the file, in seconds and inside its range.
 static float project_seconds(YamlNode* root, const char* key, float fallback, int min_ms) {
     YamlNode* child = yaml_find_child(root, key);
     if (!child || child->type != YAML_SCALAR) return fallback;
     return (float)fr_clampi(yaml_get_int(root, key, 0), min_ms, PROJECT_MAX_TIME_MS) / 1000.0f;
 }
 
-// One curve of the cc_curves sequence. It starts out flat at 127, so a file
-// that holds only a controller still gives a curve that plays.
 static void project_read_curve(YamlNode* item, ResampleCcCurve* c) {
     resample_cc_set_constant(c, 1.0f);
     c->controller = fr_clampi(yaml_get_int(item, "controller", 1), 0, MIDI_VALUE_MAX);
@@ -323,12 +323,11 @@ static void project_read_curve(YamlNode* item, ResampleCcCurve* c) {
     }
 }
 
-bool project_load(ResampleConfig* cfg, ProjectPlugin* plugin, const char* name,
+bool project_load(ResampleConfig* cfg, ProjectPlugin* plugin, const char* path,
                   char* err, size_t err_len) {
     project_plugin_release(plugin);
     project_plugin_init(plugin);
-    char path[FR_MAX_PATH];
-    if (!project_path(name, path, sizeof(path))) {
+    if (!path[0] || !plat_path_has_ext(path, FR_PROJECT_EXT)) {
         fr_strcpy(err, err_len, "Choose a project.");
         return false;
     }
@@ -340,16 +339,11 @@ bool project_load(ResampleConfig* cfg, ProjectPlugin* plugin, const char* name,
     }
     YamlNode* root = file.root;
 
-    // The file replaces the whole configuration: what it does not hold gets
-    // the default, not what was on the tab before.
     ResampleConfig out;
     resample_config_defaults(&out);
 
     fr_strcpy(out.instrument, sizeof(out.instrument), yaml_get_string(root, "instrument", out.instrument));
     fr_strcpy(out.articulation, sizeof(out.articulation), yaml_get_string(root, "articulation", out.articulation));
-    // The output busses. A project written before they existed names one
-    // microphone instead: it becomes the first bus, so the run keeps the
-    // folder and the file names it had.
     fr_strcpy(out.busses[0].name, sizeof(out.busses[0].name),
               yaml_get_string(root, "microphone", out.busses[0].name));
     YamlNode* busses = yaml_find_child(root, "busses");
@@ -394,8 +388,6 @@ bool project_load(ResampleConfig* cfg, ProjectPlugin* plugin, const char* name,
     fr_strcpy(out.root_dir, sizeof(out.root_dir), yaml_get_string(root, "root_dir", out.root_dir));
     fr_strcpy(out.output_dir, sizeof(out.output_dir), yaml_get_string(root, "output_dir", out.output_dir));
     fr_strcpy(out.export_dir, sizeof(out.export_dir), yaml_get_string(root, "export_dir", out.export_dir));
-    // A project from before the root project folder existed names the two
-    // folders it wrote to and no root; the root is read back off them.
     if (yaml_find_child(root, "root_dir")) {
         out.output_dir_override = yaml_get_bool(root, "output_dir_override", out.output_dir_override);
         out.export_dir_override = yaml_get_bool(root, "export_dir_override", out.export_dir_override);
@@ -415,8 +407,6 @@ bool project_load(ResampleConfig* cfg, ProjectPlugin* plugin, const char* name,
         }
     }
 
-    // The plugin the project was made with. A project from before plugins
-    // were saved names none, and then the one already loaded is left alone.
     YamlNode* plugin_node = yaml_find_child(root, "plugin");
     if (plugin_node && plugin_node->type == YAML_MAPPING) {
         const char* plugin_path = yaml_get_string(plugin_node, "path", "");
@@ -426,7 +416,15 @@ bool project_load(ResampleConfig* cfg, ProjectPlugin* plugin, const char* name,
             fr_strcpy(plugin->path, sizeof(plugin->path), plugin_path);
             fr_strcpy(plugin->name, sizeof(plugin->name),
                       yaml_get_string(plugin_node, "name", plat_path_basename(plugin_path)));
-            if (yaml_get_string(plugin_node, "state", "")[0]) project_read_state(plugin, name);
+            const char* state_file = plat_path_basename(yaml_get_string(plugin_node, "state", ""));
+            if (state_file[0]) {
+                char dir[FR_MAX_PATH];
+                char state_path[FR_MAX_PATH];
+                fr_strcpy(dir, sizeof(dir), path);
+                dir[plat_path_basename(dir) - dir] = '\0';
+                plat_path_join(state_path, sizeof(state_path), dir, state_file);
+                project_read_state(plugin, state_path);
+            }
         }
     }
 

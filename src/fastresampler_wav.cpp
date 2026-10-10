@@ -1,4 +1,3 @@
-// #pragma once (removed for unity build)
 #include <string.h>
 #include "fastresampler_wav.h"
 #include "fastresampler_constants.h"
@@ -6,12 +5,10 @@
 #define WAV_FORMAT_IEEE_FLOAT 3
 #define WAV_BITS_PER_SAMPLE   32
 
-// The header: RIFF (0..11), fmt chunk (12..35), fact chunk (36..47), data
-// chunk header (48..55). Three fields in it are patched at close.
 #define WAV_RIFF_SIZE_OFFSET   4
 #define WAV_FACT_FRAMES_OFFSET 44
 #define WAV_DATA_SIZE_OFFSET   52
-#define WAV_HEADER_SIZE        56
+#define WAV_MAX_DATA_BYTES     (0xFFFFFFFFull - WAV_HEADER_SIZE)
 
 static void wav_put_u32(uint8_t* p, uint32_t v) {
     p[0] = (uint8_t)(v & 0xFF);
@@ -31,12 +28,11 @@ bool wav_writer_open(WavWriter* w, const char* path, int channels, int sample_ra
     w->file = fopen(path, "wb");
     if (!w->file) return false;
     w->channels = channels;
-    w->sample_rate = sample_rate;
 
     uint32_t block_align = (uint32_t)channels * (WAV_BITS_PER_SAMPLE / 8);
     uint8_t h[WAV_HEADER_SIZE];
     memcpy(h + 0, "RIFF", 4);
-    wav_put_u32(h + 4, 0);                 // patched at close
+    wav_put_u32(h + 4, 0);
     memcpy(h + 8, "WAVE", 4);
     memcpy(h + 12, "fmt ", 4);
     wav_put_u32(h + 16, 16);
@@ -46,11 +42,11 @@ bool wav_writer_open(WavWriter* w, const char* path, int channels, int sample_ra
     wav_put_u32(h + 28, (uint32_t)sample_rate * block_align);
     wav_put_u16(h + 32, (uint16_t)block_align);
     wav_put_u16(h + 34, WAV_BITS_PER_SAMPLE);
-    memcpy(h + 36, "fact", 4);             // non-PCM files carry the frame count
+    memcpy(h + 36, "fact", 4);
     wav_put_u32(h + 40, 4);
-    wav_put_u32(h + 44, 0);                // patched at close
+    wav_put_u32(h + 44, 0);
     memcpy(h + 48, "data", 4);
-    wav_put_u32(h + 52, 0);                // patched at close
+    wav_put_u32(h + 52, 0);
 
     if (fwrite(h, 1, WAV_HEADER_SIZE, w->file) != WAV_HEADER_SIZE) {
         fclose(w->file);
@@ -102,7 +98,6 @@ bool wav_reader_open(WavReader* r, const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) return false;
 
-    // Our own layout: the fmt chunk at 20, the data at WAV_HEADER_SIZE.
     uint8_t h[WAV_HEADER_SIZE];
     if (fread(h, 1, WAV_HEADER_SIZE, f) != WAV_HEADER_SIZE || memcmp(h, "RIFF", 4) != 0 ||
         wav_get_u16(h + 20) != WAV_FORMAT_IEEE_FLOAT || wav_get_u16(h + 34) != WAV_BITS_PER_SAMPLE) {
@@ -118,7 +113,29 @@ bool wav_reader_open(WavReader* r, const char* path) {
     r->channels = channels;
     r->sample_rate = (int)wav_get_u32(h + 24);
     uint64_t data_bytes = wav_get_u32(h + WAV_DATA_SIZE_OFFSET);
+    if (data_bytes == WAV_MAX_DATA_BYTES && _fseeki64(f, 0, SEEK_END) == 0) {
+        int64_t size = _ftelli64(f);
+        if (size > WAV_HEADER_SIZE) data_bytes = (uint64_t)size - WAV_HEADER_SIZE;
+    }
     r->frames = data_bytes / ((uint64_t)channels * (WAV_BITS_PER_SAMPLE / 8));
+    return true;
+}
+
+bool wav_reader_read_mono(WavReader* r, int64_t start_frame, int64_t frame_count, float* mono_out) {
+    float buf[FR_MAX_BLOCK_SIZE * FR_OUTPUT_CHANNELS];
+    float scale = 1.0f / (float)r->channels;
+    int64_t done = 0;
+    while (done < frame_count) {
+        int64_t n = frame_count - done;
+        if (n > FR_MAX_BLOCK_SIZE) n = FR_MAX_BLOCK_SIZE;
+        if (!wav_reader_read(r, start_frame + done, n, buf)) return false;
+        for (int64_t i = 0; i < n; ++i) {
+            float sum = 0.0f;
+            for (int c = 0; c < r->channels; ++c) sum += buf[i * r->channels + c];
+            mono_out[done + i] = sum * scale;
+        }
+        done += n;
+    }
     return true;
 }
 
@@ -169,7 +186,7 @@ bool wav_copy_segment(const char* src_path, int64_t start_frame, int64_t frame_c
 bool wav_writer_close(WavWriter* w) {
     if (!w->file) return false;
     uint64_t data_bytes = w->frames_written * (uint64_t)w->channels * (WAV_BITS_PER_SAMPLE / 8);
-    if (data_bytes > 0xFFFFFFFFull - WAV_HEADER_SIZE) data_bytes = 0xFFFFFFFFull - WAV_HEADER_SIZE;
+    if (data_bytes > WAV_MAX_DATA_BYTES) data_bytes = WAV_MAX_DATA_BYTES;
     uint8_t v[4];
 
     bool ok = true;

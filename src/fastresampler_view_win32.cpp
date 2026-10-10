@@ -1,8 +1,3 @@
-// #pragma once (removed for unity build)
-// The Windows window: Win32 message loop, Direct3D 11 swap chain for ImGui,
-// and the child window the plugin editor attaches to. The unity root has
-// included <windows.h>, <d3d11.h>, ImGui and its two backends before this.
-
 #include <stdlib.h>
 #include "fastresampler_view.h"
 #include "fastresampler_app.h"
@@ -19,23 +14,21 @@ struct PlatView {
     ID3D11DeviceContext*    context;
     ID3D11RenderTargetView* rtv;
     ImGuiContext* imgui;
-    int   width;             // client size in pixels
+    int   width;
     int   height;
     float dpi_scale;
-    bool  in_frame;          // guards against a re-entered WM_PAINT
-    int   last_avail_w;      // editor area last offered to the plugin
+    bool  in_frame;
+    int   last_avail_w;
     int   last_avail_h;
     bool  editor_fit_pending;
-    bool  editor_grow_pending;  // grow the window to the editor once it has a size
-    bool  closed;            // app_shutdown has run
+    bool  editor_grow_pending;
+    bool  closed;
 };
 
 static const wchar_t* g_main_class_name = L"FastResamplerMainWindow";
 static const wchar_t* g_editor_class_name = L"FastResamplerEditorHost";
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-// --- Direct3D ------------------------------------------------------------------
 
 static void view_release_rtv(PlatView* v) {
     if (v->rtv) {
@@ -61,11 +54,6 @@ static void view_shutdown_d3d(PlatView* v) {
 }
 
 static bool view_init_d3d(PlatView* v) {
-    // Flip model: DWM composes our buffer as the window's content and still
-    // draws the plugin editor's child window over it. The old bitblt model
-    // copied into the window's redirection surface, and that copy never
-    // showed when no monitor was attached (a remote desktop session with the
-    // screen off): the window stayed white while Present reported success.
     DXGI_SWAP_CHAIN_DESC sd = {};
     sd.BufferCount = 2;
     sd.BufferDesc.Width = (UINT)v->width;
@@ -109,18 +97,11 @@ static void view_resize_swap_chain(PlatView* v) {
     if (SUCCEEDED(hr)) view_create_rtv(v);
 }
 
-// --- Editor placement ----------------------------------------------------------
-
-// The editor spot: right of the side panel, under the main header.
 static void view_editor_origin(PlatView* v, int* x, int* y) {
     *x = (int)(UI_SIDEPANEL_WIDTH * v->dpi_scale + 0.5f);
     *y = (int)(UI_MAIN_HEADER_HEIGHT * v->dpi_scale + 0.5f);
 }
 
-// The output log and the keyboard sit under the editor, and the editor is a
-// child window, which the compositor always draws over the frame this code
-// renders. So the editor is not given their room: the strip and the keys
-// are outside it, and both stay in sight whatever plugin is loaded.
 static int view_below_editor(PlatView* v) {
     int kb_h = (int)(UI_KEYBOARD_HEIGHT * v->dpi_scale + 0.5f);
     int log_h = (int)(app_log_strip_height(v->app, (float)v->height, v->dpi_scale) + 0.5f);
@@ -148,8 +129,6 @@ void* view_editor_create(PlatView* v, int width, int height) {
     return v->editor_hwnd;
 }
 
-// The child is clipped to the editor area: a plugin larger than the space
-// keeps its own size and shows what fits until the window grows.
 void view_editor_place(PlatView* v, int width, int height) {
     if (!v->editor_hwnd) return;
     int x, y, avail_w, avail_h;
@@ -172,9 +151,6 @@ void view_editor_destroy(PlatView* v) {
     v->editor_hwnd = NULL;
 }
 
-// Grows the window until the editor fits beside the side panel and above
-// the keyboard, as far as the monitor's work area allows. A window that is
-// maximised or already large enough is left alone.
 static void view_grow_to_fit_editor(PlatView* v, int editor_w, int editor_h) {
     if (IsZoomed(v->hwnd)) return;
     int x, y;
@@ -200,7 +176,6 @@ static void view_grow_to_fit_editor(PlatView* v, int editor_w, int editor_h) {
     if (win_w > work_w) win_w = work_w;
     if (win_h > work_h) win_h = work_h;
 
-    // Keep the window where it is unless it would run off the work area.
     RECT now;
     GetWindowRect(v->hwnd, &now);
     int left = now.left, top = now.top;
@@ -212,11 +187,12 @@ static void view_grow_to_fit_editor(PlatView* v, int editor_w, int editor_h) {
     fr_log("view: window grown to %dx%d for a %dx%d editor", win_w, win_h, editor_w, editor_h);
 }
 
-// Once per frame: offer the plugin the area it has when that area changed,
-// then place the child window at the size the plugin settled on. A plugin
-// that wants more than the area grows the window once, when it opens.
 static void view_update_editor(PlatView* v) {
     App* app = v->app;
+    if (v->editor_hwnd) {
+        bool shown = (GetWindowLongPtrW(v->editor_hwnd, GWL_STYLE) & WS_VISIBLE) != 0;
+        if (shown == app->modal_open) ShowWindow(v->editor_hwnd, app->modal_open ? SW_HIDE : SW_SHOWNA);
+    }
     if (!app->plugin || !app->editor_open || !v->editor_hwnd) return;
     int avail_w, avail_h;
     view_editor_available(v, &avail_w, &avail_h);
@@ -238,8 +214,6 @@ static void view_update_editor(PlatView* v) {
     view_editor_place(v, app->editor_width, app->editor_height);
 }
 
-// --- Frame ---------------------------------------------------------------------
-
 static void view_render_frame(PlatView* v) {
     if (v->in_frame || !v->rtv || v->closed) return;
     v->in_frame = true;
@@ -258,11 +232,13 @@ static void view_render_frame(PlatView* v) {
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     v->swap_chain->Present(1, 0);
 
-    // Plugin loads, unloads and device changes happen here, outside the frame,
-    // so a plugin that pumps messages while it loads cannot re-enter ImGui.
     app_process_requests(v->app);
     view_update_editor(v);
     v->in_frame = false;
+    if (v->app->exit_request) {
+        v->app->exit_request = false;
+        PostMessageW(v->hwnd, WM_CLOSE, 0, 0);
+    }
 }
 
 static void view_on_close(PlatView* v) {
@@ -283,9 +259,6 @@ static LRESULT CALLBACK view_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
 
-    // A click on the plugin editor gives its child window the keyboard focus,
-    // and Windows leaves it there. A press in our own area takes it back, or
-    // the side panel's text fields never see a keystroke again.
     if (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN) {
         if (GetFocus() != hwnd) SetFocus(hwnd);
     }
@@ -351,7 +324,22 @@ static LRESULT CALLBACK view_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM 
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-// --- Lifetime ------------------------------------------------------------------
+static void view_add_icon_font(ImGuiIO& io) {
+    static const ImWchar ranges[] = { ICON_MIN_LC, ICON_MAX_LC, 0 };
+    char dir[FR_MAX_PATH];
+    char path[FR_MAX_PATH];
+    plat_module_dir(dir, sizeof(dir));
+    plat_path_join(path, sizeof(path), dir, FR_ICON_FONT_FILE);
+    if (!plat_path_exists(path)) {
+        fr_log("view: %s not found, so no icons", path);
+        return;
+    }
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    cfg.GlyphMinAdvanceX = UI_BASE_FONT_SIZE;
+    cfg.GlyphOffset.y = UI_ICON_GLYPH_OFFSET_Y;
+    if (!io.Fonts->AddFontFromFileTTF(path, UI_BASE_FONT_SIZE, &cfg, ranges)) fr_log("view: %s could not be loaded", path);
+}
 
 static bool view_register_classes(HINSTANCE instance) {
     static bool registered = false;
@@ -366,8 +354,6 @@ static bool view_register_classes(HINSTANCE instance) {
     wc.lpszClassName = g_main_class_name;
     if (!RegisterClassExW(&wc)) return false;
 
-    // The editor host: plain default handling, a dark background until the
-    // plugin's own window covers it.
     WNDCLASSEXW ec = {};
     ec.cbSize = sizeof(ec);
     ec.style = CS_DBLCLKS;
@@ -423,6 +409,7 @@ PlatView* view_create(App* app, int width, int height) {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.Fonts->AddFontDefault();
+    view_add_icon_font(io);
     apply_neon_theme(v->dpi_scale);
 
     if (!view_init_d3d(v)) {

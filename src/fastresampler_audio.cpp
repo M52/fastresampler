@@ -1,4 +1,3 @@
-// #pragma once (removed for unity build)
 #include <string.h>
 #include "fastresampler_audio.h"
 #include "fastresampler_helpers.h"
@@ -10,6 +9,14 @@ const char* audio_api_name(int api) {
         case AUDIO_API_ASIO:   return "ASIO";
         default:               return "?";
     }
+}
+
+void audio_add_driver(AudioDriverList* out, int api, const char* name, const char* id) {
+    if (out->count >= FR_MAX_AUDIO_DRIVERS) return;
+    AudioDriverInfo* d = &out->drivers[out->count++];
+    d->api = api;
+    fr_strcpy(d->name, FR_DRIVER_NAME_LEN, name);
+    fr_strcpy(d->id, FR_DRIVER_ID_LEN, id);
 }
 
 void audio_enumerate(AudioDriverList* out) {

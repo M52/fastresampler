@@ -1,11 +1,3 @@
-// #pragma once (removed for unity build)
-// ASIO output. Drivers are found in the registry under HKLM\SOFTWARE\ASIO,
-// created through COM, and drive us from their own thread through the
-// callbacks below. The callbacks carry no user pointer, so one ASIO device is
-// open at a time and lives in g_asio.
-//
-// The unity root has already included <windows.h>.
-
 #include <stdlib.h>
 #include <string.h>
 #include "platform/fastresampler_asio.h"
@@ -21,23 +13,15 @@ struct AsioState {
     ASIOBufferInfo  buffers[FR_OUTPUT_CHANNELS];
     ASIOChannelInfo channels[FR_OUTPUT_CHANNELS];
     ASIOCallbacks   callbacks;
-    long            channel_count;    // outputs in use, at most FR_OUTPUT_CHANNELS
+    long            channel_count;
     long            buffer_size;
     bool            buffers_created;
     bool            started;
-    bool            output_ready;     // the driver wants outputReady() after each switch
+    bool            output_ready;
     AudioDevice*    owner;
 };
 
 static AsioState* g_asio = NULL;
-
-static void asio_add_driver(AudioDriverList* out, const char* name, const char* clsid) {
-    if (out->count >= FR_MAX_AUDIO_DRIVERS) return;
-    AudioDriverInfo* d = &out->drivers[out->count++];
-    d->api = AUDIO_API_ASIO;
-    fr_strcpy(d->name, FR_DRIVER_NAME_LEN, name);
-    fr_strcpy(d->id, FR_DRIVER_ID_LEN, clsid);
-}
 
 void asio_enumerate(AudioDriverList* out) {
     HKEY root;
@@ -60,7 +44,7 @@ void asio_enumerate(AudioDriverList* out) {
             if (RegQueryValueExA(key, "Description", NULL, &type, (LPBYTE)desc, &desc_len) != ERROR_SUCCESS || type != REG_SZ) {
                 fr_strcpy(desc, sizeof(desc), sub);
             }
-            asio_add_driver(out, desc, clsid);
+            audio_add_driver(out, AUDIO_API_ASIO, desc, clsid);
         }
         RegCloseKey(key);
     }
@@ -78,7 +62,6 @@ static bool asio_sample_type_supported(ASIOSampleType t) {
     }
 }
 
-// One channel of planar float scratch into the driver's buffer of that type.
 static void asio_convert_channel(const float* src, void* dst, long frames, ASIOSampleType type) {
     switch (type) {
         case ASIOSTFloat32LSB: {
@@ -112,7 +95,6 @@ static void asio_convert_channel(const float* src, void* dst, long frames, ASIOS
             break;
         }
         case ASIOSTInt32LSB16: case ASIOSTInt32LSB18: case ASIOSTInt32LSB20: case ASIOSTInt32LSB24: {
-            // 32 bit words carrying a narrower sample in the low bits.
             int bits = type == ASIOSTInt32LSB16 ? 16 : type == ASIOSTInt32LSB18 ? 18 : type == ASIOSTInt32LSB20 ? 20 : 24;
             double scale = (double)((1u << (bits - 1)) - 1u);
             int32_t* d = (int32_t*)dst;
@@ -171,8 +153,6 @@ static long asio_cb_message(long selector, long value, void* message, double* op
     }
 }
 
-// The block the driver accepts nearest to the request. A granularity of -1
-// means powers of two, 0 means the preferred size only.
 static long asio_pick_buffer_size(long want, long min_size, long max_size, long preferred, long granularity) {
     if (want < min_size) want = min_size;
     if (want > max_size) want = max_size;
@@ -271,7 +251,6 @@ bool asio_open(AudioDevice* dev, const AudioDriverInfo* driver, int block_size, 
     s->callbacks.asioMessage = asio_cb_message;
     s->callbacks.bufferSwitchTimeInfo = asio_cb_buffer_switch_time_info;
 
-    // The callbacks read g_asio, so it is set before the driver can call them.
     g_asio = s;
     if (s->driver->createBuffers(s->buffers, s->channel_count, size, &s->callbacks) != ASE_OK) {
         asio_driver_error(dev, s, "createBuffers failed");

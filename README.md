@@ -25,7 +25,10 @@ Details about the project:
   `src/platform/fastresampler_asio.h`. The VST 2 SDK is not needed either,
   and Steinberg no longer ships it: the plugin ABI (the `AEffect` structure,
   the opcodes, the event and time structures) is declared in
-  `src/fastresampler_vst2.h`.
+  `src/fastresampler_vst2.h`. The icons are the Lucide icon font
+  (`3rdparty/lucide`, ISC) named by IconFontCppHeaders
+  (`3rdparty/IconFontCppHeaders`, zlib); `build.bat` copies `lucide.ttf` next
+  to the exe, which loads it at start and draws no icons without it.
 - VST 2 instruments: a `.dll` under a scanned folder counts when its export
   table names the VST 2 entry point, read from the file's headers without
   running it. Whether such a DLL is an instrument or an effect only shows
@@ -57,7 +60,7 @@ Details about the project:
 - The colour palette is FastSampler's, copied verbatim in
   `src/ui/fastresampler_palette.h`.
 - Never use heredoc for writing files. Use the write tool instead.
-- Comments are short and in ASD-STE100 simplified technical english.
+- The code carries no comments.
 - UI strings capitalise only the first letter.
 
 Layout of the window:
@@ -123,7 +126,9 @@ Layout of the window:
   crossfade on gain.
   Capture legato transitions, in the Legato section, adds the moves between
   the notes to the run; the rest of that section is only there while the box
-  is on. After every note has been sampled, each capture
+  is on. Legato capture is experimental: the section only shows, and a run
+  only captures transitions, while Show experimental features is on in the
+  Settings tab. After every note has been sampled, each capture
   holds one note, presses the next one over it, lets the first go after the
   overlap, and holds the second; whatever the plugin plays between them --
   a slur, a re-bow, a portamento -- is what the sample keeps. The
@@ -222,13 +227,17 @@ Layout of the window:
   records the `.fsi` is built from -- its own writer cannot be compiled in
   here, as it is built against the YAML parser and platform layer this
   project deliberately forked. All three folders are picked with the system's dialog.
-  Save resampling project, last of all, writes every setting of the tab to
-  `Projects\<name>.yaml` next to the exe and loads one back from the list of
-  what is in that folder; a load starts the tab again at Build MIDI.
+  Projects, last of all, is a small file browser that starts in the
+  `Projects` folder next to the exe (made at start when it is missing):
+  folders first, then the `.yaml` projects, with buttons to go up a folder,
+  back to `Projects` and to read the folder again. A double-click goes into a
+  folder or opens a project; Save project writes every setting of the tab to
+  `<name>.yaml` in the folder shown. Opening a project starts the tab again
+  at Build MIDI, and the browser moves to that project's folder.
   A project also holds the plugin it was made with, so opening one brings
   back the whole set-up and not only the tab. The YAML names the plugin, its
   format and its path, and the block of state the plugin wrote goes in
-  `Projects\<name>.fstate` beside it: the patch it held, every parameter, and
+  `<name>.fstate` beside it: the patch it held, every parameter, and
   the outputs it was routed to, exactly what a DAW keeps in its song. Opening
   the project loads that plugin when another one, or none, is up, then hands
   it its state; when it is already the one loaded, only the state goes in, so
@@ -254,8 +263,26 @@ Layout of the window:
   **Settings** has the folders to scan (for both formats; a fresh install
   starts with the system's VST3 folder and its VST 2 folder, the one the
   registry names or `Program Files\VstPlugins`), the
-  audio device and block size, the ASIO control panel, and whether the tips
-  (the dim lines that explain a control) are shown.
+  audio device and block size, the ASIO control panel, whether the tips
+  (the dim lines that explain a control) are shown, Show experimental
+  features, and a button that shows the disclaimer again. **Licenses** lists
+  the third-party software FastResampler is built with, each with its
+  license notice; the notices are kept in `src/fastresampler_licenses.h`.
+  The side panel reopens on the tab it was left on.
+- At start: the disclaimer comes first, on an otherwise empty window, until
+  Don't show again is ticked. Nothing starts before I understand & agree is
+  clicked -- no scan, no audio device, no plugin, no Projects folder -- and
+  the first time that button only unlocks after five seconds. I disagree.
+  Exit closes FastResampler without writing the settings file. Then the
+  plugin folders are scanned behind a progress bar, one VST 2 DLL per
+  frame, so the name of the DLL being opened is on screen while it loads. A
+  plugin path given on the command line, or a project load asked for
+  meanwhile, waits for the scan. While any modal is open, the plugin
+  editor's child window is hidden, as Windows would otherwise draw it over
+  the modal.
+- A new controller curve takes the controller last picked in a curve's box,
+  or added, in this session: CC1 to begin with, or the last curve's after a
+  project load.
 - Right: when nothing is loaded, two tabs: **VST3** lists the VST3 plugins
   and **VSTi** the VST 2 instruments found under the scanned folders
   (double-click to load; the tab last shown is remembered). A right-click on
@@ -326,7 +353,8 @@ Files:
 - `src/fastresampler_wav.*` — the float32 WAV writer and reader.
 - `src/fastresampler_yaml.*` — the YAML reader, FastSampler's parser copied here.
 - `src/fastresampler_state.h` — the container a plugin's own state is kept in: a header and any number of parts, so a VST3's two streams and a VST 2's chunk both fit.
-- `src/fastresampler_project.*` — the `Projects\<name>.yaml` files: the whole Resample tab saved and loaded, and the plugin's state in `<name>.fstate` beside them.
+- `src/fastresampler_project.*` — the `<name>.yaml` project files: the whole Resample tab saved and loaded, the plugin's state in `<name>.fstate` beside them, and the folder listing the project browser shows.
+- `src/fastresampler_licenses.h` — the third-party license notices the Licenses tab shows.
 - `src/fastresampler_instrument.*` — the `.fsi`/`.fsb` builder and the key/velocity mapping.
 - `src/fastresampler_loop.*` — a sustain's loop points, taken off the waveform instead of the clock.
 - `src/fastresampler_legato.*` — where a legato move leaves one note and reaches the next, read out of the audio.

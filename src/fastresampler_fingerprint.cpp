@@ -1,7 +1,3 @@
-// #pragma once (removed for unity build)
-// See fastresampler_fingerprint.h. The measurement is fastsampler-shared's;
-// this reads the frames it measures.
-
 #include <stdlib.h>
 #include <string.h>
 #include "fastresampler_fingerprint.h"
@@ -33,15 +29,12 @@ bool fingerprint_zone(FingerprintAnalyzer* a, WavReader* wav, int64_t first_fram
     for (int b = 0; b < SMFP_BAND_COUNT; ++b) out_band_db[b] = 0.0f;
     *out_analysis_frames = 0;
 
-    // The whole zone plays, and the automatic range takes its loop.
     uint32_t start, end;
     smfp_resolve_zone_range(total_frames, 0, 0, loop, loop_start, loop_end, nullptr, &start, &end);
     uint32_t frames = end - start;
-    if (frames < (uint32_t)SMFP_ANALYSIS_FFT_SIZE) return true;   // flat
+    if (frames < (uint32_t)SMFP_ANALYSIS_FFT_SIZE) return true;
     if ((int64_t)frames > a->capacity) return false;
 
-    // Only the measured frames are read, so they are measured from the
-    // start of the buffer.
     if (!wav_reader_read(wav, first_frame + (int64_t)start, (int64_t)frames, a->pcm)) return false;
     *out_analysis_frames = smfp_analyze_zone_bands(a->scratch, a->pcm, frames, (uint32_t)a->channels,
                                                    (uint32_t)wav->sample_rate, 0, frames,

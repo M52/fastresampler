@@ -1,4 +1,3 @@
-// #pragma once (removed for unity build)
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,11 +7,6 @@
 #include "fastresampler_host_vst2.h"
 #include "platform/fastresampler_platform.h"
 
-// How deep below a configured folder the scan looks. Vendors nest one or two
-// folders deep; a bundle's own Contents folder is never entered.
-#define SCAN_MAX_DEPTH 4
-
-// The entry point a VST 2 DLL exports: the current name, and the old one.
 static const char* const g_vst2_entry_names[2] = { "VSTPluginMain", "main" };
 
 static void scan_add(PluginList* out, const char* path, const char* file_name) {
@@ -26,36 +20,9 @@ static void scan_add(PluginList* out, const char* path, const char* file_name) {
     fr_strip_plugin_ext(e->name);
 }
 
-// The VST3 modules go straight to their list. A DLL goes to the VST 2 list
-// when its export table names the entry point, which is read without running
-// it; the probe below then sorts the instruments from the rest. A banned
-// path is passed over before either look.
-static void scan_dir(PluginList* vst3, PluginList* vsti, const Settings* settings, const char* dir, int depth) {
-    PlatDirIter it;
-    if (!plat_dir_open(&it, dir)) return;
-    while (plat_dir_next(&it)) {
-        char full[FR_MAX_PATH];
-        plat_path_join(full, sizeof(full), dir, it.name);
-        if (settings_is_banned(settings, full)) continue;
-        if (plat_path_has_ext(it.name, ".vst3")) {
-            scan_add(vst3, full, it.name);
-            continue;
-        }
-        if (!it.is_dir && plat_path_has_ext(it.name, ".dll")) {
-            if (plat_library_exports(full, g_vst2_entry_names, 2)) scan_add(vsti, full, it.name);
-            continue;
-        }
-        if (it.is_dir && depth < SCAN_MAX_DEPTH) scan_dir(vst3, vsti, settings, full, depth + 1);
-    }
-    plat_dir_close(&it);
-}
-
 static int scan_compare(const void* a, const void* b) {
     return fr_stricmp(((const PluginEntry*)a)->name, ((const PluginEntry*)b)->name);
 }
-
-// --- The VST 2 cache ---------------------------------------------------------------
-// One line per DLL, tab separated: state, size, write time, path, name.
 
 static ScanCacheEntry* scan_cache_find(ScanCache* cache, const char* path) {
     for (int i = 0; i < cache->count; ++i) {
@@ -89,7 +56,6 @@ static void scan_cache_load(ScanCache* cache) {
         size_t len = strlen(line);
         while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
 
-        // The four tabs split the line; the name is whatever follows the last.
         char* fields[5];
         int count = 0;
         char* s = line;
@@ -117,7 +83,6 @@ void scan_cache_init(ScanCache* cache, const char* path) {
     for (int i = 0; i < cache->count; ++i) {
         ScanCacheEntry* e = &cache->entries[i];
         if (e->state != SCAN_CACHE_OPENING) continue;
-        // The last scan opened this DLL and did not come back from it.
         fr_log("scan: %s took the last scan down and is skipped", e->path);
         e->state = SCAN_CACHE_BROKEN;
         changed = true;
@@ -126,66 +91,164 @@ void scan_cache_init(ScanCache* cache, const char* path) {
     fr_log("scan: %d DLLs in the cache", cache->count);
 }
 
-// Opens every DLL the cache does not know at this size and write time, and
-// keeps the ones that are instruments, named as they name themselves.
-static void scan_probe_vsti(PluginList* vsti, ScanCache* cache) {
-    int kept = 0;
-    for (int i = 0; i < vsti->count; ++i) {
-        PluginEntry* e = &vsti->entries[i];
-        uint64_t size = 0, mtime = 0;
-        if (!plat_file_stat(e->path, &size, &mtime)) continue;
-
-        ScanCacheEntry* ce = scan_cache_find(cache, e->path);
-        bool fresh = ce && ce->size == size && ce->mtime == mtime;
-        ScanCacheEntry scratch;
-        if (!fresh) {
-            if (!ce) {
-                // A full cache still probes, it just cannot remember.
-                ce = cache->count < FR_MAX_VSTI_CACHE ? &cache->entries[cache->count++] : &scratch;
-                fr_strcpy(ce->path, sizeof(ce->path), e->path);
-            }
-            ce->size = size;
-            ce->mtime = mtime;
-            ce->state = SCAN_CACHE_OPENING;
-            ce->name[0] = '\0';
-            // On disk before the DLL runs, so a crash leaves its mark.
-            scan_cache_save(cache);
-
-            char name[FR_PLUGIN_NAME_LEN];
-            char err[FR_ERROR_LEN];
-            bool is_instrument = false;
-            if (vst2_probe(e->path, name, sizeof(name), &is_instrument, err, sizeof(err))) {
-                ce->state = is_instrument ? SCAN_CACHE_INSTRUMENT : SCAN_CACHE_NOT_INSTRUMENT;
-                fr_strcpy(ce->name, sizeof(ce->name), name);
-                fr_log("scan: %s: %s%s", e->path, name, is_instrument ? "" : " (not an instrument)");
-            } else {
-                ce->state = SCAN_CACHE_NOT_INSTRUMENT;
-                fr_log("scan: %s: %s", e->path, err);
-            }
-            scan_cache_save(cache);
-        }
-        if (ce->state != SCAN_CACHE_INSTRUMENT) continue;
-        if (ce->name[0]) fr_strcpy(e->name, sizeof(e->name), ce->name);
-        if (kept != i) vsti->entries[kept] = *e;
-        kept++;
-    }
-    vsti->count = kept;
+static bool scan_push_dir(ScanJob* job, const char* path) {
+    if (job->depth > SCAN_MAX_DEPTH) return false;
+    ScanDir* d = &job->dirs[job->depth];
+    if (!plat_dir_open(&d->it, path)) return false;
+    fr_strcpy(d->path, sizeof(d->path), path);
+    fr_strcpy(job->current, sizeof(job->current), path);
+    job->depth++;
+    return true;
 }
 
-void scan_plugins(PluginList* vst3, PluginList* vsti, ScanCache* cache, const Settings* settings) {
+static void scan_pop_dir(ScanJob* job) {
+    if (job->depth <= 0) return;
+    job->depth--;
+    plat_dir_close(&job->dirs[job->depth].it);
+}
+
+static bool scan_search_step(ScanJob* job, PluginList* vst3, PluginList* vsti, const Settings* settings) {
+    if (job->depth == 0) {
+        while (job->folder < settings->scan_path_count) {
+            const char* root = settings->scan_paths[job->folder++];
+            if (!plat_path_is_dir(root)) {
+                fr_log("scan: folder not found: %s", root);
+                continue;
+            }
+            if (scan_push_dir(job, root)) return false;
+        }
+        return true;
+    }
+
+    ScanDir* top = &job->dirs[job->depth - 1];
+    if (!plat_dir_next(&top->it)) {
+        scan_pop_dir(job);
+        return false;
+    }
+    char full[FR_MAX_PATH];
+    plat_path_join(full, sizeof(full), top->path, top->it.name);
+    if (settings_is_banned(settings, full)) return false;
+    if (plat_path_has_ext(top->it.name, ".vst3")) {
+        scan_add(vst3, full, top->it.name);
+    } else if (!top->it.is_dir && plat_path_has_ext(top->it.name, ".dll")) {
+        if (plat_library_exports(full, g_vst2_entry_names, 2)) scan_add(vsti, full, top->it.name);
+    } else if (top->it.is_dir && job->depth <= SCAN_MAX_DEPTH) {
+        scan_push_dir(job, full);
+    }
+    return false;
+}
+
+enum ScanProbeResult {
+    SCAN_PROBE_NEXT,
+    SCAN_PROBE_YIELD,
+    SCAN_PROBE_DONE
+};
+
+static int scan_probe_step(ScanJob* job, PluginList* vsti, ScanCache* cache, bool out_of_time) {
+    if (job->probe_index >= vsti->count) {
+        vsti->count = job->probe_kept;
+        return SCAN_PROBE_DONE;
+    }
+    int index = job->probe_index;
+    PluginEntry* e = &vsti->entries[index];
+    uint64_t size = 0, mtime = 0;
+    if (!plat_file_stat(e->path, &size, &mtime)) {
+        job->probe_index++;
+        return SCAN_PROBE_NEXT;
+    }
+
+    ScanCacheEntry* ce = scan_cache_find(cache, e->path);
+    bool fresh = ce && ce->size == size && ce->mtime == mtime;
+    if (!fresh) {
+        bool announced = job->probe_announced == index;
+        job->probe_announced = index;
+        fr_strcpy(job->current, sizeof(job->current), e->path);
+        if (out_of_time && !announced) return SCAN_PROBE_YIELD;
+
+        ScanCacheEntry scratch;
+        if (!ce) {
+            ce = cache->count < FR_MAX_VSTI_CACHE ? &cache->entries[cache->count++] : &scratch;
+            fr_strcpy(ce->path, sizeof(ce->path), e->path);
+        }
+        ce->size = size;
+        ce->mtime = mtime;
+        ce->state = SCAN_CACHE_OPENING;
+        ce->name[0] = '\0';
+        scan_cache_save(cache);
+
+        char name[FR_PLUGIN_NAME_LEN];
+        char err[FR_ERROR_LEN];
+        bool is_instrument = false;
+        if (vst2_probe(e->path, name, sizeof(name), &is_instrument, err, sizeof(err))) {
+            ce->state = is_instrument ? SCAN_CACHE_INSTRUMENT : SCAN_CACHE_NOT_INSTRUMENT;
+            fr_strcpy(ce->name, sizeof(ce->name), name);
+            fr_log("scan: %s: %s%s", e->path, name, is_instrument ? "" : " (not an instrument)");
+        } else {
+            ce->state = SCAN_CACHE_NOT_INSTRUMENT;
+            fr_log("scan: %s: %s", e->path, err);
+        }
+        scan_cache_save(cache);
+    }
+    if (ce->state == SCAN_CACHE_INSTRUMENT) {
+        if (ce->name[0]) fr_strcpy(e->name, sizeof(e->name), ce->name);
+        if (job->probe_kept != index) vsti->entries[job->probe_kept] = *e;
+        job->probe_kept++;
+    }
+    job->probe_index++;
+    return SCAN_PROBE_NEXT;
+}
+
+void scan_stop(ScanJob* job) {
+    while (job->depth > 0) scan_pop_dir(job);
+    job->phase = SCAN_PHASE_IDLE;
+}
+
+void scan_start(ScanJob* job, PluginList* vst3, PluginList* vsti) {
+    scan_stop(job);
+    job->phase = SCAN_PHASE_SEARCH;
+    job->folder = 0;
+    job->probe_index = 0;
+    job->probe_kept = 0;
+    job->probe_announced = -1;
+    job->probe_total = 0;
+    job->current[0] = '\0';
     vst3->count = 0;
     vsti->count = 0;
-    for (int i = 0; i < settings->scan_path_count; ++i) {
-        if (!plat_path_is_dir(settings->scan_paths[i])) {
-            fr_log("scan: folder not found: %s", settings->scan_paths[i]);
-            continue;
+}
+
+bool scan_running(const ScanJob* job) {
+    return job->phase != SCAN_PHASE_IDLE;
+}
+
+bool scan_step(ScanJob* job, PluginList* vst3, PluginList* vsti, ScanCache* cache, const Settings* settings,
+               uint32_t budget_ms) {
+    uint64_t start = plat_ms_now();
+    while (job->phase != SCAN_PHASE_IDLE) {
+        bool out_of_time = plat_ms_now() - start >= budget_ms;
+        if (job->phase == SCAN_PHASE_SEARCH) {
+            if (out_of_time) return false;
+            if (scan_search_step(job, vst3, vsti, settings)) {
+                job->phase = SCAN_PHASE_PROBE;
+                job->probe_total = vsti->count;
+            }
+        } else {
+            int result = scan_probe_step(job, vsti, cache, out_of_time);
+            if (result == SCAN_PROBE_YIELD) return false;
+            if (result == SCAN_PROBE_DONE) {
+                qsort(vst3->entries, (size_t)vst3->count, sizeof(PluginEntry), scan_compare);
+                qsort(vsti->entries, (size_t)vsti->count, sizeof(PluginEntry), scan_compare);
+                fr_log("scan: %d VST3 plugins and %d VST 2 instruments (of %d DLLs) in %d folders, %d banned",
+                       vst3->count, vsti->count, job->probe_total, settings->scan_path_count, settings->banned_count);
+                job->phase = SCAN_PHASE_IDLE;
+                job->current[0] = '\0';
+                return true;
+            }
         }
-        scan_dir(vst3, vsti, settings, settings->scan_paths[i], 0);
     }
-    int candidates = vsti->count;
-    scan_probe_vsti(vsti, cache);
-    qsort(vst3->entries, (size_t)vst3->count, sizeof(PluginEntry), scan_compare);
-    qsort(vsti->entries, (size_t)vsti->count, sizeof(PluginEntry), scan_compare);
-    fr_log("scan: %d VST3 plugins and %d VST 2 instruments (of %d DLLs) in %d folders, %d banned",
-           vst3->count, vsti->count, candidates, settings->scan_path_count, settings->banned_count);
+    return false;
+}
+
+float scan_progress(const ScanJob* job) {
+    if (job->phase != SCAN_PHASE_PROBE || job->probe_total <= 0) return -1.0f;
+    return (float)job->probe_index / (float)job->probe_total;
 }

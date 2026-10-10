@@ -1,17 +1,8 @@
-// FastResampler: the Windows unity translation unit root.
-//
-// build.bat compiles this one file. Everything else is #included below in
-// dependency order: OS headers, third-party code (ImGui, the VST3 SDK hosting
-// helpers) with warnings off, then the first-party modules and WinMain.
-
 #include "fastresampler_build.h"
 
-// INITGUID makes the Core Audio property keys and D3D interface ids real
-// definitions in this TU, so no import library has to supply them.
 #define INITGUID
 #include <initguid.h>
 #include <windows.h>
-#include <windowsx.h>
 #include <shlobj.h>
 #include <knownfolders.h>
 #include <d3d11.h>
@@ -24,10 +15,8 @@
 #include <atomic>
 #include <string>
 
-// --- Third-party ---------------------------------------------------------------
 #pragma warning(push, 0)
 
-// imgui.cpp pulls in imgui_internal.h, which wants this set before imgui.h.
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
@@ -39,8 +28,6 @@
 #include "backends/imgui_impl_win32.cpp"
 #include "backends/imgui_impl_dx11.cpp"
 
-// VST3 SDK: the interfaces a host needs, then the hosting helpers and the
-// base classes they compile against.
 #include "pluginterfaces/base/funknown.h"
 #include "pluginterfaces/base/funknownimpl.h"
 #include "pluginterfaces/base/ipluginbase.h"
@@ -88,7 +75,6 @@
 #include "public.sdk/source/vst/hosting/parameterchanges.cpp"
 #include "public.sdk/source/vst/hosting/processdata.cpp"
 
-// Public format definitions come from the pinned fastsampler-shared submodule.
 #include "pb.h"
 #include "pb_common.h"
 #include "pb_encode.h"
@@ -99,20 +85,15 @@
 #include "fastsampler_fsb.h"
 #include "fastsampler_pb.h"
 #include "fastsampler_formats.h"
-// The spectral fingerprint files a layered instrument's morph filter reads,
-// and the analysis FastSampler measures them with.
 #include "fastsampler_smfp.h"
 #include "fastsampler_smfp.cpp"
 #include "fastsampler_smfp_analysis.h"
 #include "fastsampler_smfp_analysis.cpp"
-// WavPack, from FastSampler's third-party folder: the bank builder
-// compresses the streamed part of every sample with it. The DLL sits next
-// to the exe, copied there by build.bat.
 #include "wavpack.h"
+#include "IconFontCppHeaders/IconsLucide.h"
 
 #pragma warning(pop)
 
-// --- First-party ---------------------------------------------------------------
 #include "fastresampler_constants.h"
 #include "platform/fastresampler_platform.h"
 #include "platform/fastresampler_platform_win32.cpp"
@@ -155,6 +136,7 @@
 #include "fastresampler_view.h"
 #include "fastresampler_app.cpp"
 #include "ui/fastresampler_palette.h"
+#include "fastresampler_licenses.h"
 #include "ui/fastresampler_ui.h"
 #include "ui/fastresampler_ui_keyboard.cpp"
 #include "ui/fastresampler_ui_cc_curve.cpp"
@@ -163,9 +145,7 @@
 #include "ui/fastresampler_ui.cpp"
 #include "fastresampler_view_win32.cpp"
 
-// --- Entry point ---------------------------------------------------------------
-
-int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, int show_cmd) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, LPWSTR cmd_line, int show_cmd) {
     fr_log_init();
     fr_log("FastResampler build %d starting", FASTRESAMPLER_BUILD_NUMBER);
 
@@ -174,8 +154,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, 
         return 1;
     }
 
-    // One instance for the life of the process; static so its atomics and
-    // its big fixed arrays never touch the stack.
     static App app;
     app_init(&app);
 
@@ -185,13 +163,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, 
         plat_system_shutdown();
         return 1;
     }
-    app_start_audio(&app);
 
-    // An optional path on the command line, a .vst3 module or a VST 2
-    // instrument .dll, loads right away.
-    if (cmd_line && cmd_line[0]) {
-        char path[FR_MAX_PATH];
-        fr_strcpy(path, sizeof(path), cmd_line);
+    char path[FR_MAX_PATH];
+    if (cmd_line && cmd_line[0] && plat_wide_to_utf8(cmd_line, path, (int)sizeof(path))) {
         size_t len = strlen(path);
         while (len > 0 && (path[len - 1] == ' ' || path[len - 1] == '\t')) path[--len] = '\0';
         if (len >= 2 && path[0] == '"' && path[len - 1] == '"') {
@@ -203,8 +177,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev_instance, LPSTR cmd_line, 
 
     view_run(view);
 
-    // The close handler already shut the app down; this covers a loop that
-    // ended some other way.
     if (app.host) app_shutdown(&app);
     view_destroy(view);
     plat_system_shutdown();

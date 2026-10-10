@@ -1,9 +1,4 @@
 #pragma once
-// The VST 2.4 plugin ABI, as far as an instrument host needs it. Steinberg
-// no longer ships the VST 2 SDK, so the structures and opcodes are declared
-// here from the published interface, the way the ASIO driver interface is in
-// src/platform/fastresampler_asio.h. The layout is the one every VST 2
-// plugin was compiled against; nothing in it depends on the SDK.
 
 #include <stdint.h>
 
@@ -13,10 +8,9 @@
     #define VST2_CALL
 #endif
 
-// 'VstP', the first field of every plugin instance.
 #define VST2_EFFECT_MAGIC       0x56737450
 #define VST2_VERSION            2400
-#define VST2_MAX_NAME_LEN       64       // effect and product names
+#define VST2_MAX_NAME_LEN       64
 #define VST2_MAX_VENDOR_LEN     64
 #define VST2_MAX_PROGRAM_LEN    24
 #define VST2_MAX_PARAM_LEN      8
@@ -32,16 +26,12 @@ typedef void     (VST2_CALL *Vst2ProcessDoubleFn)(Vst2Effect* effect, double** i
 typedef void     (VST2_CALL *Vst2SetParameterFn)(Vst2Effect* effect, int32_t index, float value);
 typedef float    (VST2_CALL *Vst2GetParameterFn)(Vst2Effect* effect, int32_t index);
 
-// The plugin's entry point, "VSTPluginMain" (or "main" in old plugins).
 typedef Vst2Effect* (VST2_CALL *Vst2EntryFn)(Vst2AudioMasterFn audio_master);
 
-// The plugin instance the entry point returns. The host reads the counts and
-// flags and calls through the function pointers; resvd1 and resvd2 are the
-// host's own.
 struct Vst2Effect {
     int32_t             magic;
     Vst2DispatcherFn    dispatcher;
-    Vst2ProcessFn       process;             // the accumulating variant, deprecated
+    Vst2ProcessFn       process;
     Vst2SetParameterFn  set_parameter;
     Vst2GetParameterFn  get_parameter;
     int32_t             num_programs;
@@ -51,12 +41,12 @@ struct Vst2Effect {
     int32_t             flags;
     intptr_t            resvd1;
     intptr_t            resvd2;
-    int32_t             initial_delay;       // latency in frames
-    int32_t             real_qualities;      // deprecated
-    int32_t             off_qualities;       // deprecated
-    float               io_ratio;            // deprecated
-    void*               object;              // the plugin's own
-    void*               user;                // the plugin's own
+    int32_t             initial_delay;
+    int32_t             real_qualities;
+    int32_t             off_qualities;
+    float               io_ratio;
+    void*               object;
+    void*               user;
     int32_t             unique_id;
     int32_t             version;
     Vst2ProcessFn       process_replacing;
@@ -64,7 +54,6 @@ struct Vst2Effect {
     char                future[56];
 };
 
-// Vst2Effect::flags
 enum {
     VST2_FLAG_HAS_EDITOR          = 1 << 0,
     VST2_FLAG_CAN_REPLACING       = 1 << 4,
@@ -74,7 +63,6 @@ enum {
     VST2_FLAG_CAN_DOUBLE_REPLACING = 1 << 12
 };
 
-// Opcodes the host sends to the plugin's dispatcher.
 enum {
     VST2_EFF_OPEN                   = 0,
     VST2_EFF_CLOSE                  = 1,
@@ -85,16 +73,16 @@ enum {
     VST2_EFF_GET_PARAM_LABEL        = 6,
     VST2_EFF_GET_PARAM_DISPLAY      = 7,
     VST2_EFF_GET_PARAM_NAME         = 8,
-    VST2_EFF_SET_SAMPLE_RATE        = 10,    // opt = rate
-    VST2_EFF_SET_BLOCK_SIZE         = 11,    // value = frames
-    VST2_EFF_MAINS_CHANGED          = 12,    // value = 1 on, 0 off
-    VST2_EFF_EDIT_GET_RECT          = 13,    // ptr = Vst2Rect** out
-    VST2_EFF_EDIT_OPEN              = 14,    // ptr = parent window
+    VST2_EFF_SET_SAMPLE_RATE        = 10,
+    VST2_EFF_SET_BLOCK_SIZE         = 11,
+    VST2_EFF_MAINS_CHANGED          = 12,
+    VST2_EFF_EDIT_GET_RECT          = 13,
+    VST2_EFF_EDIT_OPEN              = 14,
     VST2_EFF_EDIT_CLOSE             = 15,
     VST2_EFF_EDIT_IDLE              = 19,
     VST2_EFF_GET_CHUNK              = 23,
     VST2_EFF_SET_CHUNK              = 24,
-    VST2_EFF_PROCESS_EVENTS         = 25,    // ptr = Vst2Events*
+    VST2_EFF_PROCESS_EVENTS         = 25,
     VST2_EFF_CAN_BE_AUTOMATED       = 26,
     VST2_EFF_STRING_TO_PARAMETER    = 27,
     VST2_EFF_GET_PROGRAM_NAME_INDEXED = 29,
@@ -107,12 +95,12 @@ enum {
     VST2_EFF_PROCESS_VAR_IO         = 41,
     VST2_EFF_SET_SPEAKER_ARRANGEMENT = 42,
     VST2_EFF_SET_BYPASS             = 44,
-    VST2_EFF_GET_EFFECT_NAME        = 45,    // ptr = char[64]
-    VST2_EFF_GET_VENDOR_STRING      = 47,    // ptr = char[64]
-    VST2_EFF_GET_PRODUCT_STRING     = 48,    // ptr = char[64]
+    VST2_EFF_GET_EFFECT_NAME        = 45,
+    VST2_EFF_GET_VENDOR_STRING      = 47,
+    VST2_EFF_GET_PRODUCT_STRING     = 48,
     VST2_EFF_GET_VENDOR_VERSION     = 49,
     VST2_EFF_VENDOR_SPECIFIC        = 50,
-    VST2_EFF_CAN_DO                 = 51,    // ptr = the feature's name
+    VST2_EFF_CAN_DO                 = 51,
     VST2_EFF_GET_TAIL_SIZE          = 52,
     VST2_EFF_GET_PARAMETER_PROPERTIES = 56,
     VST2_EFF_GET_VST_VERSION        = 58,
@@ -134,35 +122,34 @@ enum {
     VST2_EFF_SET_PAN_LAW            = 74,
     VST2_EFF_BEGIN_LOAD_BANK        = 75,
     VST2_EFF_BEGIN_LOAD_PROGRAM     = 76,
-    VST2_EFF_SET_PROCESS_PRECISION  = 77,    // value = 0 float, 1 double
+    VST2_EFF_SET_PROCESS_PRECISION  = 77,
     VST2_EFF_GET_NUM_MIDI_INPUT_CHANNELS = 78,
     VST2_EFF_GET_NUM_MIDI_OUTPUT_CHANNELS = 79
 };
 
-// Opcodes the plugin sends to the host's audio master callback.
 enum {
-    VST2_AM_AUTOMATE                = 0,     // index = parameter, opt = value
-    VST2_AM_VERSION                 = 1,     // returns VST2_VERSION
-    VST2_AM_CURRENT_ID              = 2,     // the id of the plugin being loaded (shells)
+    VST2_AM_AUTOMATE                = 0,
+    VST2_AM_VERSION                 = 1,
+    VST2_AM_CURRENT_ID              = 2,
     VST2_AM_IDLE                    = 3,
-    VST2_AM_PIN_CONNECTED           = 4,     // deprecated
-    VST2_AM_WANT_MIDI               = 6,     // deprecated
-    VST2_AM_GET_TIME                = 7,     // returns Vst2TimeInfo*
+    VST2_AM_PIN_CONNECTED           = 4,
+    VST2_AM_WANT_MIDI               = 6,
+    VST2_AM_GET_TIME                = 7,
     VST2_AM_PROCESS_EVENTS          = 8,
-    VST2_AM_SET_TIME                = 9,     // deprecated
-    VST2_AM_TEMPO_AT                = 10,    // deprecated
-    VST2_AM_GET_NUM_AUTOMATABLE_PARAMETERS = 11,   // deprecated
-    VST2_AM_GET_PARAMETER_QUANTIZATION = 12,       // deprecated
+    VST2_AM_SET_TIME                = 9,
+    VST2_AM_TEMPO_AT                = 10,
+    VST2_AM_GET_NUM_AUTOMATABLE_PARAMETERS = 11,
+    VST2_AM_GET_PARAMETER_QUANTIZATION = 12,
     VST2_AM_IO_CHANGED              = 13,
-    VST2_AM_NEED_IDLE               = 14,    // deprecated
-    VST2_AM_SIZE_WINDOW             = 15,    // index = width, value = height
+    VST2_AM_NEED_IDLE               = 14,
+    VST2_AM_SIZE_WINDOW             = 15,
     VST2_AM_GET_SAMPLE_RATE         = 16,
     VST2_AM_GET_BLOCK_SIZE          = 17,
     VST2_AM_GET_INPUT_LATENCY       = 18,
     VST2_AM_GET_OUTPUT_LATENCY      = 19,
-    VST2_AM_GET_PREVIOUS_PLUG       = 20,    // deprecated
-    VST2_AM_GET_NEXT_PLUG           = 21,    // deprecated
-    VST2_AM_WILL_REPLACE_OR_ACCUMULATE = 22, // deprecated
+    VST2_AM_GET_PREVIOUS_PLUG       = 20,
+    VST2_AM_GET_NEXT_PLUG           = 21,
+    VST2_AM_WILL_REPLACE_OR_ACCUMULATE = 22,
     VST2_AM_GET_CURRENT_PROCESS_LEVEL = 23,
     VST2_AM_GET_AUTOMATION_STATE    = 24,
     VST2_AM_OFFLINE_START           = 25,
@@ -170,29 +157,28 @@ enum {
     VST2_AM_OFFLINE_WRITE           = 27,
     VST2_AM_OFFLINE_GET_CURRENT_PASS = 28,
     VST2_AM_OFFLINE_GET_CURRENT_META_PASS = 29,
-    VST2_AM_SET_OUTPUT_SAMPLE_RATE  = 30,    // deprecated
-    VST2_AM_GET_OUTPUT_SPEAKER_ARRANGEMENT = 31,   // deprecated
-    VST2_AM_GET_VENDOR_STRING       = 32,    // ptr = char[64]
-    VST2_AM_GET_PRODUCT_STRING      = 33,    // ptr = char[64]
+    VST2_AM_SET_OUTPUT_SAMPLE_RATE  = 30,
+    VST2_AM_GET_OUTPUT_SPEAKER_ARRANGEMENT = 31,
+    VST2_AM_GET_VENDOR_STRING       = 32,
+    VST2_AM_GET_PRODUCT_STRING      = 33,
     VST2_AM_GET_VENDOR_VERSION      = 34,
     VST2_AM_VENDOR_SPECIFIC         = 35,
-    VST2_AM_SET_ICON                = 36,    // deprecated
-    VST2_AM_CAN_DO                  = 37,    // ptr = the feature's name
+    VST2_AM_SET_ICON                = 36,
+    VST2_AM_CAN_DO                  = 37,
     VST2_AM_GET_LANGUAGE            = 38,
-    VST2_AM_OPEN_WINDOW             = 39,    // deprecated
-    VST2_AM_CLOSE_WINDOW            = 40,    // deprecated
+    VST2_AM_OPEN_WINDOW             = 39,
+    VST2_AM_CLOSE_WINDOW            = 40,
     VST2_AM_GET_DIRECTORY           = 41,
     VST2_AM_UPDATE_DISPLAY          = 42,
     VST2_AM_BEGIN_EDIT              = 43,
     VST2_AM_END_EDIT                = 44,
     VST2_AM_OPEN_FILE_SELECTOR      = 45,
     VST2_AM_CLOSE_FILE_SELECTOR     = 46,
-    VST2_AM_EDIT_FILE               = 47,    // deprecated
-    VST2_AM_GET_CHUNK_FILE          = 48,    // deprecated
-    VST2_AM_GET_INPUT_SPEAKER_ARRANGEMENT = 49     // deprecated
+    VST2_AM_EDIT_FILE               = 47,
+    VST2_AM_GET_CHUNK_FILE          = 48,
+    VST2_AM_GET_INPUT_SPEAKER_ARRANGEMENT = 49
 };
 
-// VST2_EFF_GET_PLUG_CATEGORY
 enum {
     VST2_CATEGORY_UNKNOWN           = 0,
     VST2_CATEGORY_EFFECT            = 1,
@@ -208,23 +194,19 @@ enum {
     VST2_CATEGORY_GENERATOR         = 11
 };
 
-// VST2_AM_GET_CURRENT_PROCESS_LEVEL
 enum {
     VST2_PROCESS_LEVEL_UNKNOWN      = 0,
-    VST2_PROCESS_LEVEL_USER         = 1,     // the UI thread
+    VST2_PROCESS_LEVEL_USER         = 1,
     VST2_PROCESS_LEVEL_REALTIME     = 2,
     VST2_PROCESS_LEVEL_PREFETCH     = 3,
     VST2_PROCESS_LEVEL_OFFLINE      = 4
 };
 
-// VST2_AM_GET_LANGUAGE
 #define VST2_LANGUAGE_ENGLISH       1
 
-// VST2_EFF_SET_PROCESS_PRECISION
 #define VST2_PRECISION_FLOAT        0
 #define VST2_PRECISION_DOUBLE       1
 
-// The editor's rectangle, from VST2_EFF_EDIT_GET_RECT.
 struct Vst2Rect {
     int16_t top;
     int16_t left;
@@ -232,8 +214,6 @@ struct Vst2Rect {
     int16_t right;
 };
 
-// Events for VST2_EFF_PROCESS_EVENTS. A MIDI event is the generic event
-// with its data laid out as below; both are 32 bytes.
 #define VST2_EVENT_TYPE_MIDI        1
 #define VST2_EVENT_TYPE_SYSEX       6
 #define VST2_MIDI_EVENT_IS_REALTIME 1
@@ -247,28 +227,25 @@ struct Vst2Event {
 };
 
 struct Vst2MidiEvent {
-    int32_t type;                // VST2_EVENT_TYPE_MIDI
-    int32_t byte_size;           // sizeof(Vst2MidiEvent)
-    int32_t delta_frames;        // offset into the block
-    int32_t flags;               // VST2_MIDI_EVENT_IS_REALTIME or 0
-    int32_t note_length;         // 0 when unknown
+    int32_t type;
+    int32_t byte_size;
+    int32_t delta_frames;
+    int32_t flags;
+    int32_t note_length;
     int32_t note_offset;
-    char    midi_data[4];        // status, data 1, data 2, unused
+    char    midi_data[4];
     char    detune;
     char    note_off_velocity;
     char    reserved1;
     char    reserved2;
 };
 
-// The list the plugin receives: a count, then the pointers. The two-element
-// array is the declared shape; the host allocates room for more.
 struct Vst2Events {
     int32_t    num_events;
     intptr_t   reserved;
     Vst2Event* events[2];
 };
 
-// What VST2_AM_GET_TIME returns. flags say which fields are valid.
 struct Vst2TimeInfo {
     double  sample_pos;
     double  sample_rate;

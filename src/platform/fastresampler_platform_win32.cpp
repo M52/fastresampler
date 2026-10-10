@@ -1,16 +1,8 @@
-// #pragma once (removed for unity build)
-// Windows implementation of fastresampler_platform.h. The unity root has
-// already included <windows.h>.
-
 #include <stdio.h>
 #include <stdlib.h>
 #include "platform/fastresampler_platform.h"
 
-// ----------------------------------------------------------------- process ----
-
 bool plat_system_init(void) {
-    // ASIO drivers and the WASAPI enumerator are COM objects; drivers expect
-    // an apartment on the thread that talks to them.
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
 }
@@ -23,8 +15,6 @@ void plat_debug_output(const char* text) {
     OutputDebugStringA(text);
 }
 
-// ----------------------------------------------------------------- time ----
-
 uint64_t plat_ms_now(void) {
     return (uint64_t)GetTickCount64();
 }
@@ -32,8 +22,6 @@ uint64_t plat_ms_now(void) {
 void plat_sleep_ms(uint32_t ms) {
     Sleep(ms);
 }
-
-// ------------------------------------------------------------- threading ----
 
 struct PlatThreadStart {
     PlatThreadFn fn;
@@ -69,9 +57,6 @@ void plat_thread_join(PlatThread* t) {
     t->handle = NULL;
 }
 
-// ----------------------------------------------------------- file system ----
-
-// UTF-8 in, UTF-16 out. Returns false when the path does not fit.
 static bool plat_utf8_to_wide(const char* utf8, wchar_t* out, int out_len) {
     int n = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, out, out_len);
     return n > 0;
@@ -125,7 +110,6 @@ bool plat_disk_free_bytes(const char* path, uint64_t* out_free) {
                 return true;
             }
         }
-        // Up one level, keeping the separator so a drive root stays "D:\".
         while (len > 0 && (probe[len - 1] == '\\' || probe[len - 1] == '/')) probe[--len] = '\0';
         size_t cut = 0;
         for (size_t i = 0; i < len; ++i) {
@@ -144,7 +128,6 @@ void plat_module_dir(char* out_dir, size_t max_len) {
         out_dir[0] = '\0';
         return;
     }
-    // Cut after the last separator so the directory keeps its trailing slash.
     for (int i = (int)n - 1; i >= 0; --i) {
         if (wpath[i] == L'\\' || wpath[i] == L'/') {
             wpath[i + 1] = L'\0';
@@ -165,13 +148,11 @@ void plat_default_plugin_dir(char* out_dir, size_t max_len) {
 void plat_default_vst2_dir(char* out_dir, size_t max_len) {
     out_dir[0] = '\0';
     wchar_t wpath[FR_MAX_PATH];
-    // The folder the installers of VST 2 plugins register.
     DWORD size = sizeof(wpath);
     if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\VST", L"VSTPluginsPath", RRF_RT_REG_SZ, NULL, wpath, &size) == ERROR_SUCCESS &&
         wpath[0] && plat_wide_to_utf8(wpath, out_dir, (int)max_len) && plat_path_is_dir(out_dir)) {
         return;
     }
-    // Else the usual folders, the first that exists.
     static const int roots[3] = { CSIDL_PROGRAM_FILES, CSIDL_PROGRAM_FILES, CSIDL_PROGRAM_FILES_COMMON };
     static const wchar_t* const tails[3] = { L"\\VstPlugins", L"\\Steinberg\\VstPlugins", L"\\VST2" };
     for (int i = 0; i < 3; ++i) {
@@ -200,8 +181,6 @@ bool plat_file_delete(const char* path) {
     if (DeleteFileW(wpath)) return true;
     return GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
 }
-
-// ------------------------------------------------------ native libraries ----
 
 void* plat_library_load(const char* path, char* err, size_t err_len) {
     wchar_t wpath[FR_MAX_PATH];
@@ -233,14 +212,11 @@ void plat_library_unload(void* library) {
     if (library) FreeLibrary((HMODULE)library);
 }
 
-// The PE headers, read piece by piece: a plugin DLL with samples inside can
-// be hundreds of megabytes.
 static bool plat_pe_read(FILE* f, uint64_t offset, void* out, size_t len) {
     if (_fseeki64(f, (long long)offset, SEEK_SET) != 0) return false;
     return fread(out, 1, len, f) == len;
 }
 
-// A virtual address of the loaded image to an offset in the file.
 static bool plat_pe_rva_to_offset(const IMAGE_SECTION_HEADER* sections, int count, DWORD rva, uint64_t* out) {
     for (int i = 0; i < count; ++i) {
         const IMAGE_SECTION_HEADER* s = &sections[i];
@@ -288,7 +264,6 @@ bool plat_library_exports(const char* path, const char* const* names, int name_c
     if (!plat_pe_read(f, nt_offset + 4, &fh, sizeof(fh))) goto done;
     if (fh.Machine != machine || !(fh.Characteristics & IMAGE_FILE_DLL)) goto done;
 
-    // The export table's place, from whichever optional header the file has.
     opt_offset = nt_offset + 4 + sizeof(IMAGE_FILE_HEADER);
     if (!plat_pe_read(f, opt_offset, &opt_magic, sizeof(opt_magic))) goto done;
     if (opt_magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
@@ -371,7 +346,6 @@ bool plat_pick_folder(void* parent_window, const char* start_dir, char* out, siz
     return ok;
 }
 
-// Copies one search result into the iterator, or reports that it was a dot entry.
 static bool plat_dir_store(PlatDirIter* it, const WIN32_FIND_DATAW* fd) {
     if (wcscmp(fd->cFileName, L".") == 0 || wcscmp(fd->cFileName, L"..") == 0) return false;
     if (!plat_wide_to_utf8(fd->cFileName, it->name, FR_MAX_PATH)) return false;
@@ -391,7 +365,6 @@ bool plat_dir_open(PlatDirIter* it, const char* dir) {
     if (h == INVALID_HANDLE_VALUE) return false;
     it->handle = h;
 
-    // Walk past the dot entries so open lands on a real one, like next does.
     while (!plat_dir_store(it, &fd)) {
         if (!FindNextFileW(h, &fd)) {
             plat_dir_close(it);
@@ -405,7 +378,6 @@ bool plat_dir_open(PlatDirIter* it, const char* dir) {
 bool plat_dir_next(PlatDirIter* it) {
     if (!it->handle) return false;
     if (it->has_pending) {
-        // The entry found by plat_dir_open() is the current one already.
         it->has_pending = false;
         return true;
     }

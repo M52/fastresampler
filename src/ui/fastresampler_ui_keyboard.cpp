@@ -1,10 +1,3 @@
-// #pragma once (removed for unity build)
-// The GUI keyboard, after FastSampler's: 52 white keys from A0 to C8, black
-// keys straddling the boundary above their white neighbour, velocity from how
-// far down the key the click lands. A readout rail above the keys names the
-// last note played and its velocity, and the notes a resample run would
-// sample are marked in the key's own fill while the Resample tab is open.
-
 #include <stdio.h>
 #include "imgui.h"
 #include "ui/fastresampler_ui.h"
@@ -12,7 +5,6 @@
 #include "fastresampler_app.h"
 #include "fastresampler_constants.h"
 
-// Fraction of a white key's width and height a black key covers.
 #define KEYBOARD_BLACK_WIDTH_RATIO  0.6f
 #define KEYBOARD_BLACK_HEIGHT_RATIO 0.6f
 
@@ -32,7 +24,6 @@ static int keyboard_white_note(int w_idx) {
     return white_key_to_midi[w_idx];
 }
 
-// C, D, F, G and A have a black key a semitone up.
 static bool keyboard_has_black_above(int note) {
     int pc = note % SEMITONES_PER_OCTAVE;
     return pc == 0 || pc == 2 || pc == 5 || pc == 7 || pc == 9;
@@ -49,7 +40,6 @@ static ImVec2 keyboard_black_pos(ImVec2 start, int w_idx, float key_w, float bla
     return ImVec2(start.x + (float)(w_idx + 1) * key_w - black_w * 0.5f, start.y);
 }
 
-// Whether a resample run with the tab's current settings would sample this note.
 static bool keyboard_note_sampled(const App* app, int note) {
     if (app->active_tab != APP_TAB_RESAMPLE || !app->range_valid) return false;
     if (note < app->range_low || note > app->range_high) return false;
@@ -66,7 +56,6 @@ static ImU32 keyboard_key_color(const App* app, int note, bool is_black, bool ho
     return hovered ? KEY_COLOR_WHITE_HOVERED_U32 : KEY_COLOR_WHITE_U32;
 }
 
-// The strip above the keys: the range on the left, the last note on the right.
 static void keyboard_draw_rail(App* app, ImDrawList* dl, ImVec2 pos, float width, float height) {
     float text_y = pos.y + (height - ImGui::GetTextLineHeight()) * 0.5f;
     if (app->active_tab == APP_TAB_RESAMPLE && app->range_valid) {
@@ -105,18 +94,15 @@ void ui_draw_keyboard(App* app, ImVec2 pos, ImVec2 size, float scale) {
 
     ImVec2 mouse = ImGui::GetIO().MousePos;
     bool mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-    bool over_keys = ImGui::IsMouseHoveringRect(start, ImVec2(start.x + size.x, start.y + key_h));
+    bool window_hovered = ImGui::IsWindowHovered();
+    bool over_keys = window_hovered && ImGui::IsMouseHoveringRect(start, ImVec2(start.x + size.x, start.y + key_h));
 
-    // A press that starts on a key owns the mouse until release, so a drag
-    // across the keys glides from note to note. A press that started on a
-    // slider and wanders in here plays nothing.
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && over_keys) app->keyboard_dragging = true;
     if (!mouse_down) app->keyboard_dragging = false;
 
     int active_note = -1;
     float active_velocity = 1.0f;
     if (app->keyboard_dragging && mouse_down) {
-        // Black keys sit on top of the white ones, so they get first refusal.
         for (int w_idx = 0; w_idx < PIANO_WHITE_KEY_COUNT && active_note == -1; ++w_idx) {
             int note = keyboard_white_note(w_idx);
             if (!keyboard_has_black_above(note) || note + 1 > PIANO_HIGH_NOTE) continue;
@@ -143,12 +129,11 @@ void ui_draw_keyboard(App* app, ImVec2 pos, ImVec2 size, float scale) {
         app->keyboard_active_note = active_note;
     }
 
-    // White keys.
     for (int w_idx = 0; w_idx < PIANO_WHITE_KEY_COUNT; ++w_idx) {
         int note = keyboard_white_note(w_idx);
         ImVec2 k_pos = ImVec2(start.x + (float)w_idx * key_w, start.y);
         ImVec2 k_end = ImVec2(k_pos.x + key_w, k_pos.y + key_h);
-        bool hovered = ImGui::IsMouseHoveringRect(k_pos, k_end) && !mouse_down;
+        bool hovered = window_hovered && ImGui::IsMouseHoveringRect(k_pos, k_end) && !mouse_down;
         dl->AddRectFilled(k_pos, k_end, keyboard_key_color(app, note, false, hovered), 1.5f);
         dl->AddRect(k_pos, k_end, KEY_COLOR_WHITE_BORDER_U32, 1.5f, 0, 1.0f);
 
@@ -161,14 +146,13 @@ void ui_draw_keyboard(App* app, ImVec2 pos, ImVec2 size, float scale) {
         }
     }
 
-    // Black keys, drawn over the white ones.
     for (int w_idx = 0; w_idx < PIANO_WHITE_KEY_COUNT; ++w_idx) {
         int note = keyboard_white_note(w_idx);
         if (!keyboard_has_black_above(note) || note + 1 > PIANO_HIGH_NOTE) continue;
         int black_note = note + 1;
         ImVec2 k_pos = keyboard_black_pos(start, w_idx, key_w, black_w);
         ImVec2 k_end = ImVec2(k_pos.x + black_w, k_pos.y + black_h);
-        bool hovered = ImGui::IsMouseHoveringRect(k_pos, k_end) && !mouse_down;
+        bool hovered = window_hovered && ImGui::IsMouseHoveringRect(k_pos, k_end) && !mouse_down;
         dl->AddRectFilled(k_pos, k_end, keyboard_key_color(app, black_note, true, hovered), 1.0f);
         dl->AddRect(k_pos, k_end, KEY_COLOR_BLACK_BORDER_U32, 1.0f, 0, 1.0f);
     }

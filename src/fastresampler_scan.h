@@ -1,15 +1,11 @@
 #pragma once
-// Finds plugins under the configured folders. A VST3 module is a bundle
-// directory named "*.vst3" or a bare "*.vst3" file, and is never loaded here,
-// so a broken one cannot take the scan down. A VST 2 instrument is a "*.dll"
-// that exports the VST 2 entry point; whether such a DLL is an instrument or
-// an effect only shows once it runs, so each is opened once and what it said
-// is kept in a cache file next to the exe. A DLL is marked in that file
-// before it opens: one that took the scan down is skipped from then on.
 
 #include <stdint.h>
 #include "fastresampler_constants.h"
 #include "fastresampler_settings.h"
+#include "platform/fastresampler_platform.h"
+
+#define SCAN_MAX_DEPTH 4
 
 struct PluginEntry {
     char path[FR_MAX_PATH];
@@ -21,31 +17,55 @@ struct PluginList {
     int count;
 };
 
-// What the cache knows about one VST 2 DLL.
 enum ScanCacheState {
-    SCAN_CACHE_NOT_INSTRUMENT = 0,   // an effect, a shell, or not a plugin after all
+    SCAN_CACHE_NOT_INSTRUMENT = 0,
     SCAN_CACHE_INSTRUMENT     = 1,
-    SCAN_CACHE_OPENING        = 2,   // written before the DLL opens; still there means it never came back
-    SCAN_CACHE_BROKEN         = 3    // found as opening at startup: skipped until the file changes
+    SCAN_CACHE_OPENING        = 2,
+    SCAN_CACHE_BROKEN         = 3
 };
 
 struct ScanCacheEntry {
     char     path[FR_MAX_PATH];
     uint64_t size;
     uint64_t mtime;
-    int      state;                  // ScanCacheState
+    int      state;
     char     name[FR_PLUGIN_NAME_LEN];
 };
 
 struct ScanCache {
     ScanCacheEntry entries[FR_MAX_VSTI_CACHE];
     int  count;
-    char path[FR_MAX_PATH];          // the file it is kept in
+    char path[FR_MAX_PATH];
 };
 
-// Reads the cache file, and marks the DLL a previous scan did not survive.
+enum ScanPhase {
+    SCAN_PHASE_IDLE = 0,
+    SCAN_PHASE_SEARCH,
+    SCAN_PHASE_PROBE
+};
+
+struct ScanDir {
+    PlatDirIter it;
+    char        path[FR_MAX_PATH];
+};
+
+struct ScanJob {
+    int     phase;
+    int     folder;
+    ScanDir dirs[SCAN_MAX_DEPTH + 1];
+    int     depth;
+    int     probe_index;
+    int     probe_kept;
+    int     probe_announced;
+    int     probe_total;
+    char    current[FR_MAX_PATH];
+};
+
 void scan_cache_init(ScanCache* cache, const char* path);
 
-// Fills vst3 with the VST3 modules and vsti with the VST 2 instruments under
-// the settings' folders, both sorted by name.
-void scan_plugins(PluginList* vst3, PluginList* vsti, ScanCache* cache, const Settings* settings);
+void scan_start(ScanJob* job, PluginList* vst3, PluginList* vsti);
+void scan_stop(ScanJob* job);
+bool scan_running(const ScanJob* job);
+bool scan_step(ScanJob* job, PluginList* vst3, PluginList* vsti, ScanCache* cache, const Settings* settings,
+               uint32_t budget_ms);
+float scan_progress(const ScanJob* job);

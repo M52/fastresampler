@@ -1,4 +1,3 @@
-// #pragma once (removed for unity build)
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -8,7 +7,6 @@
 #include "fastresampler_log.h"
 #include "platform/fastresampler_platform.h"
 
-// One more line in the output log's ring. Full, the oldest line goes.
 static void app_log_add(App* app, bool is_error, const char* text) {
     int at;
     if (app->log_count < FR_LOG_LINES) {
@@ -46,8 +44,6 @@ float app_log_strip_height(const App* app, float client_height, float scale) {
     float bar = UI_LOG_HEADER_HEIGHT * scale;
     if (!app->settings.log_expanded) return bar;
     float strip = bar + (float)app->settings.log_height * scale;
-    // However far the grip was dragged, the plugin area and the keyboard
-    // keep room of their own.
     float most = client_height - (UI_KEYBOARD_HEIGHT + UI_MAIN_MIN_HEIGHT) * scale;
     if (strip > most) strip = most;
     if (strip < bar) strip = bar;
@@ -64,7 +60,18 @@ void app_set_status(App* app, bool is_error, const char* fmt, ...) {
     app_log_add(app, is_error, app->status);
 }
 
-// The driver the settings name, else the first one (the default WASAPI device).
+void app_disclaimer_accept(App* app, bool hide) {
+    app->settings.disclaimer_accepted = true;
+    app->settings.disclaimer_hidden = hide;
+    settings_save(&app->settings, app->settings_path);
+    if (!app->started) app->start_request = true;
+}
+
+void app_disclaimer_reject(App* app) {
+    fr_log("app: the disclaimer was not accepted");
+    app->exit_request = true;
+}
+
 static int app_find_saved_driver(const App* app) {
     for (int i = 0; i < app->drivers.count; ++i) {
         const AudioDriverInfo* d = &app->drivers.drivers[i];
@@ -77,13 +84,13 @@ static int app_block_size_index(int block_size) {
     for (int i = 0; i < FR_BLOCK_SIZE_OPTION_COUNT; ++i) {
         if (g_block_size_options[i] == block_size) return i;
     }
-    return 3;   // 256
+    return 3;
 }
 
-// Both lists again from the settings' folders; nothing stays selected.
-static void app_scan_plugins(App* app) {
-    scan_plugins(&app->plugins[HOST_FORMAT_VST3], &app->plugins[HOST_FORMAT_VST2], &app->vsti_cache, &app->settings);
+static void app_start_scan(App* app) {
+    scan_start(&app->scan, &app->plugins[HOST_FORMAT_VST3], &app->plugins[HOST_FORMAT_VST2]);
     for (int f = 0; f < HOST_FORMAT_COUNT; ++f) app->selected_plugin[f] = -1;
+    app_set_status(app, false, "Scanning the plugin folders...");
 }
 
 void app_init(App* app) {
@@ -140,6 +147,10 @@ void app_init(App* app) {
     app->log_clear_request = false;
     app->disk_warning[0] = '\0';
     app->disk_warning_open = false;
+    app->disclaimer_open_request = !app->settings.disclaimer_hidden;
+    app->modal_open = false;
+    app->cc_last_controller = -1;
+    app->pending_load_path[0] = '\0';
     app->editor_open = false;
     app->editor_width = 0;
     app->editor_height = 0;
@@ -157,30 +168,29 @@ void app_init(App* app) {
     app->instrument_start_request = false;
     app->resample_fsi_ready = false;
     app->resample_full_wav_removed = false;
-    app->project_scan_request = false;
+    app->project_browse_request = false;
+    app->project_browse_dir[0] = '\0';
     app->project_save_request = false;
     app->project_load_request = false;
-    app->project_load_name[0] = '\0';
-    project_scan(&app->projects);
+    app->project_load_path[0] = '\0';
+    app->project_browser.dir[0] = '\0';
+    app->project_browser.count = 0;
+    app->project_browser.selected = -1;
 
     app->host = host_create();
     app->plugin = nullptr;
     app->plugin_path[0] = '\0';
 
-    audio_enumerate(&app->drivers);
-    app->selected_driver = app_find_saved_driver(app);
-    app->pending_driver = app->selected_driver;
+    app->selected_driver = -1;
+    app->pending_driver = -1;
     app->pending_block_index = app_block_size_index(app->settings.block_size);
 
-    char cache_path[FR_MAX_PATH];
-    plat_path_join(cache_path, sizeof(cache_path), dir, FR_VSTI_CACHE_FILE);
-    scan_cache_init(&app->vsti_cache, cache_path);
-    app_scan_plugins(app);
-    app_set_status(app, false, "%d VST3 plugins and %d VST instruments found. Double-click one to load it.",
-                   app->plugins[HOST_FORMAT_VST3].count, app->plugins[HOST_FORMAT_VST2].count);
+    app->side_tab_select_request = true;
+    app->started = false;
+    app->start_request = app->settings.disclaimer_hidden;
+    app->exit_request = false;
 }
 
-// Stops the audio thread from touching the plugin and waits until it is out.
 static void app_pause_plugin(App* app) {
     app->plugin_active.store(false, std::memory_order_seq_cst);
     while (app->audio_busy.load(std::memory_order_seq_cst) != 0) plat_sleep_ms(1);
@@ -190,7 +200,6 @@ static void app_resume_plugin(App* app) {
     if (app->plugin) app->plugin_active.store(true, std::memory_order_seq_cst);
 }
 
-// IPlugFrame::resizeView lands here: the editor wants a new size.
 static void app_on_editor_resize(void* user, int width, int height) {
     App* app = (App*)user;
     app->editor_width = width;
@@ -235,9 +244,6 @@ static void app_unload_plugin(App* app) {
     app_set_status(app, false, "Closed %s.", name);
 }
 
-// Loads a plugin by path and puts its editor up. display_name is what a
-// failure is reported against; the path is kept so a project saved later
-// names the plugin it was made with.
 static bool app_load_plugin_path(App* app, const char* path, const char* display_name) {
     app_set_status(app, false, "Loading %s...", display_name);
 
@@ -272,10 +278,6 @@ static void app_load_plugin(App* app, int format, int index) {
     app_load_plugin_path(app, entry->path, entry->name);
 }
 
-// The row a path has in the list of its format, added to the end when the
-// scan never found it. The list of that format comes to the front and the
-// row is highlighted, so what is loaded is what is shown. -1 when the path
-// is banned, gone, or the list is full.
 static int app_select_plugin_path(App* app, const char* path) {
     if (!path || !path[0]) return -1;
     if (settings_is_banned(&app->settings, path)) {
@@ -306,8 +308,6 @@ static int app_select_plugin_path(App* app, const char* path) {
     return list->count++;
 }
 
-// Closes and reopens the audio device from the pending settings, then puts
-// the plugin back on the new rate and block.
 static void app_apply_audio(App* app) {
     app_pause_plugin(app);
     audio_close(&app->audio);
@@ -346,12 +346,6 @@ static void app_apply_audio(App* app) {
     app_resume_plugin(app);
 }
 
-void app_start_audio(App* app) {
-    app_apply_audio(app);
-}
-
-// --- Resampling -------------------------------------------------------------------
-
 bool app_resample_running(const App* app) {
     return app->resample_job.running.load();
 }
@@ -360,18 +354,15 @@ bool app_instrument_running(const App* app) {
     return app->instrument_job.running.load();
 }
 
-// The rate the plugin plays at: the device's, or the default with no device.
 static double app_device_sample_rate(const App* app) {
     return app->audio.open ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
 }
 
-// The rate a render runs at: the tab's choice, or the device's.
 static double app_resample_rate(const App* app) {
     int chosen = app->settings.resample.sample_rate;
     return chosen > 0 ? (double)chosen : app_device_sample_rate(app);
 }
 
-// "1.5 GB" or "320 MB".
 static void app_format_bytes(uint64_t bytes, char* out, size_t out_len) {
     double mb = (double)bytes / (1024.0 * 1024.0);
     if (mb >= 1024.0) {
@@ -381,15 +372,10 @@ static void app_format_bytes(uint64_t bytes, char* out, size_t out_len) {
     }
 }
 
-// Whether the disk of the output folder has room for the built script's
-// files. True with no script. False raises the warning the UI shows as a
-// modal, and the caller must not render.
 static bool app_check_disk_space(App* app) {
     if (!app->resample_script.built) return true;
     char dir[FR_MAX_PATH];
     char dir_err[FR_STATUS_LEN];
-    // The first bus's folder: every bus writes the same amount, and they are
-    // all under one root unless a box sent them elsewhere.
     if (!resample_output_dir(&app->settings.resample, 0, dir, sizeof(dir), dir_err, sizeof(dir_err))) return true;
     uint64_t needed = resample_required_bytes(&app->resample_script, app->settings.resample.split_samples,
                                               app->settings.resample.bus_count);
@@ -405,8 +391,6 @@ static bool app_check_disk_space(App* app) {
     }
     if (free_bytes < needed) {
         int bus_count = app->settings.resample.bus_count;
-        // Every bus writes its own set, so the count is what the run makes
-        // in total and the message says so.
         char over[48];
         over[0] = '\0';
         if (bus_count > 1) snprintf(over, sizeof(over), " over %d output busses", bus_count);
@@ -427,13 +411,31 @@ static bool app_check_disk_space(App* app) {
     return true;
 }
 
+bool app_legato_enabled(const App* app) {
+    return app->settings.show_experimental && app->settings.resample.legato;
+}
+
+int app_next_cc_controller(const App* app) {
+    if (app->cc_last_controller >= 0) return app->cc_last_controller;
+    const ResampleConfig* cfg = &app->settings.resample;
+    if (cfg->cc_curve_count > 0) return cfg->cc_curves[cfg->cc_curve_count - 1].controller;
+    return MIDI_CC_MOD_WHEEL;
+}
+
+static ResampleConfig g_app_build_config;
+
 void app_resample_build(App* app) {
     if (app_resample_running(app) || app_instrument_running(app)) return;
-    // A new script means the files on disk no longer describe it.
     app->resample_fsi_ready = false;
     app->resample_full_wav_removed = false;
+    const ResampleConfig* cfg = &app->settings.resample;
+    if (cfg->legato && !app_legato_enabled(app)) {
+        g_app_build_config = *cfg;
+        g_app_build_config.legato = false;
+        cfg = &g_app_build_config;
+    }
     char err[FR_STATUS_LEN];
-    if (!resample_build(&app->resample_script, &app->settings.resample, app_resample_rate(app), err, sizeof(err))) {
+    if (!resample_build(&app->resample_script, cfg, app_resample_rate(app), err, sizeof(err))) {
         app_set_status(app, true, "%s", err);
         return;
     }
@@ -449,9 +451,6 @@ void app_resample_build(App* app) {
         snprintf(transitions, sizeof(transitions), " and %d transitions over %d interval%s",
                  s->transition_count, s->interval_count, s->interval_count == 1 ? "" : "s");
     }
-    // The script is played once whatever the busses are, but every bus
-    // writes its own copy of every sample, so the log says how many files
-    // the run actually makes.
     int bus_count = app->settings.resample.bus_count;
     if (bus_count > 1) {
         fr_log("resample: %d output busses, so %d sample files in %d folders",
@@ -479,8 +478,6 @@ static void app_resample_start(App* app) {
         app_set_status(app, true, "The sample rate changed since the build. Build the MIDI again.");
         return;
     }
-    // A bus on a pair the plugin does not have records silence, which is
-    // found out hours later. The run is stopped instead and says which bus.
     {
         const ResampleConfig* c = &app->settings.resample;
         int have = host_plugin_info(app->plugin)->total_output_channels;
@@ -494,7 +491,6 @@ static void app_resample_start(App* app) {
             return;
         }
     }
-    // One folder per bus, made before the render so the worker only writes.
     const ResampleConfig* cfg = &app->settings.resample;
     char output_dir[FR_MAX_PATH];
     char dir_err[FR_STATUS_LEN];
@@ -508,14 +504,10 @@ static void app_resample_start(App* app) {
             return;
         }
     }
-    // Checked again here: the disk may have filled up since the build.
     if (!app_check_disk_space(app)) {
         app_set_status(app, true, "Not enough disk space; the render did not start.");
         return;
     }
-    // The worker owns the plugin until it is done; the device plays silence.
-    // The plugin is switched to the export rate, in offline mode, for the
-    // duration; app_resample_finish() puts it back on the device.
     app_pause_plugin(app);
     int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
     double export_rate = app->resample_script.sample_rate;
@@ -540,12 +532,9 @@ static void app_resample_finish(App* app) {
     if (!resample_collect(&app->resample_job)) return;
     ResampleJob* job = &app->resample_job;
     app_set_status(app, job->result_is_error, "%s", job->result);
-    // Every bus writes the whole set, so a complete run wrote one file per
-    // segment per bus.
     int wanted = app->resample_script.segment_count * job->bus_count;
     bool samples_ok = !job->split_samples || job->files_written == wanted;
     app->resample_fsi_ready = !job->result_is_error && !job->cancel.load() && samples_ok;
-    // Back to the device's rate and realtime mode.
     if (app->plugin) {
         int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
         if (!host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false)) {
@@ -560,13 +549,9 @@ static void app_instrument_start(App* app) {
         app_set_status(app, true, "Render the samples first.");
         return;
     }
-    // One instrument per output bus, each cut from that bus's own full WAV
-    // and written beside it, so every microphone ends up a bank of its own.
     const ResampleConfig* cfg = &app->settings.resample;
     InstrumentTarget targets[FR_MAX_OUTPUT_BUSSES];
     char err[FR_STATUS_LEN];
-    // The banks are cut from the WAVs the render wrote, so the busses must
-    // still be the ones it wrote them for.
     if (cfg->bus_count != app->resample_job.bus_count) {
         app_set_status(app, true, "The output busses changed since the render. Render to WAV again.");
         return;
@@ -589,7 +574,6 @@ static void app_instrument_start(App* app) {
             app_set_status(app, true, "Could not create the export folder %s", targets[b].out_dir);
             return;
         }
-        // The bank is cut from the same full WAV the bus's samples came from.
         fr_strcpy(targets[b].full_wav_path, sizeof(targets[b].full_wav_path), app->resample_job.full_path[b]);
         fr_strcpy(targets[b].bus_name, sizeof(targets[b].bus_name), cfg->busses[b].name);
     }
@@ -608,10 +592,8 @@ static void app_instrument_finish(App* app) {
     if (!instrument_collect(&app->instrument_job)) return;
     if (app->instrument_job.full_wav_removed) {
         app->resample_full_wav_removed = true;
-        app->resample_fsi_ready = false;   // there is nothing left to cut a bank from
+        app->resample_fsi_ready = false;
     }
-    // What each bus reported, in order, before the line for the whole run:
-    // the worker keeps them because it cannot write to the ledger itself.
     for (int i = 0; i < app->instrument_job.bus_result_count; ++i) {
         app_log_add(app, false, app->instrument_job.bus_result[i]);
     }
@@ -623,8 +605,6 @@ static void app_instrument_finish(App* app) {
         snprintf(app->status, sizeof(app->status), "Wrote %d instruments, one per output bus.",
                  app->instrument_job.instruments_written);
     } else {
-        // The full detail (zone and collection counts) belongs in the output
-        // log, not the side panel's one-line status strip.
         app_log_add(app, false, app->instrument_job.result);
         app->status_is_error = false;
         snprintf(app->status, sizeof(app->status), "Wrote %s and %s.",
@@ -633,9 +613,6 @@ static void app_instrument_finish(App* app) {
     }
 }
 
-// The plugin the project is being saved with: which one is loaded, and the
-// state it is in. The audio thread is kept out over the read, as it is for
-// anything else that talks to the plugin off the audio callback.
 static void app_read_plugin_state(App* app, ProjectPlugin* out) {
     project_plugin_init(out);
     if (!app->plugin || !app->plugin_path[0]) return;
@@ -651,12 +628,6 @@ static void app_read_plugin_state(App* app, ProjectPlugin* out) {
     if (!ok) fr_log("app: %s wrote no state to save", info->name);
 }
 
-// Where a project's plugin is on this machine. The path it was saved with
-// when that file is still there; otherwise the scanned list of its format is
-// searched, by file name first and then by the name the plugin reported, so
-// a project made on another machine finds the same plugin under whatever
-// folder it was installed in here. out gets the path; false when nothing
-// matches and the project has to load without it.
 static bool app_find_project_plugin(App* app, const ProjectPlugin* plugin, char* out, size_t out_len) {
     if (plat_path_exists(plugin->path)) {
         fr_strcpy(out, out_len, plugin->path);
@@ -666,17 +637,12 @@ static bool app_find_project_plugin(App* app, const ProjectPlugin* plugin, char*
     const PluginList* list = &app->plugins[format];
     const char* file = plat_path_basename(plugin->path);
 
-    // The file name, which is the same wherever the plugin was installed.
-    // A VST3 bundle and a bare file both end in the name the scan lists.
     for (int i = 0; i < list->count; ++i) {
         if (fr_stricmp(plat_path_basename(list->entries[i].path), file) == 0) {
             fr_strcpy(out, out_len, list->entries[i].path);
             return true;
         }
     }
-    // Then what the plugin called itself. A VST3 is listed under its file
-    // name and a VST 2 under the name it reported, so this catches the one
-    // whose file was renamed and the one the two names differ on.
     if (plugin->name[0]) {
         for (int i = 0; i < list->count; ++i) {
             if (fr_stricmp(list->entries[i].name, plugin->name) == 0) {
@@ -688,9 +654,6 @@ static bool app_find_project_plugin(App* app, const ProjectPlugin* plugin, char*
     return false;
 }
 
-// Puts the plugin of a loaded project back: the same one loaded again when
-// another is up, then the state it was left in. A plugin this machine does
-// not have at all is reported and the settings are kept.
 static void app_restore_plugin(App* app, ProjectPlugin* plugin) {
     if (!plugin->present) return;
     char path[FR_MAX_PATH];
@@ -706,7 +669,6 @@ static void app_restore_plugin(App* app, ProjectPlugin* plugin) {
 
     if (fr_stricmp(app->plugin_path, path) != 0 || !app->plugin) {
         app_unload_plugin(app);
-        // The list shows the plugin that is loaded, whichever tab it is on.
         app_select_plugin_path(app, path);
         if (!app_load_plugin_path(app, path, plugin->name)) return;
     }
@@ -723,8 +685,6 @@ static void app_restore_plugin(App* app, ProjectPlugin* plugin) {
         app_set_status(app, true, "%s: %s", plugin->name, err);
         return;
     }
-    // The state may have given the plugin other outputs than it had; the
-    // audio device is opened for the new layout and the log says what it is.
     host_plugin_take_io_change(app->plugin);
     const HostPluginInfo* info = host_plugin_info(app->plugin);
     if (moved) {
@@ -736,10 +696,6 @@ static void app_restore_plugin(App* app, ProjectPlugin* plugin) {
     }
 }
 
-// The plugin changed its own busses while it was running, the way a sampler
-// does when its outputs are set up in its own editor. The layout is read
-// again with the audio thread kept out, so the Output busses tab and a run
-// both see what it offers now.
 static void app_service_io_change(App* app) {
     if (!app->plugin || !host_plugin_take_io_change(app->plugin)) return;
     app_pause_plugin(app);
@@ -757,13 +713,10 @@ static void app_service_io_change(App* app) {
     }
 }
 
-// The saved projects: the list, and the save and load the tab asked for.
-// Neither runs while a render or an instrument build does, because both read
-// the configuration a load would replace.
 static void app_process_project_requests(App* app) {
-    if (app->project_scan_request) {
-        app->project_scan_request = false;
-        project_scan(&app->projects);
+    if (app->project_browse_request) {
+        app->project_browse_request = false;
+        project_browser_open(&app->project_browser, app->project_browse_dir);
     }
     if (!app->project_save_request && !app->project_load_request) return;
 
@@ -777,7 +730,10 @@ static void app_process_project_requests(App* app) {
         } else {
             ProjectPlugin plugin;
             app_read_plugin_state(app, &plugin);
-            bool ok = project_save(&app->settings.resample, &plugin, app->settings.project_name, err, sizeof(err));
+            ProjectBrowser* browser = &app->project_browser;
+            char path[FR_MAX_PATH];
+            bool ok = project_save(&app->settings.resample, &plugin, browser->dir, app->settings.project_name,
+                                   path, sizeof(path), err, sizeof(err));
             if (ok) {
                 if (plugin.present && plugin.state.size > 0) {
                     app_set_status(app, false, "Project %s saved, with %s as it stands.",
@@ -790,7 +746,8 @@ static void app_process_project_requests(App* app) {
                                    app->settings.project_name);
                 }
                 settings_save(&app->settings, app->settings_path);
-                project_scan(&app->projects);
+                project_browser_open(browser, browser->dir);
+                project_browser_select(browser, plat_path_basename(path));
             } else {
                 app_set_status(app, true, "%s", err);
             }
@@ -798,24 +755,25 @@ static void app_process_project_requests(App* app) {
         }
     }
 
-    if (app->project_load_request) {
+    if (app->project_load_request && !scan_running(&app->scan)) {
         app->project_load_request = false;
         ProjectPlugin plugin;
         project_plugin_init(&plugin);
         if (busy) {
             app_set_status(app, true, "Wait for the render to finish, or cancel it.");
-        } else if (project_load(&app->settings.resample, &plugin, app->project_load_name, err, sizeof(err))) {
-            fr_strcpy(app->settings.project_name, sizeof(app->settings.project_name), app->project_load_name);
-            // A project made on another computer names folders on a drive
-            // this one has not got; those come back to the folder next to
-            // the exe before anything is written to them.
+        } else if (project_load(&app->settings.resample, &plugin, app->project_load_path, err, sizeof(err))) {
+            project_name_of_path(app->project_load_path, app->settings.project_name, sizeof(app->settings.project_name));
+            char dir[FR_MAX_PATH];
+            fr_strcpy(dir, sizeof(dir), app->project_load_path);
+            dir[plat_path_basename(dir) - dir] = '\0';
+            project_browser_open(&app->project_browser, dir);
+            project_browser_select(&app->project_browser, plat_path_basename(app->project_load_path));
             int moved_dirs = resample_config_localize_dirs(&app->settings.resample);
             settings_save(&app->settings, app->settings_path);
-            // The script and the samples belong to the settings that made
-            // them, so the tab starts again at Build MIDI.
             app->resample_script.built = false;
             app->resample_fsi_ready = false;
             app->resample_full_wav_removed = false;
+            app->cc_last_controller = -1;
             if (moved_dirs == 1) {
                 app_set_status(app, false, "Project %s loaded; a folder it names is not on this computer, so it now follows %s.",
                                app->settings.project_name, app->settings.resample.root_dir);
@@ -826,8 +784,6 @@ static void app_process_project_requests(App* app) {
                 app_set_status(app, false, "Project %s loaded.", app->settings.project_name);
             }
             if (moved_dirs > 0) app_check_disk_space(app);
-            // The plugin last, so its own message is the one left standing:
-            // it takes the longest and is what the user watches for.
             app_restore_plugin(app, &plugin);
         } else {
             app_set_status(app, true, "%s", err);
@@ -836,19 +792,59 @@ static void app_process_project_requests(App* app) {
     }
 }
 
+static void app_start(App* app) {
+    app->start_request = false;
+    app->started = true;
+
+    char dir[FR_MAX_PATH];
+    project_dir(dir, sizeof(dir));
+    if (!plat_dir_create_all(dir)) fr_log("app: the folder %s could not be made", dir);
+    project_browser_open(&app->project_browser, dir);
+
+    audio_enumerate(&app->drivers);
+    app->selected_driver = app_find_saved_driver(app);
+    app->pending_driver = app->selected_driver;
+    app_apply_audio(app);
+
+    char module_dir[FR_MAX_PATH];
+    char cache_path[FR_MAX_PATH];
+    plat_module_dir(module_dir, sizeof(module_dir));
+    plat_path_join(cache_path, sizeof(cache_path), module_dir, FR_VSTI_CACHE_FILE);
+    scan_cache_init(&app->vsti_cache, cache_path);
+    app_start_scan(app);
+}
+
+static void app_step_scan(App* app) {
+    if (!scan_running(&app->scan) || app_resample_running(app)) return;
+    if (!scan_step(&app->scan, &app->plugins[HOST_FORMAT_VST3], &app->plugins[HOST_FORMAT_VST2], &app->vsti_cache,
+                   &app->settings, FR_SCAN_FRAME_BUDGET_MS)) {
+        return;
+    }
+    app_set_status(app, false, "%d VST3 plugins and %d VST instruments found.%s",
+                   app->plugins[HOST_FORMAT_VST3].count, app->plugins[HOST_FORMAT_VST2].count,
+                   app->plugin ? "" : " Double-click one to load it.");
+    if (app->pending_load_path[0]) {
+        char path[FR_MAX_PATH];
+        fr_strcpy(path, sizeof(path), app->pending_load_path);
+        app->pending_load_path[0] = '\0';
+        app_request_load_path(app, path);
+    }
+}
+
 void app_process_requests(App* app) {
+    if (!app->started) {
+        if (!app->start_request) return;
+        app_start(app);
+    }
     if (app->log_clear_request) {
         app->log_clear_request = false;
         app_log_clear(app);
     }
+    app_step_scan(app);
     app_process_project_requests(app);
 
-    // A VST 2 editor repaints on this call, on the UI thread, a render in
-    // progress or not: that is the plugin's own thread split.
     if (app->plugin && app->editor_open) host_plugin_editor_idle(app->plugin);
 
-    // The folder pickers are modal and pump messages; they run here, outside
-    // the ImGui frame, so a repaint meanwhile cannot re-enter the UI.
     if (app->root_dir_pick_request) {
         app->root_dir_pick_request = false;
         char dir[FR_MAX_PATH];
@@ -889,7 +885,6 @@ void app_process_requests(App* app) {
         if (!app_resample_running(app) && !app_instrument_running(app)) app_resample_start(app);
     }
     if (app_resample_running(app)) {
-        // The worker has the plugin: nothing below may touch it until it is done.
         app_resample_finish(app);
         if (app_resample_running(app)) {
             if (app->load_request >= 0 || app->unload_request || app->audio_apply_request) {
@@ -910,10 +905,9 @@ void app_process_requests(App* app) {
     if (app->rescan_request) {
         app->rescan_request = false;
         settings_save(&app->settings, app->settings_path);
-        app_scan_plugins(app);
-        app_set_status(app, false, "%d VST3 plugins and %d VST instruments found.",
-                       app->plugins[HOST_FORMAT_VST3].count, app->plugins[HOST_FORMAT_VST2].count);
+        app_start_scan(app);
     }
+    if (scan_running(&app->scan)) app->load_request = -1;
     if (app->unload_request || app->load_request >= 0) {
         app->unload_request = false;
         app_unload_plugin(app);
@@ -931,18 +925,13 @@ void app_process_requests(App* app) {
         fr_log("audio: the driver asked for a reset");
         app_apply_audio(app);
     }
-    // Last of the plugin work: a plugin that changed its own busses since
-    // the previous frame is set up again for the layout it has now.
     app_service_io_change(app);
 
-    // The meters: take the peaks the audio thread left, decay towards them.
     for (int c = 0; c < FR_OUTPUT_CHANNELS; ++c) {
         float peak = app->peak[c].exchange(0.0f);
         float decayed = app->meter[c] * UI_METER_DECAY;
         app->meter[c] = peak > decayed ? peak : decayed;
     }
-    // One pair per output bus, the same way: the Output busses tab draws
-    // them, so a note played shows which microphone the plugin routed where.
     for (int b = 0; b < FR_MAX_OUTPUT_BUSSES; ++b) {
         for (int c = 0; c < FR_BUS_CHANNELS; ++c) {
             float peak = app->bus_peak[b][c].exchange(0.0f);
@@ -953,15 +942,16 @@ void app_process_requests(App* app) {
 }
 
 void app_request_load_path(App* app, const char* path) {
+    if (!app->started || scan_running(&app->scan)) {
+        fr_strcpy(app->pending_load_path, sizeof(app->pending_load_path), path);
+        return;
+    }
     int index = app_select_plugin_path(app, path);
     if (index < 0) return;
     app->load_request = index;
     app->load_request_format = host_format_of_path(path);
 }
 
-// The plugin's flat output channels for one block, so every bus can be
-// metered while the speakers play only one of them. The audio thread is the
-// only one that touches it and only one block runs at a time.
 static float g_app_bus_buffers[FR_MAX_RENDER_CHANNELS][FR_MAX_BLOCK_SIZE];
 static float* g_app_bus_ptrs[FR_MAX_RENDER_CHANNELS];
 
@@ -976,17 +966,12 @@ void app_audio_render(void* user, float* const* outputs, int channel_count, int 
     int monitor = fr_clampi(cfg->monitor_bus, 0, bus_count - 1);
 
     if (app->plugin_active.load(std::memory_order_seq_cst)) {
-        // Every bus is fetched, not only the one that is heard, so the tab's
-        // meters say where each microphone landed.
         for (int c = 0; c < flat_count; ++c) {
             g_app_bus_ptrs[c] = g_app_bus_buffers[c];
             memset(g_app_bus_buffers[c], 0, (size_t)frames * sizeof(float));
         }
         host_plugin_process(app->plugin, &app->midi, g_app_bus_ptrs, flat_count, frames);
 
-        // The device is stereo, so it plays the bus picked to monitor. The
-        // channel is clamped because the UI thread may be editing it while
-        // this block runs.
         int first = fr_clampi(cfg->busses[monitor].channel, 0, FR_MAX_RENDER_CHANNELS - FR_BUS_CHANNELS);
         for (int c = 0; c < channel_count && c < FR_BUS_CHANNELS; ++c) {
             int flat = first + c;
@@ -994,13 +979,11 @@ void app_audio_render(void* user, float* const* outputs, int channel_count, int 
             memcpy(outputs[c], g_app_bus_buffers[flat], (size_t)frames * sizeof(float));
         }
     } else {
-        // Nobody listens: events must not pile up for the next plugin.
         MidiEvent m;
         while (midi_queue_pop(&app->midi, &m)) {}
         for (int c = 0; c < flat_count; ++c) memset(g_app_bus_buffers[c], 0, (size_t)frames * sizeof(float));
     }
 
-    // The device's own meters, of what is heard, and one pair per bus.
     for (int c = 0; c < channel_count && c < FR_OUTPUT_CHANNELS; ++c) {
         float peak = 0.0f;
         for (int i = 0; i < frames; ++i) {
@@ -1028,8 +1011,6 @@ void app_audio_render(void* user, float* const* outputs, int channel_count, int 
     }
     app->audio_busy.fetch_sub(1, std::memory_order_seq_cst);
 }
-
-// --- MIDI from the UI -----------------------------------------------------------
 
 void app_note_on(App* app, int note, float velocity) {
     if (note < 0 || note >= MIDI_NOTE_COUNT) return;
@@ -1065,13 +1046,13 @@ void app_all_notes_off(App* app) {
         if (app->note_held[n]) app_note_off(app, n);
     }
     app->keyboard_active_note = -1;
-    // Both messages: a plugin without a CC mapping still saw the note-offs.
     midi_queue_push(&app->midi, midi_make(MIDI_STATUS_CONTROL_CHANGE, app->settings.midi_channel, MIDI_CC_ALL_NOTES_OFF, 0));
     midi_queue_push(&app->midi, midi_make(MIDI_STATUS_CONTROL_CHANGE, app->settings.midi_channel, MIDI_CC_ALL_SOUND_OFF, 0));
     if (app->cc_value[MIDI_CC_SUSTAIN] != 0) app_control_change(app, MIDI_CC_SUSTAIN, 0);
 }
 
 void app_shutdown(App* app) {
+    scan_stop(&app->scan);
     if (app_resample_running(app)) {
         resample_cancel(&app->resample_job);
         while (!app->resample_job.finished.load()) plat_sleep_ms(1);
@@ -1092,5 +1073,5 @@ void app_shutdown(App* app) {
     }
     host_destroy(app->host);
     app->host = nullptr;
-    settings_save(&app->settings, app->settings_path);
+    if (app->started) settings_save(&app->settings, app->settings_path);
 }

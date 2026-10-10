@@ -1,4 +1,3 @@
-// Exercise the production instrument writer without loading a plugin.
 #include "../src/fastresampler_win32.cpp"
 #pragma warning(push, 0)
 #include "pb_decode.h"
@@ -15,9 +14,6 @@ static const FSICollectionFX* find_fx(const FSIFile* msg, uint32_t collection, u
     return nullptr;
 }
 
-// Layer k of the layered run is the same note with its harmonics falling
-// off less steeply the higher k is, so every layer is brighter than the one
-// below, and each rings on for a moment past the note-off as its release.
 static bool write_layered_input(const ResampleScript* script, const char* path) {
     std::vector<float> pcm((size_t)script->total_frames * 2, 0.0f);
     for (int s = 0; s < script->segment_count; ++s) {
@@ -44,11 +40,10 @@ int main() {
     const char* folder = "build/format-fixtures";
     CreateDirectoryA(folder, nullptr);
     auto cfg = std::make_unique<ResampleConfig>();
-    resample_config_defaults(cfg.get()); strcpy(cfg->instrument, "Synthetic"); strcpy(cfg->articulation, "Test"); cfg->bus_count = 1; strcpy(cfg->busses[0].name, "Main");
+    resample_config_defaults(cfg.get());
+    strcpy(cfg->instrument, "Synthetic"); strcpy(cfg->articulation, "Test"); cfg->bus_count = 1; strcpy(cfg->busses[0].name, "Main");
     strcpy(cfg->low_note, "C3"); strcpy(cfg->high_note, "D3"); cfg->step = 2;
     strcpy(cfg->velocities, "64, 127"); cfg->round_robins = 2;
-    // Hold long enough that the streamed part of a note spans several WavPack
-    // blocks of INSTRUMENT_PACK_BLOCK_FRAMES, so the block size is exercised.
     cfg->hold_seconds = 0.3f; cfg->gap_seconds = 0.05f;
     cfg->preroll = false; cfg->legato = false; cfg->dynamic_layers = false;
     cfg->delete_full_wav = false; cfg->split_samples = false; cfg->export_rzc = false;
@@ -79,10 +74,6 @@ int main() {
         puts(job->result);
     }
 
-    // Three dynamic layers with releases: the sustains crossfade on gain from
-    // -50 dB, the releases carry Smart release instead, and every collection
-    // morphs toward the same collection of the other two layers through the
-    // fingerprint files written beside the instrument.
     const int layers = 3;
     auto dyn_cfg = std::make_unique<ResampleConfig>(*cfg);
     dyn_cfg->dynamic_layers = true; dyn_cfg->round_robins = layers; strcpy(dyn_cfg->velocities, "100");
@@ -146,8 +137,6 @@ int main() {
             REQUIRE(morph->drivers[0].source_type == FX_DRIVER_SOURCE_CC && !morph->drivers[0].use_curve);
             REQUIRE(morph->drivers[0].out_min == 0.0f && morph->drivers[0].out_max == 1.0f);
 
-            // Its targets are the same collection of the other layers, placed
-            // where those peak, and each file holds that collection's zones.
             const FSISMFFingerprints* fp = nullptr;
             for (pb_size_t i = 0; i < msg->smf_fingerprints_count; ++i) {
                 if (msg->smf_fingerprints[i].collection_index == c) fp = &msg->smf_fingerprints[i];
@@ -168,9 +157,6 @@ int main() {
             }
         }
 
-        // The fingerprints tell the layers apart: toward 1.6 kHz, where the
-        // lowest layer's harmonics have fallen away, each layer is brighter
-        // than the one below.
         const int high_band = SMFP_REF_BAND + 2;
         float below = 0.0f;
         for (int k = 1; k <= layers; ++k) {

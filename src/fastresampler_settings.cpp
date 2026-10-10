@@ -1,4 +1,3 @@
-// #pragma once (removed for unity build)
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,25 +5,29 @@
 #include "fastresampler_helpers.h"
 #include "platform/fastresampler_platform.h"
 
-// Largest settings file the loader reads. 16 folders, 256 banned paths, a
-// few numbers and the controller curves (about a kilobyte each) fit with
-// room to spare.
 #define SETTINGS_FILE_MAX_BYTES 262144
+#define SETTINGS_MAX_TIME_MS    600000
+
+static int settings_ms(float seconds) {
+    return (int)(seconds * 1000.0f + 0.5f);
+}
 
 void settings_defaults(Settings* s) {
     memset(s, 0, sizeof(*s));
-    plat_default_plugin_dir(s->scan_paths[0], FR_MAX_PATH);
-    s->scan_path_count = s->scan_paths[0][0] ? 1 : 0;
-    // The VST 2 folder as well, when the system has one.
-    char vst2_dir[FR_MAX_PATH];
-    plat_default_vst2_dir(vst2_dir, sizeof(vst2_dir));
-    if (vst2_dir[0]) settings_add_scan_path(s, vst2_dir);
+    char dir[FR_MAX_PATH];
+    plat_default_plugin_dir(dir, sizeof(dir));
+    settings_add_scan_path(s, dir);
+    plat_default_vst2_dir(dir, sizeof(dir));
+    settings_add_scan_path(s, dir);
     s->plugin_tab = 0;
     s->audio_api = 0;
     s->audio_driver_name[0] = '\0';
     s->block_size = FR_DEFAULT_BLOCK_SIZE;
     s->midi_channel = 0;
     s->show_tips = true;
+    s->show_experimental = false;
+    s->disclaimer_accepted = false;
+    s->disclaimer_hidden = false;
     s->log_expanded = true;
     s->log_height = (int)UI_LOG_BODY_HEIGHT;
     s->log_tab = APP_LOG_TAB_LOG;
@@ -87,8 +90,6 @@ bool settings_unban(Settings* s, const char* path) {
     return true;
 }
 
-// A quoted value loses its quotes; anything else is taken as written, with
-// trailing whitespace removed.
 static void settings_unquote(char* value) {
     size_t len = strlen(value);
     while (len > 0 && (value[len - 1] == ' ' || value[len - 1] == '\t' || value[len - 1] == '\r')) {
@@ -120,16 +121,9 @@ bool settings_load(Settings* s, const char* path) {
     fclose(f);
     text[n] = '\0';
 
-    // The file replaces the scan path list entirely, so drop the default.
     bool saw_scan_path = false;
-    // A file from before the export folder existed puts the instrument with
-    // its samples, wherever those go.
     bool saw_export_dir = false;
-    // A file from before the root project folder existed names the two
-    // folders it wrote to and no root; the root is read back off them.
     bool saw_root_dir = false;
-    // The output busses replace the one a fresh configuration starts with,
-    // so the first one read takes its place rather than being added to it.
     bool saw_bus = false;
 
     char* line = text;
@@ -137,7 +131,6 @@ bool settings_load(Settings* s, const char* path) {
         char* next = strchr(line, '\n');
         if (next) *next++ = '\0';
 
-        // key, then a run of whitespace, then the value to the end of the line.
         char* key = line;
         while (*key == ' ' || *key == '\t') ++key;
         if (*key == '\0' || *key == '#') {
@@ -188,11 +181,11 @@ bool settings_load(Settings* s, const char* path) {
         } else if (strcmp(key, "resample_preroll") == 0) {
             s->resample.preroll = atoi(value) != 0;
         } else if (strcmp(key, "resample_preroll_gap_ms") == 0) {
-            s->resample.preroll_gap_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+            s->resample.preroll_gap_seconds = (float)fr_clampi(atoi(value), 1, SETTINGS_MAX_TIME_MS) / 1000.0f;
         } else if (strcmp(key, "resample_hold_ms") == 0) {
-            s->resample.hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+            s->resample.hold_seconds = (float)fr_clampi(atoi(value), 1, SETTINGS_MAX_TIME_MS) / 1000.0f;
         } else if (strcmp(key, "resample_gap_ms") == 0) {
-            s->resample.gap_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
+            s->resample.gap_seconds = (float)fr_clampi(atoi(value), 0, SETTINGS_MAX_TIME_MS) / 1000.0f;
         } else if (strcmp(key, "resample_legato") == 0) {
             s->resample.legato = atoi(value) != 0;
         } else if (strcmp(key, "resample_legato_step") == 0) {
@@ -206,29 +199,23 @@ bool settings_load(Settings* s, const char* path) {
         } else if (strcmp(key, "resample_legato_detect_arrival") == 0) {
             s->resample.legato_detect_arrival = atoi(value) != 0;
         } else if (strcmp(key, "resample_legato_source_hold_ms") == 0) {
-            s->resample.legato_source_hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+            s->resample.legato_source_hold_seconds = (float)fr_clampi(atoi(value), 1, SETTINGS_MAX_TIME_MS) / 1000.0f;
         } else if (strcmp(key, "resample_legato_overlap_ms") == 0) {
-            s->resample.legato_overlap_seconds = (float)fr_clampi(atoi(value), 0, 600000) / 1000.0f;
+            s->resample.legato_overlap_seconds = (float)fr_clampi(atoi(value), 0, SETTINGS_MAX_TIME_MS) / 1000.0f;
         } else if (strcmp(key, "resample_legato_hold_ms") == 0) {
-            s->resample.legato_hold_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+            s->resample.legato_hold_seconds = (float)fr_clampi(atoi(value), 1, SETTINGS_MAX_TIME_MS) / 1000.0f;
         } else if (strcmp(key, "resample_legato_margin_ms") == 0) {
-            s->resample.legato_margin_seconds = (float)fr_clampi(atoi(value), 1, 600000) / 1000.0f;
+            s->resample.legato_margin_seconds = (float)fr_clampi(atoi(value), 1, SETTINGS_MAX_TIME_MS) / 1000.0f;
         } else if (strcmp(key, "resample_instrument") == 0) {
             fr_strcpy(s->resample.instrument, sizeof(s->resample.instrument), value);
         } else if (strcmp(key, "resample_articulation") == 0) {
             fr_strcpy(s->resample.articulation, sizeof(s->resample.articulation), value);
         } else if (strcmp(key, "resample_microphone") == 0) {
-            // A file written before the output busses: the one microphone it
-            // names becomes the first bus, so the run keeps its folder and
-            // its file names exactly as they were.
             if (value[0] && s->resample.bus_count >= 1) {
                 fr_strcpy(s->resample.busses[0].name, sizeof(s->resample.busses[0].name), value);
                 s->resample.busses[0].channel = 0;
             }
         } else if (strcmp(key, "resample_bus") == 0) {
-            // "Close 0": the name, then the first output channel of its
-            // pair. The name may hold spaces, so the channel is read off the
-            // last one, which leaves a name like "Mic 2" whole.
             if (s->resample.bus_count < FR_MAX_OUTPUT_BUSSES) {
                 char name[RESAMPLE_NAME_LEN];
                 fr_strcpy(name, sizeof(name), value);
@@ -238,8 +225,6 @@ bool settings_load(Settings* s, const char* path) {
                     channel = atoi(space + 1);
                     *space = '\0';
                 }
-                // The first bus of the file replaces the default one; the
-                // rest are added after it.
                 int index = saw_bus ? s->resample.bus_count : 0;
                 s->resample.bus_count = index + 1;
                 saw_bus = true;
@@ -282,16 +267,21 @@ bool settings_load(Settings* s, const char* path) {
             fr_strcpy(s->project_name, sizeof(s->project_name), value);
         } else if (strcmp(key, "show_tips") == 0) {
             s->show_tips = atoi(value) != 0;
+        } else if (strcmp(key, "show_experimental") == 0) {
+            s->show_experimental = atoi(value) != 0;
+        } else if (strcmp(key, "disclaimer_accepted") == 0) {
+            s->disclaimer_accepted = atoi(value) != 0;
+        } else if (strcmp(key, "disclaimer_hidden") == 0) {
+            s->disclaimer_hidden = atoi(value) != 0;
         } else if (strcmp(key, "log_expanded") == 0) {
             s->log_expanded = atoi(value) != 0;
         } else if (strcmp(key, "log_height") == 0) {
             s->log_height = fr_clampi(atoi(value), (int)UI_LOG_MIN_BODY_HEIGHT, (int)UI_LOG_MAX_BODY_HEIGHT);
         } else if (strcmp(key, "log_tab") == 0) {
             s->log_tab = fr_clampi(atoi(value), 0, 1);
+        } else if (strcmp(key, "side_tab") == 0) {
+            s->side_tab = fr_clampi(atoi(value), APP_TAB_PLUGIN, APP_TAB_LICENSES);
         } else if (strcmp(key, "resample_cc") == 0) {
-            // "index controller bezier constant layer"; the nodes and values
-            // follow on their own lines, so the curve starts out flat at 127.
-            // A file from before layers existed stops at the constant.
             float nums[5];
             int read = fr_parse_floats(value, nums, 5);
             if (read >= 4) {
@@ -307,7 +297,6 @@ bool settings_load(Settings* s, const char* path) {
                 }
             }
         } else if (strcmp(key, "resample_cc_nodes") == 0) {
-            // "index count", then x y curvature per node.
             float nums[2 + 3 * RESAMPLE_CC_MAX_NODES];
             int read = fr_parse_floats(value, nums, 2 + 3 * RESAMPLE_CC_MAX_NODES);
             int i = read >= 2 ? (int)nums[0] : -1;
@@ -322,7 +311,6 @@ bool settings_load(Settings* s, const char* path) {
                 }
             }
         } else if (strcmp(key, "resample_cc_values") == 0) {
-            // "index", then every point of the curve.
             float nums[1 + RESAMPLE_CC_CURVE_POINTS];
             int read = fr_parse_floats(value, nums, 1 + RESAMPLE_CC_CURVE_POINTS);
             int i = read >= 1 ? (int)nums[0] : -1;
@@ -333,12 +321,9 @@ bool settings_load(Settings* s, const char* path) {
         }
         line = next;
     }
-    // The busses are settled before the folders are read back off them: the
-    // root is found under <Instrument>\<Articulation>\<the first bus>.
     resample_bus_validate(&s->resample);
     if (!saw_export_dir) fr_strcpy(s->resample.export_dir, sizeof(s->resample.export_dir), s->resample.output_dir);
     if (!saw_root_dir) resample_config_root_from_dirs(&s->resample);
-    // A curve the file skipped over still has to be a curve.
     for (int i = 0; i < s->resample.cc_curve_count; ++i) {
         ResampleCcCurve* c = &s->resample.cc_curves[i];
         if (c->node_count < 2) resample_cc_set_constant(c, 1.0f);
@@ -372,24 +357,21 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_round_robins %d\n", s->resample.round_robins);
     fprintf(f, "resample_dynamic_layers %d\n", s->resample.dynamic_layers ? 1 : 0);
     fprintf(f, "resample_preroll %d\n", s->resample.preroll ? 1 : 0);
-    fprintf(f, "resample_preroll_gap_ms %d\n", (int)(s->resample.preroll_gap_seconds * 1000.0f + 0.5f));
-    fprintf(f, "resample_hold_ms %d\n", (int)(s->resample.hold_seconds * 1000.0f + 0.5f));
-    fprintf(f, "resample_gap_ms %d\n", (int)(s->resample.gap_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_preroll_gap_ms %d\n", settings_ms(s->resample.preroll_gap_seconds));
+    fprintf(f, "resample_hold_ms %d\n", settings_ms(s->resample.hold_seconds));
+    fprintf(f, "resample_gap_ms %d\n", settings_ms(s->resample.gap_seconds));
     fprintf(f, "resample_legato %d\n", s->resample.legato ? 1 : 0);
     fprintf(f, "resample_legato_step %d\n", s->resample.legato_step);
     fprintf(f, "resample_legato_intervals \"%s\"\n", s->resample.legato_intervals);
     fprintf(f, "resample_legato_velocities \"%s\"\n", s->resample.legato_velocities);
     fprintf(f, "resample_legato_arrivals \"%s\"\n", s->resample.legato_arrivals);
     fprintf(f, "resample_legato_detect_arrival %d\n", s->resample.legato_detect_arrival ? 1 : 0);
-    fprintf(f, "resample_legato_source_hold_ms %d\n", (int)(s->resample.legato_source_hold_seconds * 1000.0f + 0.5f));
-    fprintf(f, "resample_legato_overlap_ms %d\n", (int)(s->resample.legato_overlap_seconds * 1000.0f + 0.5f));
-    fprintf(f, "resample_legato_hold_ms %d\n", (int)(s->resample.legato_hold_seconds * 1000.0f + 0.5f));
-    fprintf(f, "resample_legato_margin_ms %d\n", (int)(s->resample.legato_margin_seconds * 1000.0f + 0.5f));
+    fprintf(f, "resample_legato_source_hold_ms %d\n", settings_ms(s->resample.legato_source_hold_seconds));
+    fprintf(f, "resample_legato_overlap_ms %d\n", settings_ms(s->resample.legato_overlap_seconds));
+    fprintf(f, "resample_legato_hold_ms %d\n", settings_ms(s->resample.legato_hold_seconds));
+    fprintf(f, "resample_legato_margin_ms %d\n", settings_ms(s->resample.legato_margin_seconds));
     fprintf(f, "resample_instrument \"%s\"\n", s->resample.instrument);
     fprintf(f, "resample_articulation \"%s\"\n", s->resample.articulation);
-    // One line per output bus: its name and the first output channel of its
-    // stereo pair. The reader takes the channel off the last space, so a
-    // name with spaces of its own survives.
     for (int i = 0; i < s->resample.bus_count; ++i) {
         fprintf(f, "resample_bus \"%s %d\"\n", s->resample.busses[i].name, s->resample.busses[i].channel);
     }
@@ -408,8 +390,13 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "resample_bit_depth %d\n", s->resample.bit_depth);
     fprintf(f, "project_name \"%s\"\n", s->project_name);
     fprintf(f, "show_tips %d\n", s->show_tips ? 1 : 0);
+    fprintf(f, "show_experimental %d\n", s->show_experimental ? 1 : 0);
+    fprintf(f, "disclaimer_accepted %d\n", s->disclaimer_accepted ? 1 : 0);
+    fprintf(f, "disclaimer_hidden %d\n", s->disclaimer_hidden ? 1 : 0);
     fprintf(f, "log_expanded %d\n", s->log_expanded ? 1 : 0);
     fprintf(f, "log_height %d\n", s->log_height);
+    fprintf(f, "log_tab %d\n", s->log_tab);
+    fprintf(f, "side_tab %d\n", s->side_tab);
     for (int i = 0; i < s->resample.cc_curve_count; ++i) {
         const ResampleCcCurve* c = &s->resample.cc_curves[i];
         fprintf(f, "resample_cc %d %d %d %d %d\n", i, c->controller, c->is_bezier ? 1 : 0, c->constant, c->layer);

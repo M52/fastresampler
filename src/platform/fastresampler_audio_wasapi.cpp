@@ -1,12 +1,3 @@
-// #pragma once (removed for unity build)
-// WASAPI output in shared, event-driven mode. Shared mode means the device is
-// never taken from other programs and any device Windows can play through
-// works. The engine converts our float32 stereo stream to the device format
-// when it can; when it cannot, the mix format is used and converted here.
-//
-// The unity root has already included <windows.h>; this file adds the Core
-// Audio headers.
-
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
@@ -24,16 +15,13 @@
 #define AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY 0x08000000
 #endif
 
-// How many render blocks the endpoint buffer holds at least. The engine rounds
-// the request up to its own period, so this is a floor, not the actual size.
 #define WASAPI_BUFFER_BLOCKS 4
 
-// The device's sample format after Initialize.
 enum WasapiSampleKind {
     WASAPI_SAMPLE_FLOAT32 = 0,
     WASAPI_SAMPLE_INT16,
     WASAPI_SAMPLE_INT24,
-    WASAPI_SAMPLE_INT32     // valid_bits in the high bits of 32
+    WASAPI_SAMPLE_INT32
 };
 
 struct WasapiState {
@@ -51,14 +39,6 @@ struct WasapiState {
     AudioDevice*        owner;
 };
 
-static void wasapi_add_driver(AudioDriverList* out, const char* name, const char* id) {
-    if (out->count >= FR_MAX_AUDIO_DRIVERS) return;
-    AudioDriverInfo* d = &out->drivers[out->count++];
-    d->api = AUDIO_API_WASAPI;
-    fr_strcpy(d->name, FR_DRIVER_NAME_LEN, name);
-    fr_strcpy(d->id, FR_DRIVER_ID_LEN, id);
-}
-
 static IMMDeviceEnumerator* wasapi_create_enumerator(void) {
     IMMDeviceEnumerator* en = NULL;
     HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL,
@@ -74,7 +54,7 @@ void wasapi_enumerate(AudioDriverList* out) {
     IMMDeviceEnumerator* en = wasapi_create_enumerator();
     if (!en) return;
 
-    wasapi_add_driver(out, "Default output device", "");
+    audio_add_driver(out, AUDIO_API_WASAPI, "Default output device", "");
 
     IMMDeviceCollection* coll = NULL;
     if (SUCCEEDED(en->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &coll)) && coll) {
@@ -104,7 +84,7 @@ void wasapi_enumerate(AudioDriverList* out) {
                 WideCharToMultiByte(CP_UTF8, 0, wid, -1, id, sizeof(id), NULL, NULL);
                 CoTaskMemFree(wid);
             }
-            if (id[0]) wasapi_add_driver(out, name, id);
+            if (id[0]) audio_add_driver(out, AUDIO_API_WASAPI, name, id);
             d->Release();
         }
         coll->Release();
@@ -112,7 +92,6 @@ void wasapi_enumerate(AudioDriverList* out) {
     en->Release();
 }
 
-// Reads the sample layout out of a format Initialize accepted.
 static bool wasapi_parse_format(WasapiState* s, const WAVEFORMATEX* fmt) {
     s->device_channels = fmt->nChannels;
     s->bytes_per_sample = fmt->wBitsPerSample / 8;
@@ -143,8 +122,6 @@ static bool wasapi_parse_format(WasapiState* s, const WAVEFORMATEX* fmt) {
     return true;
 }
 
-// Planar float scratch to the device's interleaved frames. Channels past the
-// two we render stay silent.
 static void wasapi_convert(WasapiState* s, BYTE* dst, int frames) {
     AudioDevice* dev = s->owner;
     int ch = s->device_channels;
@@ -179,7 +156,6 @@ static void wasapi_convert(WasapiState* s, BYTE* dst, int frames) {
     }
 }
 
-// Renders as many whole blocks as the endpoint buffer has room for.
 static void wasapi_fill(WasapiState* s) {
     UINT32 padding = 0;
     if (FAILED(s->client->GetCurrentPadding(&padding))) return;
@@ -200,7 +176,7 @@ static DWORD WINAPI wasapi_thread_main(LPVOID param) {
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
-    wasapi_fill(s);   // prime the whole buffer before the clock starts
+    wasapi_fill(s);
     s->client->Start();
 
     HANDLE waits[2] = { s->stop_event, s->event };
@@ -223,7 +199,6 @@ static void wasapi_fail(AudioDevice* dev, const char* what, HRESULT hr) {
     snprintf(dev->error, FR_ERROR_LEN, "%s (0x%08lx)", what, (unsigned long)hr);
 }
 
-// A float32 stereo request at the mix rate; the engine converts to the device.
 static void wasapi_float_stereo_format(WAVEFORMATEXTENSIBLE* f, DWORD rate) {
     memset(f, 0, sizeof(*f));
     f->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
@@ -293,8 +268,6 @@ bool wasapi_open(AudioDevice* dev, const AudioDriverInfo* driver, int block_size
     bool parsed = SUCCEEDED(hr) && wasapi_parse_format(s, &want.Format);
 
     if (!parsed) {
-        // A client whose Initialize failed is not to be reused: activate again
-        // and take the mix format as is.
         fr_log("wasapi: float32 stereo refused (0x%08lx), using the mix format", (unsigned long)hr);
         s->client->Release();
         s->client = NULL;

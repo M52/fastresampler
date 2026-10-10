@@ -1,7 +1,3 @@
-// #pragma once (removed for unity build)
-// See fastresampler_host.h. The VST3 SDK headers and hosting sources are
-// included by the unity root before this file.
-
 #include <string.h>
 #include <stdio.h>
 #include <string>
@@ -13,8 +9,6 @@
 
 namespace SV = Steinberg::Vst;
 
-// The largest number of parameters that can change in one block, for the two
-// parameter queues (MIDI CC and GUI edits).
 #define HOST_MAX_PARAM_CHANGES 1024
 
 #if SMTG_OS_WINDOWS
@@ -29,9 +23,6 @@ struct HostContext {
     SV::HostApplication* app;
 };
 
-// The two interfaces the plugin calls back into: IComponentHandler for edits
-// made in its own GUI, IPlugFrame for editor resizes. One object, a fixed
-// reference count, owned by the HostPlugin.
 struct HostCallbacks : public SV::IComponentHandler, public Steinberg::IPlugFrame {
     HostPlugin*  plugin;
     HostResizeFn resize_fn;
@@ -65,8 +56,6 @@ struct HostCallbacks : public SV::IComponentHandler, public Steinberg::IPlugFram
 };
 
 struct HostPlugin {
-    // A VST 2 plugin lives here; then the VST3 members below stay empty and
-    // every call is handed on.
     Vst2Plugin*           vst2;
 
     VST3::Hosting::Module::Ptr module;
@@ -86,43 +75,33 @@ struct HostPlugin {
     SV::HostProcessData         process_data;
     SV::EventList               events;
     SV::ParameterChanges        param_changes;
-    SV::ParameterChangeTransfer param_transfer;   // GUI edits, UI thread to audio thread
+    SV::ParameterChangeTransfer param_transfer;
     SV::ProcessContext          context;
 
-    // MIDI controller number to parameter, per channel, from IMidiMapping.
     SV::ParamID cc_param[MIDI_CHANNEL_COUNT][SV::kCountCtrlNumber];
 
-    // The class this plugin is, the 16 bytes of its TUID. It goes in the
-    // state so a project cannot push one plugin's state into another that
-    // happens to sit under the same file name on another machine.
     char   class_uid[FR_STATE_CLASS_UID_SIZE];
     bool   has_class_uid;
 
     int    main_out_bus;
-    // The plugin's output busses flattened into one list of channels: for
-    // each flat channel, the bus it sits on and which channel of that bus it
-    // is. host_setup_busses() fills them.
     int    flat_bus[FR_MAX_RENDER_CHANNELS];
     int    flat_channel[FR_MAX_RENDER_CHANNELS];
     int    flat_count;
     double sample_rate;
     int    block_size;
-    bool   offline;        // the mode the last setup asked for, kept for a restart
+    bool   offline;
     bool   active;
     bool   processing;
-    bool   io_changed;     // the plugin named other busses or channels
+    bool   io_changed;
 
     HostPluginInfo info;
 };
-
-// --- HostCallbacks -------------------------------------------------------------
 
 Steinberg::tresult PLUGIN_API HostCallbacks::beginEdit(SV::ParamID) {
     return Steinberg::kResultOk;
 }
 
 Steinberg::tresult PLUGIN_API HostCallbacks::performEdit(SV::ParamID id, SV::ParamValue value) {
-    // The plugin GUI moved a control: the processor hears about it in the next block.
     if (plugin) plugin->param_transfer.addChange(id, value, 0);
     return Steinberg::kResultOk;
 }
@@ -137,10 +116,6 @@ Steinberg::tresult PLUGIN_API HostCallbacks::restartComponent(Steinberg::int32 f
     if ((flags & SV::kLatencyChanged) && plugin->processor) {
         plugin->info.latency_frames = (int)plugin->processor->getLatencySamples();
     }
-    // The plugin changed its own busses: a sampler does this when its state
-    // names more outputs. The call comes in on this thread while the audio
-    // thread may still be running, so only the flag is raised here and the
-    // application reconfigures once it has the plugin to itself.
     if (flags & SV::kIoChanged) plugin->io_changed = true;
     return Steinberg::kResultOk;
 }
@@ -159,8 +134,6 @@ Steinberg::tresult PLUGIN_API HostCallbacks::resizeView(Steinberg::IPlugView* vi
     return Steinberg::kResultTrue;
 }
 
-// --- Formats -------------------------------------------------------------------
-
 const char* host_format_name(int format) {
     return format == HOST_FORMAT_VST2 ? "VSTi" : "VST3";
 }
@@ -168,8 +141,6 @@ const char* host_format_name(int format) {
 int host_format_of_path(const char* path) {
     return plat_path_has_ext(path, ".dll") ? HOST_FORMAT_VST2 : HOST_FORMAT_VST3;
 }
-
-// --- Context -------------------------------------------------------------------
 
 HostContext* host_create(void) {
     HostContext* ctx = new HostContext();
@@ -183,22 +154,11 @@ void host_destroy(HostContext* ctx) {
     delete ctx;
 }
 
-// --- Loading -------------------------------------------------------------------
-
 static void host_fail(char* err, size_t err_len, const char* msg) {
     fr_strcpy(err, err_len, msg);
     fr_log("host: %s", msg);
 }
 
-// Deactivates every audio input, then activates every audio output and the
-// first event input. Runs before setActive(true), as the spec asks.
-//
-// Every output bus is activated, not only the main one: a multi-miced
-// library puts each microphone on a bus of its own, and this program's
-// output busses read those. A plugin only writes a bus the host has turned
-// on. The channels of the busses, in order, are the flat list the rest of
-// the program picks its stereo pairs out of; the map says which bus and
-// which channel of it each flat channel is.
 static void host_setup_busses(HostPlugin* p) {
     SV::IComponent* c = p->component;
     Steinberg::int32 out_count = c->getBusCount(SV::kAudio, SV::kOutput);
@@ -266,8 +226,6 @@ static void host_read_midi_mapping(HostPlugin* p) {
     fr_log("host: %d MIDI controller assignments", mapped);
 }
 
-// Hands the component's state to the controller so the editor shows the
-// processor's values.
 static void host_sync_controller_state(HostPlugin* p) {
     if (!p->controller || p->controller_is_component) return;
     Steinberg::MemoryStream stream;
@@ -277,8 +235,6 @@ static void host_sync_controller_state(HostPlugin* p) {
     p->controller->setComponentState(&stream);
 }
 
-// Which class of a module to host: the first instrument, else the first
-// audio module class.
 static bool host_pick_class(const VST3::Hosting::PluginFactory& factory, VST3::Hosting::ClassInfo* out) {
     bool found = false;
     bool found_instrument = false;
@@ -348,7 +304,6 @@ HostPlugin* host_plugin_load(HostContext* ctx, const char* path, double sample_r
     }
     p->component_initialized = true;
 
-    // The controller: part of the component, or a second class of the module.
     if (p->component->queryInterface(SV::IEditController::iid, (void**)&p->controller) == Steinberg::kResultOk && p->controller) {
         p->controller_is_component = true;
     } else {
@@ -486,9 +441,6 @@ bool host_plugin_setup_processing(HostPlugin* p, double sample_rate, int block_s
     p->offline = offline;
     p->context.sampleRate = sample_rate;
 
-    // The busses are read again, not only on the first setup: a plugin whose
-    // state was put back may have more of them now, and a bus is turned on
-    // while the component is inactive, which it is here.
     host_setup_busses(p);
 
     if (!p->process_data.prepare(*p->component, block_size, SV::kSample32)) {
@@ -519,10 +471,6 @@ const HostPluginInfo* host_plugin_info(const HostPlugin* p) {
     return &p->info;
 }
 
-// --- State ---------------------------------------------------------------------
-
-// One of the plugin's streams into a part of the block. Missing or empty is
-// not a failure: a plugin with no controller state writes none.
 static void host_add_stream_part(HostPlugin* p, StateBuffer* out, int kind, bool from_controller) {
     Steinberg::MemoryStream stream;
     Steinberg::tresult ok = from_controller ? p->controller->getState(&stream)
@@ -533,7 +481,6 @@ static void host_add_stream_part(HostPlugin* p, StateBuffer* out, int kind, bool
     state_add_part(out, kind, stream.getData(), (size_t)size);
 }
 
-// The part back into a stream the plugin can read, rewound for it.
 static bool host_stream_from_part(Steinberg::MemoryStream* stream, const void* bytes, size_t size) {
     Steinberg::int32 written = 0;
     if (stream->write((void*)bytes, (Steinberg::int32)size, &written) != Steinberg::kResultOk) return false;
@@ -550,7 +497,6 @@ bool host_plugin_get_state(HostPlugin* p, StateBuffer* out) {
     if (!state_begin(out, HOST_FORMAT_VST3, 0)) return false;
     host_add_stream_part(p, out, STATE_PART_VST3_COMPONENT, false);
     if (p->controller) host_add_stream_part(p, out, STATE_PART_VST3_CONTROLLER, true);
-    // Only worth keeping beside a state the plugin actually wrote.
     if (p->has_class_uid && state_part_count(out) > 0) {
         state_add_part(out, STATE_PART_VST3_CLASS_UID, p->class_uid, sizeof(p->class_uid));
     }
@@ -566,21 +512,19 @@ bool host_plugin_get_state(HostPlugin* p, StateBuffer* out) {
 bool host_plugin_set_state(HostPlugin* p, const void* data, size_t size, char* err, size_t err_len) {
     err[0] = '\0';
     if (!p) return false;
+    if (p->vst2) return vst2_plugin_set_state(p->vst2, data, size, &p->info, err, err_len);
     int format = HOST_FORMAT_VST3;
     uint32_t unique_id = 0;
     if (!state_read_header(data, size, &format, &unique_id)) {
         fr_strcpy(err, err_len, "The saved plugin state is not readable.");
         return false;
     }
-    if (p->vst2) return vst2_plugin_set_state(p->vst2, data, size, &p->info, err, err_len);
     if (format != HOST_FORMAT_VST3) {
         fr_strcpy(err, err_len, "The saved plugin state was written for a VST 2 instrument.");
         return false;
     }
     if (!p->component) return false;
 
-    // The class the state was written for. A block from an older build holds
-    // none, and is taken on the caller's word that this is the right plugin.
     const uint8_t* uid = NULL;
     size_t uid_size = 0;
     if (p->has_class_uid && state_find_part(data, size, STATE_PART_VST3_CLASS_UID, &uid, &uid_size)) {
@@ -598,8 +542,6 @@ bool host_plugin_set_state(HostPlugin* p, const void* data, size_t size, char* e
         return false;
     }
 
-    // The component takes its state while it is inactive, as the spec asks;
-    // the setup below starts it again and reads the busses it now has.
     if (p->processing) {
         p->processor->setProcessing(false);
         p->processing = false;
@@ -617,8 +559,6 @@ bool host_plugin_set_state(HostPlugin* p, const void* data, size_t size, char* e
     bool ok = p->component->setState(&component_stream) == Steinberg::kResultOk;
     if (!ok) fr_log("host: the component refused its saved state");
 
-    // The controller hears the same processor state, then its own. Both are
-    // rewound first: a plugin reads a stream from where it stands.
     if (p->controller && !p->controller_is_component) {
         Steinberg::int64 pos = 0;
         component_stream.seek(0, Steinberg::IBStream::kIBSeekSet, &pos);
@@ -635,8 +575,6 @@ bool host_plugin_set_state(HostPlugin* p, const void* data, size_t size, char* e
         }
     }
 
-    // The state is in, so whatever the plugin asked for while it read it is
-    // answered by the setup that follows, not by the application.
     p->io_changed = false;
     host_read_midi_mapping(p);
     if (!host_plugin_setup_processing(p, p->sample_rate, p->block_size, p->offline)) {
@@ -659,8 +597,6 @@ bool host_plugin_take_io_change(HostPlugin* p) {
     p->io_changed = false;
     return changed;
 }
-
-// --- Processing (audio thread) -------------------------------------------------
 
 static void host_queue_param(HostPlugin* p, int channel, int ctrl, double value, int sample_offset) {
     if (ctrl < 0 || ctrl >= SV::kCountCtrlNumber) return;
@@ -727,7 +663,6 @@ static void host_translate_midi(HostPlugin* p, const MidiEvent& m, int sample_of
     }
 }
 
-// Runs one block once this block's events and parameter points are queued.
 static void host_run_block(HostPlugin* p, float* const* outputs, int channel_count, int frames);
 
 void host_plugin_process(HostPlugin* p, MidiQueue* midi, float* const* outputs,
@@ -761,7 +696,6 @@ void host_plugin_process_events(HostPlugin* p, const MidiEvent* events, const in
 static void host_run_block(HostPlugin* p, float* const* outputs, int channel_count, int frames) {
     p->param_transfer.transferChangesTo(p->param_changes);
 
-    // The plugin's buffers start silent: a plugin with no voice may not write.
     for (Steinberg::int32 b = 0; b < p->process_data.numOutputs; ++b) {
         SV::AudioBusBuffers& bus = p->process_data.outputs[b];
         bus.silenceFlags = 0;
@@ -781,14 +715,8 @@ static void host_run_block(HostPlugin* p, float* const* outputs, int channel_cou
     Steinberg::tresult result = p->processor->process(p->process_data);
 
     if (result == Steinberg::kResultOk) {
-        // The flat channel list, in the order the busses report them: the
-        // caller asks for a run of channels and gets whichever busses hold
-        // them. A channel the plugin does not have stays as the caller left
-        // it, which is silence.
         for (int c = 0; c < channel_count; ++c) {
             int flat = c;
-            // A mono plugin feeds both of the first pair; past that a
-            // missing channel is silence, not a copy of another microphone.
             if (flat >= p->flat_count) {
                 if (flat != 1 || p->flat_count != 1) continue;
                 flat = 0;
@@ -809,8 +737,6 @@ static void host_run_block(HostPlugin* p, float* const* outputs, int channel_cou
     p->events.clear();
     p->param_changes.clearQueue();
 }
-
-// --- Editor --------------------------------------------------------------------
 
 bool host_plugin_editor_create(HostPlugin* p, float content_scale, int* width, int* height) {
     *width = 0;
@@ -872,11 +798,6 @@ void host_plugin_editor_close(HostPlugin* p) {
     p->callbacks.resize_user = nullptr;
 }
 
-bool host_plugin_editor_is_open(const HostPlugin* p) {
-    if (p->vst2) return vst2_plugin_editor_is_open(p->vst2);
-    return p->view != nullptr && p->view_attached;
-}
-
 void host_plugin_editor_idle(HostPlugin* p) {
     if (p->vst2) vst2_plugin_editor_idle(p->vst2);
 }
@@ -889,8 +810,6 @@ void host_plugin_editor_set_scale(HostPlugin* p, float content_scale) {
 
 void host_plugin_editor_fit(HostPlugin* p, int avail_width, int avail_height, int* width, int* height) {
     if (p->vst2) {
-        // A VST 2 editor has the one size it reports; it grows only when it
-        // asks to, through the resize callback.
         vst2_plugin_editor_size(p->vst2, width, height);
         return;
     }
@@ -902,7 +821,7 @@ void host_plugin_editor_fit(HostPlugin* p, int avail_width, int avail_height, in
     if (avail_width <= 0 || avail_height <= 0) return;
 
     Steinberg::ViewRect want(0, 0, avail_width, avail_height);
-    p->view->checkSizeConstraint(&want);   // the plugin adjusts want to what it accepts
+    p->view->checkSizeConstraint(&want);
     if (want.getWidth() <= 0 || want.getHeight() <= 0) return;
     if (want.getWidth() == current.getWidth() && want.getHeight() == current.getHeight()) return;
 

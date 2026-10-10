@@ -1,9 +1,4 @@
 #pragma once
-// The Steinberg ASIO driver interface, declared here because the ASIO SDK is
-// not part of this tree. An ASIO driver is a COM object whose one interface
-// is this C++ class; the CLSID doubles as the IID. On x64 there is a single
-// calling convention, so a plain virtual class matches the driver's vtable.
-// Types and method order follow iasiodrv.h / asio.h of ASIO SDK 2.3.
 
 #include <unknwn.h>
 
@@ -47,7 +42,6 @@ enum {
     ASIOSTInt32LSB24 = 27
 };
 
-// asioMessage selectors.
 enum {
     kAsioSelectorSupported = 1,
     kAsioEngineVersion,

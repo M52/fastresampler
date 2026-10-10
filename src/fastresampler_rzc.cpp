@@ -1,20 +1,15 @@
-// #pragma once (removed for unity build)
 #include <stdio.h>
 #include <string.h>
 #include "fastresampler_rzc.h"
 #include "fastresampler_helpers.h"
 #include "platform/fastresampler_platform.h"
 
-// FastSampler names a zone by its file without the folder or the extension,
-// through get_filename_without_ext(); the zone names here already carry the
-// sample's ".wav", so the same trimming applies.
 static void rzc_name_without_ext(const char* name, char* out, size_t out_len) {
     fr_strcpy(out, out_len, plat_path_basename(name));
     char* dot = strrchr(out, '.');
     if (dot) *dot = '\0';
 }
 
-// The crossfade shapes, in the order FastSampler's reader matches them.
 static const char* rzc_xfade_name(uint32_t xfadetype) {
     if (xfadetype == 1) return "S-Curves";
     if (xfadetype == 2) return "Equal Power";
@@ -56,8 +51,6 @@ bool rzc_write(const char* path, const FSIZone* zones,
         fprintf(f, "    flag_ignore_vel: %d\n", z->ignore_vel_mapping ? 1 : 0);
         fprintf(f, "    pitchshift_type: %d\n", (int)z->pitchshift_type);
         fprintf(f, "    flip_lr: %s\n", z->flip_lr ? "true" : "false");
-        // Only when the zone has one, as FastSampler writes it: a collection
-        // with no legato in it keeps the lines it always had.
         if (z->arrivalframe > 0) fprintf(f, "    arrivalframe: %u\n", z->arrivalframe);
         fprintf(f, "    zoom_v: %.6f\n", z->zoom_v);
         if (z->zoom_end > 0) {
