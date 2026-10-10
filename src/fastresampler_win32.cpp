@@ -145,7 +145,22 @@
 #include "ui/fastresampler_ui.cpp"
 #include "fastresampler_view_win32.cpp"
 
+static bool win32_probe_args(char* dll, char* result) {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return false;
+    char flag[32];
+    bool probe = argc == 4 && plat_wide_to_utf8(argv[1], flag, (int)sizeof(flag)) && strcmp(flag, FR_SCAN_PROBE_ARG) == 0 &&
+                 plat_wide_to_utf8(argv[2], dll, FR_MAX_PATH) && plat_wide_to_utf8(argv[3], result, FR_MAX_PATH);
+    LocalFree(argv);
+    return probe;
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE prev_instance, LPWSTR cmd_line, int show_cmd) {
+    char probe_dll[FR_MAX_PATH];
+    char probe_result[FR_MAX_PATH];
+    if (win32_probe_args(probe_dll, probe_result)) return scan_probe_child(probe_dll, probe_result);
+
     fr_log_init();
     fr_log("FastResampler build %d starting", FASTRESAMPLER_BUILD_NUMBER);
 

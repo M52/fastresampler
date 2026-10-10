@@ -83,8 +83,8 @@ void scan_cache_init(ScanCache* cache, const char* path) {
     for (int i = 0; i < cache->count; ++i) {
         ScanCacheEntry* e = &cache->entries[i];
         if (e->state != SCAN_CACHE_OPENING) continue;
-        fr_log("scan: %s took the last scan down and is skipped", e->path);
-        e->state = SCAN_CACHE_BROKEN;
+        e->size = 0;
+        e->mtime = 0;
         changed = true;
     }
     if (changed) scan_cache_save(cache);
@@ -138,68 +138,172 @@ static bool scan_search_step(ScanJob* job, PluginList* vst3, PluginList* vsti, c
     return false;
 }
 
-enum ScanProbeResult {
-    SCAN_PROBE_NEXT,
-    SCAN_PROBE_YIELD,
-    SCAN_PROBE_DONE
-};
-
-static int scan_probe_step(ScanJob* job, PluginList* vsti, ScanCache* cache, bool out_of_time) {
-    if (job->probe_index >= vsti->count) {
-        vsti->count = job->probe_kept;
-        return SCAN_PROBE_DONE;
+static void scan_clean_text(char* text) {
+    for (char* s = text; *s; ++s) {
+        if (*s == '\t' || *s == '\r' || *s == '\n') *s = ' ';
     }
-    int index = job->probe_index;
-    PluginEntry* e = &vsti->entries[index];
-    uint64_t size = 0, mtime = 0;
-    if (!plat_file_stat(e->path, &size, &mtime)) {
-        job->probe_index++;
-        return SCAN_PROBE_NEXT;
+}
+
+int scan_probe_child(const char* dll_path, const char* result_path) {
+    plat_child_process_setup();
+    plat_system_init();
+    char name[FR_PLUGIN_NAME_LEN];
+    char err[FR_ERROR_LEN];
+    bool is_instrument = false;
+    bool ok = vst2_probe(dll_path, name, sizeof(name), &is_instrument, err, sizeof(err));
+    char* text = ok ? name : err;
+    scan_clean_text(text);
+    char line[FR_PLUGIN_NAME_LEN + FR_ERROR_LEN + 8];
+    int n = snprintf(line, sizeof(line), "%d\t%s\n", ok ? (is_instrument ? 1 : 0) : -1, text);
+    bool written = n > 0 && plat_file_write(result_path, line, (size_t)n);
+    plat_exit_now(written ? 0 : 2);
+    return written ? 0 : 2;
+}
+
+static void scan_cache_record(ScanCache* cache, const char* path, uint64_t size, uint64_t mtime, int state,
+                              const char* name) {
+    ScanCacheEntry* ce = scan_cache_find(cache, path);
+    if (!ce) {
+        if (cache->count >= FR_MAX_VSTI_CACHE) return;
+        ce = &cache->entries[cache->count++];
+        fr_strcpy(ce->path, sizeof(ce->path), path);
+    }
+    ce->size = size;
+    ce->mtime = mtime;
+    ce->state = state;
+    fr_strcpy(ce->name, sizeof(ce->name), name);
+    scan_cache_save(cache);
+}
+
+static void scan_probe_release(ScanProbe* probe) {
+    plat_process_close(&probe->process);
+    plat_file_delete(probe->result_path);
+    probe->busy = false;
+}
+
+static void scan_probe_launch(ScanJob* job, int slot, PluginList* vsti, int entry) {
+    ScanProbe* probe = &job->probes[slot];
+    const PluginEntry* e = &vsti->entries[entry];
+    if (!plat_file_stat(e->path, &probe->size, &probe->mtime)) {
+        job->probe_done++;
+        return;
     }
 
-    ScanCacheEntry* ce = scan_cache_find(cache, e->path);
-    bool fresh = ce && ce->size == size && ce->mtime == mtime;
-    if (!fresh) {
-        bool announced = job->probe_announced == index;
-        job->probe_announced = index;
-        fr_strcpy(job->current, sizeof(job->current), e->path);
-        if (out_of_time && !announced) return SCAN_PROBE_YIELD;
+    char exe[FR_MAX_PATH];
+    char temp[FR_MAX_PATH];
+    char file[64];
+    plat_module_path(exe, sizeof(exe));
+    plat_temp_dir(temp, sizeof(temp));
+    snprintf(file, sizeof(file), "fastresampler-probe-%u-%d.txt", plat_process_id(), slot);
+    plat_path_join(probe->result_path, sizeof(probe->result_path), temp, file);
+    plat_file_delete(probe->result_path);
 
-        ScanCacheEntry scratch;
-        if (!ce) {
-            ce = cache->count < FR_MAX_VSTI_CACHE ? &cache->entries[cache->count++] : &scratch;
-            fr_strcpy(ce->path, sizeof(ce->path), e->path);
-        }
-        ce->size = size;
-        ce->mtime = mtime;
-        ce->state = SCAN_CACHE_OPENING;
-        ce->name[0] = '\0';
-        scan_cache_save(cache);
+    const char* args[4] = { exe, FR_SCAN_PROBE_ARG, e->path, probe->result_path };
+    if (!exe[0] || !temp[0] || !plat_process_start(&probe->process, args, 4)) {
+        fr_log("scan: %s: the probe process could not be started", e->path);
+        job->probe_done++;
+        return;
+    }
+    probe->busy = true;
+    probe->entry = entry;
+    probe->started_ms = plat_ms_now();
+}
 
-        char name[FR_PLUGIN_NAME_LEN];
-        char err[FR_ERROR_LEN];
-        bool is_instrument = false;
-        if (vst2_probe(e->path, name, sizeof(name), &is_instrument, err, sizeof(err))) {
-            ce->state = is_instrument ? SCAN_CACHE_INSTRUMENT : SCAN_CACHE_NOT_INSTRUMENT;
-            fr_strcpy(ce->name, sizeof(ce->name), name);
-            fr_log("scan: %s: %s%s", e->path, name, is_instrument ? "" : " (not an instrument)");
+static void scan_probe_collect(ScanJob* job, ScanProbe* probe, PluginList* vsti, ScanCache* cache, bool timed_out,
+                               int exit_code) {
+    PluginEntry* e = &vsti->entries[probe->entry];
+    char result[FR_PLUGIN_NAME_LEN + FR_ERROR_LEN + 8];
+    bool have_result = !timed_out && exit_code == 0 && plat_file_read_text(probe->result_path, result, sizeof(result));
+    if (!have_result) {
+        if (timed_out) {
+            fr_log("scan: %s did not answer within %d s and is skipped until it changes", e->path,
+                   FR_SCAN_PROBE_TIMEOUT_MS / 1000);
         } else {
-            ce->state = SCAN_CACHE_NOT_INSTRUMENT;
-            fr_log("scan: %s: %s", e->path, err);
+            fr_log("scan: %s crashed while it was opened (exit code 0x%08X) and is skipped until it changes", e->path,
+                   (unsigned)exit_code);
         }
-        scan_cache_save(cache);
+        scan_cache_record(cache, e->path, probe->size, probe->mtime, SCAN_CACHE_BROKEN, "");
+    } else {
+        char* text = strchr(result, '\t');
+        text = text ? text + 1 : result + strlen(result);
+        size_t len = strlen(text);
+        while (len > 0 && (text[len - 1] == '\n' || text[len - 1] == '\r')) text[--len] = '\0';
+        int state = atoi(result);
+        if (state == 1) {
+            fr_log("scan: %s: %s", e->path, text);
+            scan_cache_record(cache, e->path, probe->size, probe->mtime, SCAN_CACHE_INSTRUMENT, text);
+            if (text[0]) fr_strcpy(e->name, sizeof(e->name), text);
+            job->keep[probe->entry] = true;
+        } else if (state == 0) {
+            fr_log("scan: %s: %s (not an instrument)", e->path, text);
+            scan_cache_record(cache, e->path, probe->size, probe->mtime, SCAN_CACHE_NOT_INSTRUMENT, text);
+        } else {
+            fr_log("scan: %s: %s", e->path, text);
+            scan_cache_record(cache, e->path, probe->size, probe->mtime, SCAN_CACHE_NOT_INSTRUMENT, "");
+        }
     }
-    if (ce->state == SCAN_CACHE_INSTRUMENT) {
-        if (ce->name[0]) fr_strcpy(e->name, sizeof(e->name), ce->name);
-        if (job->probe_kept != index) vsti->entries[job->probe_kept] = *e;
-        job->probe_kept++;
+    scan_probe_release(probe);
+    job->probe_done++;
+}
+
+static void scan_probe_begin(ScanJob* job, PluginList* vsti, ScanCache* cache) {
+    job->queue_count = 0;
+    job->queue_next = 0;
+    job->probe_done = 0;
+    for (int i = 0; i < vsti->count; ++i) {
+        PluginEntry* e = &vsti->entries[i];
+        job->keep[i] = false;
+        uint64_t size = 0, mtime = 0;
+        if (!plat_file_stat(e->path, &size, &mtime)) continue;
+        const ScanCacheEntry* ce = scan_cache_find(cache, e->path);
+        if (ce && ce->size == size && ce->mtime == mtime) {
+            job->keep[i] = ce->state == SCAN_CACHE_INSTRUMENT;
+            if (job->keep[i] && ce->name[0]) fr_strcpy(e->name, sizeof(e->name), ce->name);
+            continue;
+        }
+        job->queue[job->queue_count++] = i;
     }
-    job->probe_index++;
-    return SCAN_PROBE_NEXT;
+    if (job->queue_count > 0) fr_log("scan: %d new or changed VST 2 DLLs to open", job->queue_count);
+}
+
+static bool scan_probe_step(ScanJob* job, PluginList* vsti, ScanCache* cache) {
+    bool busy = false;
+    for (int s = 0; s < FR_SCAN_PARALLEL_PROBES; ++s) {
+        ScanProbe* probe = &job->probes[s];
+        if (probe->busy) {
+            int exit_code = 0;
+            if (plat_process_finished(&probe->process, &exit_code)) {
+                scan_probe_collect(job, probe, vsti, cache, false, exit_code);
+            } else if (plat_ms_now() - probe->started_ms >= FR_SCAN_PROBE_TIMEOUT_MS) {
+                plat_process_kill(&probe->process);
+                scan_probe_collect(job, probe, vsti, cache, true, 0);
+            }
+        }
+        while (!probe->busy && job->queue_next < job->queue_count) {
+            scan_probe_launch(job, s, vsti, job->queue[job->queue_next++]);
+        }
+        busy = busy || probe->busy;
+    }
+    if (busy || job->queue_next < job->queue_count) return false;
+
+    int kept = 0;
+    for (int i = 0; i < vsti->count; ++i) {
+        if (!job->keep[i]) continue;
+        if (kept != i) vsti->entries[kept] = vsti->entries[i];
+        kept++;
+    }
+    vsti->count = kept;
+    return true;
 }
 
 void scan_stop(ScanJob* job) {
     while (job->depth > 0) scan_pop_dir(job);
+    for (int s = 0; s < FR_SCAN_PARALLEL_PROBES; ++s) {
+        ScanProbe* probe = &job->probes[s];
+        if (!probe->busy) continue;
+        plat_process_kill(&probe->process);
+        scan_probe_release(probe);
+    }
     job->phase = SCAN_PHASE_IDLE;
 }
 
@@ -207,10 +311,9 @@ void scan_start(ScanJob* job, PluginList* vst3, PluginList* vsti) {
     scan_stop(job);
     job->phase = SCAN_PHASE_SEARCH;
     job->folder = 0;
-    job->probe_index = 0;
-    job->probe_kept = 0;
-    job->probe_announced = -1;
-    job->probe_total = 0;
+    job->queue_count = 0;
+    job->queue_next = 0;
+    job->probe_done = 0;
     job->current[0] = '\0';
     vst3->count = 0;
     vsti->count = 0;
@@ -223,32 +326,25 @@ bool scan_running(const ScanJob* job) {
 bool scan_step(ScanJob* job, PluginList* vst3, PluginList* vsti, ScanCache* cache, const Settings* settings,
                uint32_t budget_ms) {
     uint64_t start = plat_ms_now();
-    while (job->phase != SCAN_PHASE_IDLE) {
-        bool out_of_time = plat_ms_now() - start >= budget_ms;
-        if (job->phase == SCAN_PHASE_SEARCH) {
-            if (out_of_time) return false;
-            if (scan_search_step(job, vst3, vsti, settings)) {
-                job->phase = SCAN_PHASE_PROBE;
-                job->probe_total = vsti->count;
-            }
-        } else {
-            int result = scan_probe_step(job, vsti, cache, out_of_time);
-            if (result == SCAN_PROBE_YIELD) return false;
-            if (result == SCAN_PROBE_DONE) {
-                qsort(vst3->entries, (size_t)vst3->count, sizeof(PluginEntry), scan_compare);
-                qsort(vsti->entries, (size_t)vsti->count, sizeof(PluginEntry), scan_compare);
-                fr_log("scan: %d VST3 plugins and %d VST 2 instruments (of %d DLLs) in %d folders, %d banned",
-                       vst3->count, vsti->count, job->probe_total, settings->scan_path_count, settings->banned_count);
-                job->phase = SCAN_PHASE_IDLE;
-                job->current[0] = '\0';
-                return true;
-            }
+    while (job->phase == SCAN_PHASE_SEARCH) {
+        if (plat_ms_now() - start >= budget_ms) return false;
+        if (scan_search_step(job, vst3, vsti, settings)) {
+            job->phase = SCAN_PHASE_PROBE;
+            job->current[0] = '\0';
+            scan_probe_begin(job, vsti, cache);
         }
     }
-    return false;
+    if (job->phase != SCAN_PHASE_PROBE || !scan_probe_step(job, vsti, cache)) return false;
+
+    qsort(vst3->entries, (size_t)vst3->count, sizeof(PluginEntry), scan_compare);
+    qsort(vsti->entries, (size_t)vsti->count, sizeof(PluginEntry), scan_compare);
+    fr_log("scan: %d VST3 plugins and %d VST 2 instruments in %d folders, %d banned, %d DLLs opened",
+           vst3->count, vsti->count, settings->scan_path_count, settings->banned_count, job->queue_count);
+    job->phase = SCAN_PHASE_IDLE;
+    return true;
 }
 
 float scan_progress(const ScanJob* job) {
-    if (job->phase != SCAN_PHASE_PROBE || job->probe_total <= 0) return -1.0f;
-    return (float)job->probe_index / (float)job->probe_total;
+    if (job->phase != SCAN_PHASE_PROBE || job->queue_count <= 0) return -1.0f;
+    return (float)job->probe_done / (float)job->queue_count;
 }

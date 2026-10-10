@@ -904,10 +904,15 @@ static void ui_tab_resample(App* app, float scale) {
             "Build the MIDI again after opening a project.");
 
     ui_label("Name", scale);
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##projectname", app->settings.project_name, sizeof(app->settings.project_name));
-    ImGui::BeginDisabled(busy || app->settings.project_name[0] == '\0');
-    if (ImGui::Button(ICON_LC_SAVE "  Save project", ImVec2(-1.0f, 0.0f))) app->project_save_request = true;
+    const char* save_label = ICON_LC_SAVE "  Save project";
+    float save_w = ImGui::CalcTextSize(save_label).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - save_w - ImGui::GetStyle().ItemSpacing.x);
+    bool submitted = ImGui::InputText("##projectname", app->settings.project_name, sizeof(app->settings.project_name),
+                                      ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    bool can_save = !busy && app->settings.project_name[0] != '\0';
+    ImGui::BeginDisabled(!can_save);
+    if (ImGui::Button(save_label, ImVec2(save_w, 0.0f)) || (submitted && can_save)) app->project_save_request = true;
     ImGui::EndDisabled();
     ui_hint("Writes every setting of this tab to <name>.yaml in the folder shown above, and the loaded plugin as it stands "
             "-- its patch, its parameters and the outputs it is routed to -- to <name>.fstate beside it. "
@@ -1454,9 +1459,17 @@ static void ui_scan_progress_bar(App* app, float width) {
         snprintf(overlay, sizeof(overlay), "Searching the plugin folders: %d found", found);
         ImGui::ProgressBar(-1.0f * (float)ImGui::GetTime(), ImVec2(width, 0.0f), overlay);
     } else {
-        snprintf(overlay, sizeof(overlay), "Checking VST 2 plugins: %d / %d", job->probe_index, job->probe_total);
+        snprintf(overlay, sizeof(overlay), "Opening new VST 2 plugins: %d / %d", job->probe_done, job->queue_count);
         ImGui::ProgressBar(fraction, ImVec2(width, 0.0f), overlay);
     }
+}
+
+static void ui_scan_dim_path(const char* path) {
+    char fitted[FR_MAX_PATH + 8];
+    ui_fit_path(path, ImGui::GetContentRegionAvail().x, fitted, sizeof(fitted));
+    ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_SLOT_LABEL_TEXT);
+    ImGui::TextUnformatted(fitted);
+    ImGui::PopStyleColor();
 }
 
 static void ui_draw_scan_panel(App* app, float scale) {
@@ -1469,19 +1482,16 @@ static void ui_draw_scan_panel(App* app, float scale) {
     ImGui::BeginChild("##scan", ImVec2(width, 0.0f), ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoScrollbar);
     ui_section("Scanning plugins", scale);
     ui_scan_progress_bar(app, -1.0f);
-    if (app->scan.current[0]) {
-        char fitted[FR_MAX_PATH + 8];
-        ui_fit_path(app->scan.current, ImGui::GetContentRegionAvail().x, fitted, sizeof(fitted));
-        ImGui::PushStyleColor(ImGuiCol_Text, CODE_COLOR_SLOT_LABEL_TEXT);
-        ImGui::TextUnformatted(fitted);
-        ImGui::PopStyleColor();
-    } else {
-        ImGui::Spacing();
+    const ScanJob* job = &app->scan;
+    if (job->phase == SCAN_PHASE_SEARCH && job->current[0]) ui_scan_dim_path(job->current);
+    for (int s = 0; s < FR_SCAN_PARALLEL_PROBES; ++s) {
+        const ScanProbe* probe = &job->probes[s];
+        if (probe->busy) ui_scan_dim_path(app->plugins[HOST_FORMAT_VST2].entries[probe->entry].path);
     }
     ImGui::Spacing();
     ui_note("The folders in the Settings tab are searched for VST3 plugins and VST 2 instruments. A VST 2 DLL that "
-            "has not been seen before is opened once to find out whether it is an instrument. The answer is kept, "
-            "so the next start is quick.");
+            "has not been seen before is opened once, in a separate process, to find out whether it is an instrument. "
+            "The answer is kept, so the next start is quick. A DLL that crashes or hangs while it is opened is skipped.");
     ImGui::EndChild();
 }
 

@@ -8,6 +8,9 @@
 #define FR_VSTI_CACHE_FILE      "fastresampler_vsti_cache.txt"
 #define FR_MAX_VSTI_CACHE       1024
 #define FR_SCAN_FRAME_BUDGET_MS 30
+#define FR_SCAN_PARALLEL_PROBES 4
+#define FR_SCAN_PROBE_TIMEOUT_MS 120000
+#define FR_SCAN_PROBE_ARG       "--probe-vst2"
 #define FR_DISCLAIMER_SECONDS   5
 
 #define FR_PROJECTS_DIR         "Projects"

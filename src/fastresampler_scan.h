@@ -49,16 +49,28 @@ struct ScanDir {
     char        path[FR_MAX_PATH];
 };
 
+struct ScanProbe {
+    bool        busy;
+    int         entry;
+    uint64_t    size;
+    uint64_t    mtime;
+    uint64_t    started_ms;
+    PlatProcess process;
+    char        result_path[FR_MAX_PATH];
+};
+
 struct ScanJob {
-    int     phase;
-    int     folder;
-    ScanDir dirs[SCAN_MAX_DEPTH + 1];
-    int     depth;
-    int     probe_index;
-    int     probe_kept;
-    int     probe_announced;
-    int     probe_total;
-    char    current[FR_MAX_PATH];
+    int       phase;
+    int       folder;
+    ScanDir   dirs[SCAN_MAX_DEPTH + 1];
+    int       depth;
+    char      current[FR_MAX_PATH];
+    bool      keep[FR_MAX_PLUGINS];
+    int       queue[FR_MAX_PLUGINS];
+    int       queue_count;
+    int       queue_next;
+    int       probe_done;
+    ScanProbe probes[FR_SCAN_PARALLEL_PROBES];
 };
 
 void scan_cache_init(ScanCache* cache, const char* path);
@@ -69,3 +81,5 @@ bool scan_running(const ScanJob* job);
 bool scan_step(ScanJob* job, PluginList* vst3, PluginList* vsti, ScanCache* cache, const Settings* settings,
                uint32_t budget_ms);
 float scan_progress(const ScanJob* job);
+
+int scan_probe_child(const char* dll_path, const char* result_path);

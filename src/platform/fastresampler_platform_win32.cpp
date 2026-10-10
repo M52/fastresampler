@@ -182,6 +182,136 @@ bool plat_file_delete(const char* path) {
     return GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND;
 }
 
+bool plat_file_write(const char* path, const void* data, size_t size) {
+    wchar_t wpath[FR_MAX_PATH];
+    if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) return false;
+    FILE* f = _wfopen(wpath, L"wb");
+    if (!f) return false;
+    bool ok = fwrite(data, 1, size, f) == size;
+    return fclose(f) == 0 && ok;
+}
+
+bool plat_file_read_text(const char* path, char* out, size_t out_len) {
+    out[0] = '\0';
+    wchar_t wpath[FR_MAX_PATH];
+    if (out_len == 0 || !plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) return false;
+    FILE* f = _wfopen(wpath, L"rb");
+    if (!f) return false;
+    size_t n = fread(out, 1, out_len - 1, f);
+    fclose(f);
+    out[n] = '\0';
+    return true;
+}
+
+void plat_module_path(char* out, size_t max_len) {
+    wchar_t wpath[FR_MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, wpath, FR_MAX_PATH);
+    if (n == 0 || n >= FR_MAX_PATH || !plat_wide_to_utf8(wpath, out, (int)max_len)) out[0] = '\0';
+}
+
+void plat_temp_dir(char* out, size_t max_len) {
+    wchar_t wpath[FR_MAX_PATH];
+    DWORD n = GetTempPathW(FR_MAX_PATH, wpath);
+    if (n == 0 || n >= FR_MAX_PATH || !plat_wide_to_utf8(wpath, out, (int)max_len)) out[0] = '\0';
+}
+
+static HANDLE g_plat_child_job = NULL;
+
+static HANDLE plat_child_job(void) {
+    if (g_plat_child_job) return g_plat_child_job;
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (!job) return NULL;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info));
+    g_plat_child_job = job;
+    return job;
+}
+
+static bool plat_append_arg(wchar_t* cmd, size_t cmd_len, size_t* o, const wchar_t* arg) {
+    size_t at = *o;
+    if (at > 0) {
+        if (at + 1 >= cmd_len) return false;
+        cmd[at++] = L' ';
+    }
+    if (at + 1 >= cmd_len) return false;
+    cmd[at++] = L'"';
+    size_t backslashes = 0;
+    for (const wchar_t* s = arg; ; ++s) {
+        if (*s == L'\\') {
+            backslashes++;
+            continue;
+        }
+        size_t repeat = (*s == L'"' || *s == L'\0') ? 2 * backslashes + (*s == L'"' ? 1 : 0) : backslashes;
+        if (at + repeat + 2 >= cmd_len) return false;
+        for (size_t i = 0; i < repeat; ++i) cmd[at++] = L'\\';
+        backslashes = 0;
+        if (*s == L'\0') break;
+        cmd[at++] = *s;
+    }
+    cmd[at++] = L'"';
+    cmd[at] = L'\0';
+    *o = at;
+    return true;
+}
+
+bool plat_process_start(PlatProcess* p, const char* const* args, int arg_count) {
+    p->handle = NULL;
+    if (arg_count < 1) return false;
+    wchar_t exe[FR_MAX_PATH];
+    if (!plat_utf8_to_wide(args[0], exe, FR_MAX_PATH)) return false;
+    wchar_t cmd[4 * FR_MAX_PATH + 64];
+    size_t o = 0;
+    cmd[0] = L'\0';
+    for (int i = 0; i < arg_count; ++i) {
+        wchar_t warg[FR_MAX_PATH];
+        if (!plat_utf8_to_wide(args[i], warg, FR_MAX_PATH)) return false;
+        if (!plat_append_arg(cmd, sizeof(cmd) / sizeof(cmd[0]), &o, warg)) return false;
+    }
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(exe, cmd, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, &pi)) return false;
+    HANDLE job = plat_child_job();
+    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    p->handle = pi.hProcess;
+    return true;
+}
+
+bool plat_process_finished(PlatProcess* p, int* exit_code) {
+    *exit_code = 0;
+    if (!p->handle) return true;
+    if (WaitForSingleObject((HANDLE)p->handle, 0) != WAIT_OBJECT_0) return false;
+    DWORD code = 0;
+    if (GetExitCodeProcess((HANDLE)p->handle, &code)) *exit_code = (int)code;
+    return true;
+}
+
+void plat_process_kill(PlatProcess* p) {
+    if (!p->handle) return;
+    TerminateProcess((HANDLE)p->handle, 1);
+    WaitForSingleObject((HANDLE)p->handle, 2000);
+}
+
+void plat_process_close(PlatProcess* p) {
+    if (p->handle) CloseHandle((HANDLE)p->handle);
+    p->handle = NULL;
+}
+
+uint32_t plat_process_id(void) {
+    return (uint32_t)GetCurrentProcessId();
+}
+
+void plat_child_process_setup(void) {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+}
+
+void plat_exit_now(int code) {
+    TerminateProcess(GetCurrentProcess(), (UINT)code);
+}
+
 void* plat_library_load(const char* path, char* err, size_t err_len) {
     wchar_t wpath[FR_MAX_PATH];
     if (!plat_utf8_to_wide(path, wpath, FR_MAX_PATH)) {

@@ -79,9 +79,13 @@ Details about the project:
   once it runs, so the scan opens each new DLL once, reads its name and its
   synth flag, closes it, and keeps the answer in
   `fastresampler_vsti_cache.txt` next to the exe, keyed on the file's size
-  and write time. The entry is written as "opening" before the DLL runs; one
-  still marked so at the next start took the scan down and is skipped until
-  the file changes. Effects and shell plugins are left out of the list, and
+  and write time. Each DLL is opened in a separate FastResampler process
+  (`fastresampler.exe --probe-vst2 <dll> <result file>`), up to four at once,
+  so the window never waits on a plugin. A DLL whose process crashes, or
+  does not answer within two minutes, takes only that process down; it is
+  marked broken in the cache and skipped until the file changes. The probe
+  processes are tied to the app's own, so they end with it. Effects and
+  shell plugins are left out of the list, and
   refused when loaded by path. MIDI reaches a VST 2 plugin as it is, so the
   CC sliders and the controller curves always work with one.
 - The public `3rdparty/fastsampler-shared` submodule supplies FSI/FSB
@@ -319,8 +323,8 @@ Layout of the window:
   clicked -- no scan, no audio device, no plugin, no Projects folder -- and
   the first time that button only unlocks after five seconds. I disagree.
   Exit closes FastResampler without writing the settings file. Then the
-  plugin folders are scanned behind a progress bar, one VST 2 DLL per
-  frame, so the name of the DLL being opened is on screen while it loads. A
+  plugin folders are scanned behind a progress bar that lists the VST 2 DLLs
+  being opened at that moment; the window stays responsive throughout. A
   plugin path given on the command line, or a project load asked for
   meanwhile, waits for the scan. While any modal is open, the plugin
   editor's child window is hidden, as Windows would otherwise draw it over
