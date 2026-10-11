@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - name: Allow the long paths in the submodules
+        run: git config --global core.longpaths true
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Read the version
+        id: version
+        shell: pwsh
+        run: |
+          $build = (Get-Content build_number.txt -Raw).Trim()
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            if ($env:GITHUB_REF_NAME -notmatch '^v(\d+\.\d+\.\d+)\.(\d+)$') {
+              throw "Tag $env:GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH.BUILD"
+            }
+            if ($Matches[2] -ne $build) {
+              throw "Tag $env:GITHUB_REF_NAME does not match build $build in build_number.txt"
+            }
+            $version = "$($Matches[1]).$build"
+          } else {
+            $version = "build$build-$($env:GITHUB_SHA.Substring(0, 7))"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Run the format tests
+        shell: cmd
+        env:
+          FASTRESAMPLER_KEEP_BUILD_NUMBER: 1
+        run: call build.bat format-tests
+
+      - name: Build
+        shell: cmd
+        env:
+          FASTRESAMPLER_KEEP_BUILD_NUMBER: 1
+        run: call build.bat
+
+      - name: Package
+        id: package
+        shell: pwsh
+        run: |
+          $name = "FastResampler-${{ steps.version.outputs.version }}-win-x64"
+          New-Item -ItemType Directory -Path "dist/$name" | Out-Null
+          Copy-Item build/fastresampler.exe, build/wavpackdll.dll, build/lucide.ttf, build/Monocypher-LICENSE.txt, LICENSE -Destination "dist/$name"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          "name=$name" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}/
+
+      - name: Attach to a draft release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --draft --verify-tag --title "FastResampler ${{ steps.version.outputs.version }}" --notes "Built from $env:GITHUB_SHA."
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          gh release upload $tag "dist/${{ steps.package.outputs.name }}.zip" --clobber
