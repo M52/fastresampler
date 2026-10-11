@@ -1542,7 +1542,7 @@ static const UiDisclaimerSection g_ui_disclaimer[] = {
       "creation time, FastResampler version, the source plugin's name, vendor, version and identifier, and "
       "the revision of this notice you accepted. The developer can decrypt this information to help investigate "
       "unauthorized redistribution. No information is sent over the network. The provenance travels with the "
-      "bank when you share it. It is an additional measure and does not prove who uploaded a file." },
+      "bank when you share it." },
     { "6. General",
       "This notice applies in addition to the license under which FastResampler is distributed. If any part of it is "
       "held to be unenforceable, the remaining parts stay in full effect. Nothing in it limits or excludes any "
