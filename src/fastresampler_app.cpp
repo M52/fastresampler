@@ -91,7 +91,7 @@ static int app_block_size_index(int block_size) {
 static void app_start_scan(App* app) {
     scan_start(&app->scan, &app->plugins[HOST_FORMAT_VST3], &app->plugins[HOST_FORMAT_VST2]);
     for (int f = 0; f < HOST_FORMAT_COUNT; ++f) app->selected_plugin[f] = -1;
-    app_set_status(app, false, "Scanning the plugin folders...");
+    app_set_status(app, false, "Scanning plugin folders...");
 }
 
 void app_init(App* app) {
@@ -282,7 +282,7 @@ static void app_load_plugin(App* app, int format, int index) {
 static int app_select_plugin_path(App* app, const char* path) {
     if (!path || !path[0]) return -1;
     if (settings_is_banned(&app->settings, path)) {
-        app_set_status(app, true, "%s is banned. Unban it from the list's right-click menu.",
+        app_set_status(app, true, "%s is banned. Right-click the plugin list and choose Unban.",
                        plat_path_basename(path));
         return -1;
     }
@@ -341,7 +341,7 @@ static void app_apply_audio(App* app) {
         double sample_rate = ok ? app->audio.sample_rate : FR_DEFAULT_SAMPLE_RATE;
         int block_size = ok ? app->audio.block_size : app->settings.block_size;
         if (!host_plugin_setup_processing(app->plugin, sample_rate, block_size, false)) {
-            app_set_status(app, true, "The plugin refused %.0f Hz with %d frames.", sample_rate, block_size);
+            app_set_status(app, true, "The plugin rejected %.0f Hz at %d frames per block.", sample_rate, block_size);
         }
     }
     app_resume_plugin(app);
@@ -385,7 +385,7 @@ static bool app_check_disk_space(App* app) {
     app_format_bytes(needed, needed_text, sizeof(needed_text));
     if (!plat_disk_free_bytes(dir, &free_bytes)) {
         snprintf(app->disk_warning, sizeof(app->disk_warning),
-                 "The free space of the disk that holds %s could not be read. The render writes %s.", dir, needed_text);
+                 "Unable to read the free space on the disk with %s. The render needs %s.", dir, needed_text);
         app->disk_warning_open = true;
         app_set_status(app, true, "%s", app->disk_warning);
         return false;
@@ -394,15 +394,15 @@ static bool app_check_disk_space(App* app) {
         int bus_count = app->settings.resample.bus_count;
         char over[48];
         over[0] = '\0';
-        if (bus_count > 1) snprintf(over, sizeof(over), " over %d output busses", bus_count);
+        if (bus_count > 1) snprintf(over, sizeof(over), " for %d output busses", bus_count);
         app_format_bytes(free_bytes, free_text, sizeof(free_text));
         if (app->settings.resample.split_samples) {
             snprintf(app->disk_warning, sizeof(app->disk_warning),
-                     "Not enough disk space for the render. The full WAV and the %d sample files%s take %s; the disk that holds %s has %s free.",
+                     "Not enough disk space. The full WAV and %d sample files%s need %s; the disk with %s has %s free.",
                      app->resample_script.segment_count * bus_count, over, needed_text, dir, free_text);
         } else {
             snprintf(app->disk_warning, sizeof(app->disk_warning),
-                     "Not enough disk space for the render. The full WAV%s takes %s; the disk that holds %s has %s free.",
+                     "Not enough disk space. The full WAV%s needs %s; the disk with %s has %s free.",
                      over, needed_text, dir, free_text);
         }
         app->disk_warning_open = true;
@@ -476,7 +476,7 @@ static void app_resample_start(App* app) {
         return;
     }
     if (app->resample_script.sample_rate != app_resample_rate(app)) {
-        app_set_status(app, true, "The sample rate changed since the build. Build the MIDI again.");
+        app_set_status(app, true, "The sample rate changed. Build the MIDI again.");
         return;
     }
     {
@@ -487,7 +487,7 @@ static void app_resample_start(App* app) {
             char pair[16];
             resample_bus_pair_label(c->busses[b].channel, pair, sizeof(pair));
             app_set_status(app, true,
-                           "Output bus %d '%s' reads outputs %s, but the plugin has %d output channel%s. Move the bus or route the plugin.",
+                           "Output bus %d '%s' records outputs %s, but the plugin has %d output channel%s. Choose a lower pair or enable more outputs in the plugin.",
                            b + 1, c->busses[b].name, pair, have, have == 1 ? "" : "s");
             return;
         }
@@ -506,20 +506,20 @@ static void app_resample_start(App* app) {
         }
     }
     if (!app_check_disk_space(app)) {
-        app_set_status(app, true, "Not enough disk space; the render did not start.");
+        app_set_status(app, true, "Not enough disk space to render.");
         return;
     }
     app_pause_plugin(app);
     int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
     double export_rate = app->resample_script.sample_rate;
     if (!host_plugin_setup_processing(app->plugin, export_rate, block_size, true)) {
-        app_set_status(app, true, "The plugin refused %.0f Hz. Pick another export rate.", export_rate);
+        app_set_status(app, true, "The plugin rejected %.0f Hz. Choose another sample rate.", export_rate);
         host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false);
         app_resume_plugin(app);
         return;
     }
     if (!resample_start(&app->resample_job, app->plugin, &app->resample_script, block_size, &app->settings.resample)) {
-        app_set_status(app, true, "The render could not start.");
+        app_set_status(app, true, "Unable to start the render.");
         host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false);
         app_resume_plugin(app);
         return;
@@ -549,7 +549,7 @@ static void app_resample_finish(App* app) {
     if (app->plugin) {
         int block_size = app->audio.open ? app->audio.block_size : app->settings.block_size;
         if (!host_plugin_setup_processing(app->plugin, app_device_sample_rate(app), block_size, false)) {
-            app_set_status(app, true, "The plugin refused to return to %.0f Hz.", app_device_sample_rate(app));
+            app_set_status(app, true, "The plugin rejected the device rate of %.0f Hz.", app_device_sample_rate(app));
         }
     }
     app_resume_plugin(app);
@@ -557,14 +557,14 @@ static void app_resample_finish(App* app) {
 
 static void app_instrument_start(App* app) {
     if (!app->resample_fsi_ready || !app->resample_script.built) {
-        app_set_status(app, true, "Render the samples first.");
+        app_set_status(app, true, "Render to WAV first.");
         return;
     }
     const ResampleConfig* cfg = &app->settings.resample;
     InstrumentTarget targets[FR_MAX_OUTPUT_BUSSES];
     char err[FR_STATUS_LEN];
     if (cfg->bus_count != app->resample_job.bus_count) {
-        app_set_status(app, true, "The output busses changed since the render. Render to WAV again.");
+        app_set_status(app, true, "The output busses changed. Render to WAV again.");
         return;
     }
     for (int b = 0; b < cfg->bus_count; ++b) {
@@ -573,7 +573,7 @@ static void app_instrument_start(App* app) {
             return;
         }
         if (strcmp(targets[b].prefix, app->resample_job.prefix[b]) != 0) {
-            app_set_status(app, true, "Output bus %d was rendered as '%s'. Render to WAV again.",
+            app_set_status(app, true, "Output bus %d was named '%s' when rendered. Render to WAV again.",
                            b + 1, app->resample_job.prefix[b]);
             return;
         }
@@ -589,7 +589,7 @@ static void app_instrument_start(App* app) {
         fr_strcpy(targets[b].bus_name, sizeof(targets[b].bus_name), cfg->busses[b].name);
     }
     if (!instrument_start(&app->instrument_job, &app->resample_script, cfg, targets, cfg->bus_count, &app->render_provenance)) {
-        app_set_status(app, true, "The instrument build could not start.");
+        app_set_status(app, true, "Unable to start the instrument build.");
         return;
     }
     if (cfg->bus_count > 1) {
@@ -669,7 +669,7 @@ static void app_restore_plugin(App* app, ProjectPlugin* plugin) {
     if (!plugin->present) return;
     char path[FR_MAX_PATH];
     if (!app_find_project_plugin(app, plugin, path, sizeof(path))) {
-        app_set_status(app, true, "%s was not found on this computer; the settings were loaded without it.",
+        app_set_status(app, true, "%s was not found. The project settings were loaded without the plugin.",
                        plugin->name);
         fr_log("app: the project's plugin is neither at %s nor in the %s list",
                plugin->path, host_format_name(plugin->format));
@@ -684,7 +684,7 @@ static void app_restore_plugin(App* app, ProjectPlugin* plugin) {
         if (!app_load_plugin_path(app, path, plugin->name)) return;
     }
     if (plugin->state.size == 0) {
-        app_set_status(app, false, "Loaded %s; the project holds no state for it.", plugin->name);
+        app_set_status(app, false, "Loaded %s. The project has no saved state for it.", plugin->name);
         return;
     }
 
@@ -699,10 +699,10 @@ static void app_restore_plugin(App* app, ProjectPlugin* plugin) {
     host_plugin_take_io_change(app->plugin);
     const HostPluginInfo* info = host_plugin_info(app->plugin);
     if (moved) {
-        app_set_status(app, false, "%s is back as it was saved, from %s on this computer: %d output channels over %d busses.",
+        app_set_status(app, false, "Restored %s from %s: %d output channels on %d busses.",
                        info->name, path, info->total_output_channels, info->output_bus_count);
     } else {
-        app_set_status(app, false, "%s is back as it was saved: %d output channels over %d busses.",
+        app_set_status(app, false, "Restored %s: %d output channels on %d busses.",
                        info->name, info->total_output_channels, info->output_bus_count);
     }
 }
@@ -716,10 +716,10 @@ static void app_service_io_change(App* app) {
     app_resume_plugin(app);
     const HostPluginInfo* info = host_plugin_info(app->plugin);
     if (ok) {
-        app_set_status(app, false, "%s now offers %d output channels over %d busses.",
+        app_set_status(app, false, "%s now has %d output channels on %d busses.",
                        info->name, info->total_output_channels, info->output_bus_count);
     } else {
-        app_set_status(app, true, "%s changed its outputs and refused %.0f Hz with %d frames.",
+        app_set_status(app, true, "%s changed its outputs and rejected %.0f Hz at %d frames per block.",
                        info->name, sample_rate, block_size);
     }
 }
@@ -747,13 +747,13 @@ static void app_process_project_requests(App* app) {
                                    path, sizeof(path), err, sizeof(err));
             if (ok) {
                 if (plugin.present && plugin.state.size > 0) {
-                    app_set_status(app, false, "Project %s saved, with %s as it stands.",
+                    app_set_status(app, false, "Saved project %s with the state of %s.",
                                    app->settings.project_name, plugin.name);
                 } else if (plugin.present) {
-                    app_set_status(app, true, "Project %s saved, but %s wrote no state to keep.",
+                    app_set_status(app, true, "Saved project %s, but %s returned no state.",
                                    app->settings.project_name, plugin.name);
                 } else {
-                    app_set_status(app, false, "Project %s saved, with no plugin loaded.",
+                    app_set_status(app, false, "Saved project %s without a plugin.",
                                    app->settings.project_name);
                 }
                 settings_save(&app->settings, app->settings_path);
@@ -786,13 +786,13 @@ static void app_process_project_requests(App* app) {
             app->resample_full_wav_removed = false;
             app->cc_last_controller = -1;
             if (moved_dirs == 1) {
-                app_set_status(app, false, "Project %s loaded; a folder it names is not on this computer, so it now follows %s.",
+                app_set_status(app, false, "Loaded project %s. One of its folders is missing on this computer and now uses the project root %s.",
                                app->settings.project_name, app->settings.resample.root_dir);
             } else if (moved_dirs > 1) {
-                app_set_status(app, false, "Project %s loaded; %d folders it names are not on this computer, so they now follow %s.",
+                app_set_status(app, false, "Loaded project %s. %d of its folders are missing on this computer and now use the project root %s.",
                                app->settings.project_name, moved_dirs, app->settings.resample.root_dir);
             } else {
-                app_set_status(app, false, "Project %s loaded.", app->settings.project_name);
+                app_set_status(app, false, "Loaded project %s.", app->settings.project_name);
             }
             if (moved_dirs > 0) app_check_disk_space(app);
             app_restore_plugin(app, &plugin);
@@ -862,7 +862,7 @@ void app_process_requests(App* app) {
         if (plat_pick_folder(view_native_window(app->view), app->settings.resample.root_dir, dir, sizeof(dir))) {
             fr_strcpy(app->settings.resample.root_dir, sizeof(app->settings.resample.root_dir), dir);
             settings_save(&app->settings, app->settings_path);
-            app_set_status(app, false, "The root project folder is %s", dir);
+            app_set_status(app, false, "Project root: %s", dir);
             app_check_disk_space(app);
         }
     }
@@ -872,7 +872,7 @@ void app_process_requests(App* app) {
         if (plat_pick_folder(view_native_window(app->view), app->settings.resample.output_dir, dir, sizeof(dir))) {
             fr_strcpy(app->settings.resample.output_dir, sizeof(app->settings.resample.output_dir), dir);
             settings_save(&app->settings, app->settings_path);
-            app_set_status(app, false, "Samples go to %s", dir);
+            app_set_status(app, false, "Output folder: %s", dir);
             app_check_disk_space(app);
         }
     }
@@ -882,7 +882,7 @@ void app_process_requests(App* app) {
         if (plat_pick_folder(view_native_window(app->view), app->settings.resample.export_dir, dir, sizeof(dir))) {
             fr_strcpy(app->settings.resample.export_dir, sizeof(app->settings.resample.export_dir), dir);
             settings_save(&app->settings, app->settings_path);
-            app_set_status(app, false, "The instrument goes to %s", dir);
+            app_set_status(app, false, "Export folder: %s", dir);
         }
     }
     if (app->instrument_start_request) {

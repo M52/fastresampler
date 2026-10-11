@@ -263,7 +263,7 @@ static void ui_cc_slider(App* app, const char* label, int controller, float scal
 static void ui_tab_plugin(App* app, float scale) {
     if (!app->plugin) {
         ImGui::TextWrapped("No plugin loaded.");
-        ui_hint("Double-click a plugin in the VST3 list or an instrument in the VSTi list to load it.");
+        ui_hint("Double-click a plugin in the VST3 or VSTi list to load it.");
         return;
     }
     const HostPluginInfo* info = host_plugin_info(app->plugin);
@@ -306,7 +306,7 @@ static void ui_tab_midi(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ui_hint("Click a key to play it. Lower on the key is louder.");
+    ui_hint("Channel for live playing. Click a key on the keyboard to play it; click lower on the key for a higher velocity.");
     ui_section_end(scale);
 
     ui_section("Controllers", scale);
@@ -329,7 +329,7 @@ static void ui_tab_midi(App* app, float scale) {
     ImGui::SameLine();
     if (ImGui::Button("Centre", ImVec2(-1.0f, 0.0f))) app_pitch_bend(app, MIDI_PITCH_BEND_CENTER);
     if (app->plugin && !host_plugin_info(app->plugin)->has_midi_mapping) {
-        ui_colored_wrapped("This plugin publishes no MIDI controller mapping, so CC and pitch bend do not reach it.",
+        ui_colored_wrapped("This plugin has no MIDI controller mapping, so it ignores CC and pitch bend.",
                            CODE_COLOR_WARNING_VEC4);
     }
     ui_section_end(scale);
@@ -391,13 +391,13 @@ static void ui_project_browser(App* app, bool busy) {
     if (ui_icon_button(ICON_LC_ARROW_UP "##projects_up", "Up one folder")) ui_project_browse(app, parent);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ui_icon_button(ICON_LC_HOUSE "##projects_home", "The Projects folder next to FastResampler")) {
+    if (ui_icon_button(ICON_LC_HOUSE "##projects_home", "Go to the Projects folder")) {
         char home[FR_MAX_PATH];
         project_dir(home, sizeof(home));
         ui_project_browse(app, home);
     }
     ImGui::SameLine();
-    if (ui_icon_button(ICON_LC_REFRESH_CW "##projects_refresh", "Read the folder again")) ui_project_browse(app, b->dir);
+    if (ui_icon_button(ICON_LC_REFRESH_CW "##projects_refresh", "Refresh")) ui_project_browse(app, b->dir);
     ImGui::SameLine();
     char fitted[FR_MAX_PATH + 8];
     ui_fit_path(b->dir, ImGui::GetContentRegionAvail().x, fitted, sizeof(fitted));
@@ -439,19 +439,16 @@ static void ui_tab_resample_legato(ResampleConfig* cfg, bool busy, float scale) 
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Capture legato transitions", &cfg->legato);
     ImGui::EndDisabled();
-    ui_hint("After every note has been sampled, the run holds one note, presses the next over it and lets the first go, "
-            "so whatever the plugin plays between them is captured. The instrument maps those transitions to FastSampler's "
-            "legato effect, which plays one whenever a key goes down while another is held.");
+    ui_hint("Records the transitions between overlapping notes after the regular samples. "
+            "FastSampler plays a transition when a key is pressed while another key is down.");
     if (cfg->legato) {
         ImGui::BeginDisabled(busy);
 
         ui_label("Intervals", scale);
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::InputText("##legato_intervals", cfg->legato_intervals, sizeof(cfg->legato_intervals));
-        ui_hint("Widths in semitones, each captured up and down: \"1, 2\" is four transitions from every note. Only these "
-                "widths get a transition: a slur of any other width changes note without one, because a transition of the "
-                "wrong width would land on the wrong note. Leave no gaps, and note that the notes below need no matching "
-                "step -- a transition keeps its width when it is transposed, so spend the run on widths rather than on notes.");
+        ui_hint("Intervals in semitones, each recorded upward and downward: \"1, 2\" gives four transitions per note. "
+                "A slur over an interval that is not listed plays without a transition.");
 
         ui_label("From every", scale);
         ImGui::SetNextItemWidth(-1.0f);
@@ -461,16 +458,14 @@ static void ui_tab_resample_legato(ResampleConfig* cfg, bool busy, float scale) 
             }
             ImGui::EndCombo();
         }
-        ui_hint("The notes the transitions start from, which need not follow the notes above: transitions are often sampled "
-                "every semitone where the sustains are sampled every wholetone. A key between two of them plays the transition "
-                "of the nearer one.");
+        ui_hint("Spacing of the notes the transitions start from, independent of Sample every. "
+                "A key between two start notes uses the transition of the nearest one.");
 
         ui_label("Velocities", scale);
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::InputText("##legato_velocities", cfg->legato_velocities, sizeof(cfg->legato_velocities));
-        ui_hint("What the note landed on is pressed at, which many libraries read as the speed of the transition. Cinematic Studio "
-                "Strings has three zones, 0-64, 65-100 and 101-127, so \"30, 80, 110\" captures its slow, medium and fast slur. "
-                "The note left is pressed at the same velocity.");
+        ui_hint("Velocities of the second note. Many libraries set the transition speed by velocity. "
+                "The first note plays at the same velocity.");
 
         ui_label("Arrival", scale);
         {
@@ -481,10 +476,9 @@ static void ui_tab_resample_legato(ResampleConfig* cfg, bool busy, float scale) 
             ImGui::SameLine();
             ImGui::Checkbox("Detect", &cfg->legato_detect_arrival);
         }
-        ui_hint("How long after the note landed on is pressed the transition gets there, in milliseconds: one time, or one "
-                "per velocity. Detect reads the real one out of the audio, by following both pitches, and reads where the "
-                "transition leaves the first note with it, so the instrument carries both ends of every transition. It keeps "
-                "these times for a transition it cannot hear apart.");
+        ui_hint("Time in milliseconds from the second note-on until the pitch reaches the second note. Enter one value, or one "
+                "per velocity. Detect: measure the start and end of each transition from the audio. If detection fails, the "
+                "entered times are used.");
 
         ui_label("Note left", scale);
         {
@@ -499,28 +493,24 @@ static void ui_tab_resample_legato(ResampleConfig* cfg, bool busy, float scale) 
             ui_time_slider("##legato_overlap", &cfg->legato_overlap_seconds, 0.0f, UI_TIME_MAX_SECONDS,
                            &g_legato_overlap_drag);
         }
-        ui_hint("How long the note that is left sounds before the next one is pressed, and how long it stays down after that. "
-                "The overlap is what makes a plugin play a move at all.");
+        ui_hint("Note left: length of the first note before the second note starts. Overlap: how long both notes sound together. "
+                "Plugins play a legato transition only when the notes overlap.");
 
         ui_label("Note landed on", scale);
         ImGui::SetNextItemWidth(-1.0f);
         ui_time_slider("##legato_hold", &cfg->legato_hold_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
                        &g_legato_hold_drag);
-        ui_hint("How long it is held. It has to reach past the arrival and the blend, so a slow slur needs a longer hold.");
+        ui_hint("Length of the second note. Must be longer than Arrival plus Sustain either side.");
 
         ui_label("Sustain either side", scale);
         ImGui::SetNextItemWidth(-1.0f);
         ui_time_slider("##legato_margin", &cfg->legato_margin_seconds, UI_HOLD_MIN_SECONDS, UI_TIME_MAX_SECONDS,
                        &g_legato_margin_drag);
-        ui_hint("How much of the note being left each move keeps in front of its departure, and how much of the note landed "
-                "on past its arrival. Room for FastSampler's two crossfades rather than something that is played as such: the "
-                "sampler starts the move one fade before the departure and ends it one fade past the arrival, so this only "
-                "sets how long those fades may be. Half a second lets a slow line blend over a long crossfade; a fast run "
-                "never reaches most of it. The part in front of the departure is held in RAM, so a longer margin costs "
-                "memory per move.");
+        ui_hint("Sustain recorded before and after each transition. Sets the maximum length of FastSampler's crossfades "
+                "into and out of the transition. The part before the transition is loaded into RAM, so longer values use more memory.");
         ImGui::EndDisabled();
         if (cfg->round_robins > 1 && !cfg->dynamic_layers) {
-            ui_note("The moves are captured once and shared by every round robin.");
+            ui_note("Transitions are recorded once and shared by all round robins.");
         }
     }
     ui_section_end(scale);
@@ -534,9 +524,8 @@ static void ui_tab_resample(App* app, float scale) {
 
     ui_section("Naming", scale);
     ui_folder_row("Project root", cfg->root_dir, busy, &app->root_dir_pick_request, scale);
-    ui_hint("The root of every project. A run writes under it, into Instrument\\Articulation\\Bus, "
-            "so each take gets a folder of its own and each output bus a folder in it. "
-            "The Output and Export sections each have a box to write somewhere else.");
+    ui_hint("Base folder for all output. Files are written to Instrument\\Articulation\\Bus inside it. "
+            "Output and Export can each use a different folder.");
     ui_label("Instrument", scale);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##instrument", cfg->instrument, sizeof(cfg->instrument));
@@ -570,7 +559,7 @@ static void ui_tab_resample(App* app, float scale) {
             ui_colored_wrapped(err, CODE_COLOR_WARNING_VEC4);
         }
     }
-    ui_hint("The microphones are the output busses, named in the Output busses tab under the plugin.");
+    ui_hint("Bus names are set in the Output busses tab.");
     ui_section_end(scale);
 
     ui_section("Notes", scale);
@@ -594,7 +583,7 @@ static void ui_tab_resample(App* app, float scale) {
     midi_note_name(low, cfg->low_note, sizeof(cfg->low_note));
     midi_note_name(high, cfg->high_note, sizeof(cfg->high_note));
     ui_update_range(app);
-    ui_hint("C3 is middle C, C-2 is note 0. The keyboard marks the notes that will be sampled.");
+    ui_hint("C3 is middle C. The keyboard marks the notes to be sampled.");
 
     ui_label("Sample every", scale);
     ImGui::SetNextItemWidth(-1.0f);
@@ -615,9 +604,8 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ImGui::SameLine();
     ImGui::Checkbox("RR are dynamic layers", &cfg->dynamic_layers);
-    ui_hint("With the box on, the number is one of dynamic layers: every note is played once per layer, a curve below can be "
-            "tied to one layer (three CC1 curves at three levels, say), the files end in dyn<n>, and the instrument crossfades "
-            "the layers on that controller, every sustain looped and its ring-out mapped as a release sample.");
+    ui_hint("Uses the Round robins number as the number of dynamic layers. Each note and velocity is recorded once per layer. "
+            "Assign CC curves to layers under Controllers, for example three CC1 curves at different values. Files end in dyn<n>.");
     ui_label("Pre-roll", scale);
     ImGui::BeginDisabled(cfg->dynamic_layers);
     ImGui::Checkbox("##preroll", &cfg->preroll);
@@ -628,9 +616,10 @@ static void ui_tab_resample(App* app, float scale) {
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (cfg->dynamic_layers) {
-        ui_hint("Pre-roll is the run-up a round robin capture is given, which dynamic layers do not use, so it is off.");
+        ui_hint("Not available with dynamic layers.");
     } else {
-        ui_hint("Pre-roll is the run-up before every capture: n-1 gaps, so a painted curve is read the same way into each note. It is only spent when there is a curve. The round robins need no notes of their own, because each capture advances the sampler's counter itself; a short note is played only to carry that counter back into step, and the split discards it.");
+        ui_hint("Plays short notes before each capture so every round robin is recorded. Gap sets the time between these notes. "
+                "They are cut from the exported samples.");
     }
     ui_section_end(scale);
 
@@ -646,8 +635,8 @@ static void ui_tab_resample(App* app, float scale) {
         ImGui::SetNextItemWidth(-1.0f);
         ui_time_slider("##gap", &cfg->gap_seconds, 0.0f, UI_TIME_MAX_SECONDS, &g_gap_drag);
     }
-    ui_hint("Each note is held, then left to ring out for the gap; the sample file spans both. "
-            "Drag with Shift for coarse steps, with Alt for fine ones; Ctrl-click to type seconds.");
+    ui_hint("Hold: note length. Gap: release time recorded after note-off. "
+            "Drag with Shift for coarse steps or Alt for fine steps. Ctrl-click to type a value.");
 
     ui_label("Sample rate", scale);
     char rate_label[48];
@@ -668,7 +657,7 @@ static void ui_tab_resample(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ui_hint("The plugin renders at this rate, offline, and returns to the device's rate afterwards. The samples and the bank keep it.");
+    ui_hint("Sample rate of the render. The plugin returns to the device rate afterwards.");
 
     ui_label("Render speed", scale);
     char speed_label[32];
@@ -683,7 +672,7 @@ static void ui_tab_resample(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ui_hint("A sampler that streams from disk needs time to read its sample tails. If samples come out cut short, lower the speed.");
+    ui_hint("Render speed relative to realtime. Lower it if samples are cut short; samplers that stream from disk can fall behind at high speeds.");
 
     ui_section_end(scale);
 
@@ -740,14 +729,14 @@ static void ui_tab_resample(App* app, float scale) {
     }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
-    ui_hint("Each curve sends one controller over the time of every sample: the pre-roll, the held note and the gap. "
-            "A new curve takes the controller last picked. "
-            "Bezier: drag the nodes and the handles between them, double-click to add a node, right-click to remove one. "
-            "Off: paint the curve with the mouse. Constant sets the whole curve to the slider's value. "
-            "With dynamic layers, the box after the controller ties a curve to one layer; on All layers it plays in every pass.");
-    if (app_legato_enabled(app)) ui_hint("A legato capture is longer than one note, and a curve stretches over the whole of it.");
+    ui_hint("Each curve sends a MIDI CC over the full length of every sample. "
+            "Constant: set the slider, then click Constant. "
+            "Bezier: drag nodes and handles; double-click to add a node, right-click to remove one. "
+            "Off: draw the curve with the mouse. "
+            "With dynamic layers, the layer menu sets which layer a curve applies to.");
+    if (app_legato_enabled(app)) ui_hint("On legato transitions, each curve is stretched over both notes.");
     if (app->plugin && cfg->cc_curve_count > 0 && !host_plugin_info(app->plugin)->has_midi_mapping) {
-        ui_colored_wrapped("This plugin publishes no MIDI controller mapping, so the curves do not reach it.",
+        ui_colored_wrapped("This plugin has no MIDI controller mapping, so it ignores the CC curves.",
                            CODE_COLOR_WARNING_VEC4);
     }
     ui_section_end(scale);
@@ -755,13 +744,12 @@ static void ui_tab_resample(App* app, float scale) {
     ui_section("Output", scale);
     ui_target_folder_row("Folder", cfg, cfg->output_dir, &cfg->output_dir_override, busy,
                          &app->output_dir_pick_request, scale);
-    ui_hint("The full WAV and the sample files go under the root project folder, in Instrument\\Articulation\\Bus, "
-            "one folder per output bus. Tick the box to put them somewhere else; a bus is still the last folder.");
+    ui_hint("Folder for the full WAV and the samples. Defaults to Instrument\\Articulation\\Bus in the project root. "
+            "Each bus writes to its own subfolder.");
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Generate split samples", &cfg->split_samples);
     ImGui::EndDisabled();
-    ui_hint("Cuts the full WAV into one file per sample. The FSI + FSB bank is cut from that same WAV, "
-            "so a run that only exports to FastSampler does not need these files.");
+    ui_hint("Splits the full WAV into one file per sample. Not needed for the FSI + FSB export, which reads the full WAV.");
     ImGui::BeginDisabled(busy);
     if (ImGui::Button("1. Build MIDI", ImVec2(-1.0f, 0.0f))) app_resample_build(app);
     ImGui::EndDisabled();
@@ -789,11 +777,11 @@ static void ui_tab_resample(App* app, float scale) {
         if (!app->plugin) {
             ui_hint("Load a plugin to render.");
         } else if (!app->resample_script.built) {
-            ui_hint("Build the MIDI to render.");
+            ui_hint("Build the MIDI first.");
         } else if (cfg->split_samples) {
-            ui_hint("Renders faster than realtime with the speakers silent, then splits the file into one WAV per sample.");
+            ui_hint("Renders offline with the speakers muted, then splits the result into one WAV per sample.");
         } else {
-            ui_hint("Renders faster than realtime with the speakers silent, into the one long WAV the bank is built from.");
+            ui_hint("Renders offline with the speakers muted into a single WAV.");
         }
     }
     ui_section_end(scale);
@@ -812,7 +800,8 @@ static void ui_tab_resample(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ui_hint("How much of every sample the bank keeps in RAM; the rest streams from disk while it plays. RAM holds every sample whole.");
+    ui_hint("Part of each sample loaded into RAM; the rest streams from disk. RAM loads whole samples. "
+            "Higher values use more memory and less disk access.");
     ui_label("Bit depth", scale);
     char depth_label[16];
     snprintf(depth_label, sizeof(depth_label), "%d-bit", cfg->bit_depth);
@@ -826,26 +815,22 @@ static void ui_tab_resample(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ui_hint("What every sample is stored at, in the preload block and in the streams both. "
-            "16-bit halves the bank; 24-bit keeps the render's own depth.");
+    ui_hint("Bit depth of the samples in the FSB.");
     ui_target_folder_row("Folder", cfg, cfg->export_dir, &cfg->export_dir_override, busy,
                          &app->export_dir_pick_request, scale);
-    ui_hint("The .fsi and .fsb go under the root project folder as well, beside the samples, one instrument "
-            "per output bus. Tick the box to put them somewhere else; a bus is still the last folder.");
+    ui_hint("Folder for the .fsi and .fsb. Defaults to the sample folder. One instrument per output bus.");
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Export .rzc files", &cfg->export_rzc);
     ImGui::EndDisabled();
-    ui_hint("Writes one readable zone collection file per collection of the instrument beside it, the same mapping in "
-            "FastSampler's editable text format. Its zones name the split sample files, so it needs those.");
+    ui_hint("Also exports each zone collection as an editable .rzc text file. Requires Generate split samples.");
     if (cfg->export_rzc && !cfg->split_samples) {
-        ui_colored_wrapped("A .rzc names the split sample files, and Generate split samples is off, so none would be written.",
+        ui_colored_wrapped("No .rzc files are written while Generate split samples is off.",
                            CODE_COLOR_WARNING_VEC4);
     }
     ImGui::BeginDisabled(busy);
     ImGui::Checkbox("Remove full WAV", &cfg->delete_full_wav);
     ImGui::EndDisabled();
-    ui_hint("Deletes the one long WAV the samples and the bank are both cut from, once the bank has been built from it, "
-            "so the folder keeps only the samples and the instrument.");
+    ui_hint("Deletes the full WAV after the FSI + FSB is built.");
     if (building) {
         int done = app->instrument_job.progress.load();
         int total = app->instrument_job.progress_total.load();
@@ -865,25 +850,21 @@ static void ui_tab_resample(App* app, float scale) {
         if (ImGui::Button("Build FSI + FSB", ImVec2(-1.0f, 0.0f))) app->instrument_start_request = true;
         ImGui::EndDisabled();
         if (app->resample_fsi_ready && app->resample_script.legato) {
-            ui_hint("Maps the samples across keys and velocities in the folder above, and the moves with them: one collection "
-                    "per interval, reached from the notes through FastSampler's legato effect, each move cut one margin "
-                    "before it leaves its note and one margin past where it lands on the next. Every move carries those "
-                    "two frames, and the sampler places its crossfades from them. Both come off the clock, or out of the "
-                    "audio when Detect is on.");
+            ui_hint("Builds a FastSampler instrument in the folder above, with one zone collection per legato interval. "
+                    "FastSampler's legato effect plays the transitions. Each transition includes Sustain either side before "
+                    "and after it. Its start and end points come from Arrival, or from the audio when Detect is on.");
         } else if (app->resample_fsi_ready && app->resample_script.dynamic_layers) {
-            ui_hint("Maps the samples across keys and velocities into a FastSampler instrument in the folder above: one looped zone "
-                    "collection per dynamic layer and one of release samples for each. The layers' gain is driven by their "
-                    "controller through curves that crossfade them, equal power, from dyn1 at the bottom to the last at the top, "
-                    "a spectral morph on the same controller carries each layer's tone into the next, and Smart release starts "
-                    "every release at the level its layer was sounding at.");
+            ui_hint("Builds a FastSampler instrument in the folder above, with a looped and a release zone collection per "
+                    "dynamic layer. The layers crossfade (equal power) and morph on their controller, from dyn1 at the lowest "
+                    "value to the last layer at the highest. Each release starts at the level of the layer that was playing.");
         } else if (app->resample_fsi_ready) {
-            ui_hint("Maps the samples across keys and velocities, one zone collection per round robin, into a FastSampler instrument in the folder above.");
+            ui_hint("Builds a FastSampler instrument in the folder above, with one zone collection per round robin.");
         } else if (app->resample_full_wav_removed) {
-            ui_hint("The bank was built and the full WAV removed with it. Render again to build another one.");
+            ui_hint("The full WAV was removed after the last build. Render again to rebuild.");
         } else if (cfg->split_samples) {
-            ui_hint("Available once the samples are rendered and split.");
+            ui_hint("Available after rendering and splitting.");
         } else {
-            ui_hint("Available once the WAV is rendered.");
+            ui_hint("Available after rendering.");
         }
     }
     ui_section_end(scale);
@@ -899,9 +880,8 @@ static void ui_tab_resample(App* app, float scale) {
         app->project_load_request = true;
     }
     ImGui::EndDisabled();
-    ui_hint("Double-click a project to open it, or a folder to go into it. Opening puts every setting of this tab back, "
-            "the folders with them, then loads the plugin the project was saved with and gives it its state again. "
-            "Build the MIDI again after opening a project.");
+    ui_hint("Double-click a project to open it, or a folder to enter it. Opening a project restores this tab's settings "
+            "and reloads its plugin with the saved state. Build the MIDI again after opening.");
 
     ui_label("Name", scale);
     const char* save_label = ICON_LC_SAVE "  Save project";
@@ -914,9 +894,8 @@ static void ui_tab_resample(App* app, float scale) {
     ImGui::BeginDisabled(!can_save);
     if (ImGui::Button(save_label, ImVec2(save_w, 0.0f)) || (submitted && can_save)) app->project_save_request = true;
     ImGui::EndDisabled();
-    ui_hint("Writes every setting of this tab to <name>.yaml in the folder shown above, and the loaded plugin as it stands "
-            "-- its patch, its parameters and the outputs it is routed to -- to <name>.fstate beside it. "
-            "A project of the same name is replaced.");
+    ui_hint("Saves this tab's settings to <name>.yaml and the plugin state (patch, parameters, output routing) to "
+            "<name>.fstate in the folder shown above. Overwrites a project with the same name.");
     ui_section_end(scale);
 }
 
@@ -950,8 +929,8 @@ static void ui_tab_settings(App* app, float scale) {
         }
     }
     if (ImGui::Button("Rescan plugins", ImVec2(-1.0f, 0.0f))) app->rescan_request = true;
-    ui_hint("The folders are searched for VST3 plugins and for VST 2 instruments (.dll). A new DLL is opened once "
-            "to see whether it is an instrument; the answer is kept in fastresampler_vsti_cache.txt next to the exe.");
+    ui_hint("Searches these folders for VST3 plugins and VST 2 instruments. Each new VST 2 DLL is opened once to check "
+            "whether it is an instrument; the result is cached in fastresampler_vsti_cache.txt next to the exe.");
     ui_section_end(scale);
 
     ui_section("Audio output", scale);
@@ -986,7 +965,7 @@ static void ui_tab_settings(App* app, float scale) {
         }
         ImGui::EndCombo();
     }
-    ui_hint("ASIO drivers may round the block to what they support.");
+    ui_hint("Audio buffer size. ASIO drivers may round it to a supported size.");
 
     if (ui_green_button("Apply", ImVec2(-1.0f, 0.0f))) app->audio_apply_request = true;
     if (ImGui::Button("Refresh devices", ImVec2(-1.0f, 0.0f))) app->audio_refresh_request = true;
@@ -1006,10 +985,10 @@ static void ui_tab_settings(App* app, float scale) {
     ui_section("Interface", scale);
     ui_label("Show tips", scale);
     ImGui::Checkbox("##tips", &app->settings.show_tips);
-    ui_hint("The dim lines that explain a control, like this one.");
+    ui_hint("Shows explanations under controls, like this one.");
     ImGui::Checkbox("Show experimental features", &app->settings.show_experimental);
-    ui_hint("Features that are still in development and may change or give unexpected results. "
-            "Turns on the capture of legato transitions in the Resample tab.");
+    ui_hint("Shows features in development, which may change or give unexpected results. "
+            "Adds legato capture to the Resample tab.");
     if (ImGui::Button("Show disclaimer", ImVec2(-1.0f, 0.0f))) app->disclaimer_open_request = true;
     ui_section_end(scale);
 }
@@ -1139,7 +1118,7 @@ static void ui_log_grip(App* app, float scale) {
 static void ui_draw_log_lines(App* app) {
     ImGui::BeginChild("##loglines", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
     if (app->log_count == 0) {
-        ui_note("Nothing yet. What a render, a build or a save reports comes here.");
+        ui_note("Messages from rendering, building and saving appear here.");
     }
     for (int i = 0; i < app->log_count; ++i) {
         const AppLogLine* line = app_log_line(app, i);
@@ -1183,9 +1162,9 @@ static void ui_draw_bus_tab(App* app, float scale) {
     bool busy = app_resample_running(app) || app_instrument_running(app);
 
     ImGui::BeginChild("##buslist", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_None);
-    ui_hint("Every bus is one stereo pair of the plugin's outputs and becomes a folder of its own, "
-            "with its own samples and its own instrument. Route each microphone to its pair in the plugin, "
-            "then name the bus to match. Play a note and the meters show which bus the plugin sends it to.");
+    ui_hint("Each bus records one stereo output pair of the plugin to its own folder, with its own samples and instrument. "
+            "Route each microphone to an output pair in the plugin and name the bus to match. "
+            "Play a note to see on the meters which bus receives it.");
 
     int remove = -1;
     float meter_w = 90.0f * scale;
@@ -1216,7 +1195,7 @@ static void ui_draw_bus_tab(App* app, float scale) {
         ImGui::InputText("##name", cfg->busses[i].name, sizeof(cfg->busses[i].name));
         if (name_clash) ImGui::PopStyleColor();
         ImGui::EndDisabled();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The microphone's name: its folder, and the start of every file it writes");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bus name, used as the folder name and file name prefix");
         ImGui::SameLine();
 
         char pair_label[16];
@@ -1234,7 +1213,7 @@ static void ui_draw_bus_tab(App* app, float scale) {
         }
         if (pair_clash) ImGui::PopStyleColor();
         ImGui::EndDisabled();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The plugin's own outputs this bus reads");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Plugin output pair this bus records");
         ImGui::SameLine();
 
         ui_draw_bus_meter(app, i, bar_w, scale);
@@ -1246,11 +1225,11 @@ static void ui_draw_bus_tab(App* app, float scale) {
         if (ImGui::IsItemHovered() && cfg->bus_count > 1) ImGui::SetTooltip("Remove this bus");
 
         if (name_clash) {
-            ui_colored_wrapped("Name this bus something no other bus is called: the name is its folder.",
+            ui_colored_wrapped("Another bus has this name. Each bus needs a unique name.",
                                CODE_COLOR_WARNING_VEC4);
         }
         if (pair_clash) {
-            ui_colored_wrapped("Another bus reads this pair as well. Move one of them.", CODE_COLOR_WARNING_VEC4);
+            ui_colored_wrapped("Another bus records this output pair. Choose a different pair.", CODE_COLOR_WARNING_VEC4);
         }
         ImGui::PopID();
     }
@@ -1267,13 +1246,13 @@ static void ui_draw_bus_tab(App* app, float scale) {
     if (app->plugin) {
         const HostPluginInfo* info = host_plugin_info(app->plugin);
         int needed = resample_bus_channel_count(cfg);
-        char line[160];
-        snprintf(line, sizeof(line), "%s has %d output channel%s over %d bus%s; the busses read %d.",
+        char line[256];
+        snprintf(line, sizeof(line), "%s has %d output channel%s on %d plugin bus%s. The busses above use %d.",
                  info->name, info->total_output_channels, info->total_output_channels == 1 ? "" : "s",
                  info->output_bus_count, info->output_bus_count == 1 ? "" : "ses", needed);
         if (needed > info->total_output_channels) {
             ui_colored_wrapped(line, CODE_COLOR_WARNING_VEC4);
-            ui_colored_wrapped("A bus past the plugin's own outputs records silence. Move it, or route the plugin to more outputs.",
+            ui_colored_wrapped("Busses beyond the plugin's outputs record silence. Choose a lower pair or enable more outputs in the plugin.",
                                CODE_COLOR_WARNING_VEC4);
         } else {
             ui_note(line);
@@ -1384,12 +1363,12 @@ static void ui_draw_plugin_list(App* app, int format, float scale) {
 
     if (list->count == 0) {
         if (vsti) {
-            ui_note("No VST instruments found. Add the folder that holds the VST 2 DLLs in the Settings tab. "
-                    "Effects are left out; only instruments are listed.");
+            ui_note("No VST instruments found. Add the folder with the VST 2 DLLs in the Settings tab. "
+                    "Only instruments are listed, not effects.");
         } else {
             ui_note("No plugins found. Add a folder in the Settings tab.");
         }
-        ui_hint("A banned plugin is not listed; the Banned button puts one back.");
+        ui_hint("Banned plugins are hidden. Use Banned to restore one.");
         return;
     }
 
@@ -1421,7 +1400,7 @@ static void ui_draw_plugin_list(App* app, int format, float scale) {
                     settings_ban(&app->settings, e->path);
                     app->rescan_request = true;
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Takes it off the list; it is not scanned or loaded again until unbanned.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hide this plugin and skip it in scans until it is unbanned");
                 if (ImGui::BeginMenu("Unban")) {
                     ui_unban_items(app, format);
                     ImGui::EndMenu();
@@ -1489,9 +1468,9 @@ static void ui_draw_scan_panel(App* app, float scale) {
         if (probe->busy) ui_scan_dim_path(app->plugins[HOST_FORMAT_VST2].entries[probe->entry].path);
     }
     ImGui::Spacing();
-    ui_note("The folders in the Settings tab are searched for VST3 plugins and VST 2 instruments. A VST 2 DLL that "
-            "has not been seen before is opened once, in a separate process, to find out whether it is an instrument. "
-            "The answer is kept, so the next start is quick. A DLL that crashes or hangs while it is opened is skipped.");
+    ui_note("Searching the folders from the Settings tab for VST3 plugins and VST 2 instruments. Each new VST 2 DLL is "
+            "opened once in a separate process to check whether it is an instrument. Results are cached for faster startup. "
+            "DLLs that crash or hang are skipped.");
     ImGui::EndChild();
 }
 

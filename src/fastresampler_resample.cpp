@@ -807,7 +807,7 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     }
     bool preroll = resample_preroll_on(cfg);
     if (preroll && cfg->preroll_gap_seconds <= RESAMPLE_PREROLL_HOLD_SECONDS) {
-        snprintf(err, err_len, "Pre-roll gap must be longer than the %.1f s a pre-roll note is held",
+        snprintf(err, err_len, "Pre-roll gap must be longer than %.1f s, the length of a pre-roll note",
                  RESAMPLE_PREROLL_HOLD_SECONDS);
         return false;
     }
@@ -839,7 +839,7 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             return false;
         }
         if (cfg->dynamic_layers && (a->layer < 0 || a->layer > cfg->round_robins)) {
-            snprintf(err, err_len, "CC curves: a CC%d curve is tied to layer %d, and there are %d", cc, a->layer, cfg->round_robins);
+            snprintf(err, err_len, "CC curves: a CC%d curve is assigned to layer %d, but there are only %d layers", cc, a->layer, cfg->round_robins);
             return false;
         }
         for (int j = 0; j < i; ++j) {
@@ -848,8 +848,8 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             bool clash = !cfg->dynamic_layers || a->layer == 0 || b->layer == 0 || a->layer == b->layer;
             if (clash) {
                 snprintf(err, err_len, cfg->dynamic_layers
-                         ? "CC curves: two CC%d curves play for the same layer; tie each to its own"
-                         : "CC curves: CC%d has two curves; remove one", cc);
+                         ? "CC curves: two CC%d curves apply to the same layer. Assign each to a different layer"
+                         : "CC curves: CC%d has two curves. Remove one", cc);
                 return false;
             }
         }
@@ -867,7 +867,7 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
                                                   2 * RESAMPLE_MAX_LEGATO_INTERVALS, err, err_len);
         if (interval_count == 0) return false;
         if (cfg->legato_step < 1 || cfg->legato_step > RESAMPLE_MAX_STEP) {
-            fr_strcpy(err, err_len, "Legato: pick an interval for the notes the moves start from");
+            fr_strcpy(err, err_len, "Legato: choose an interval for From every");
             return false;
         }
         legato_velocity_count = resample_parse_velocities("Legato velocities", cfg->legato_velocities, legato_velocities,
@@ -880,12 +880,12 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
         } else if (given == 1) {
             for (int i = 1; i < legato_velocity_count; ++i) arrivals[i] = arrivals[0];
         } else if (given != legato_velocity_count) {
-            snprintf(err, err_len, "Arrival: %d times for %d legato velocities; give one, or one each",
+            snprintf(err, err_len, "Arrival: %d times for %d legato velocities. Enter one time, or one per velocity",
                      given, legato_velocity_count);
             return false;
         }
         if (cfg->legato_source_hold_seconds <= 0.0f || cfg->legato_hold_seconds <= 0.0f) {
-            fr_strcpy(err, err_len, "Legato: both holds must be longer than 0 seconds");
+            fr_strcpy(err, err_len, "Legato: both note lengths must be longer than 0 seconds");
             return false;
         }
         if (cfg->legato_overlap_seconds < 0.0f) {
@@ -893,21 +893,21 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             return false;
         }
         if (cfg->legato_overlap_seconds >= cfg->legato_hold_seconds) {
-            fr_strcpy(err, err_len, "Legato: the overlap must be shorter than the hold of the note landed on");
+            fr_strcpy(err, err_len, "Legato: Overlap must be shorter than the second note");
             return false;
         }
         if (cfg->legato_margin_seconds <= 0.0f) {
-            fr_strcpy(err, err_len, "Legato: the sustain either side must be longer than 0 seconds");
+            fr_strcpy(err, err_len, "Legato: Sustain either side must be longer than 0 seconds");
             return false;
         }
         if (cfg->legato_margin_seconds > cfg->legato_source_hold_seconds) {
-            fr_strcpy(err, err_len, "Legato: the sustain either side must fit inside the hold of the note left");
+            fr_strcpy(err, err_len, "Legato: Sustain either side must not be longer than Note left");
             return false;
         }
         for (int i = 0; i < legato_velocity_count; ++i) {
             float needed = (float)arrivals[i] / 1000.0f + cfg->legato_margin_seconds;
             if (needed > cfg->legato_hold_seconds) {
-                snprintf(err, err_len, "Legato: a %d ms arrival and %.0f ms of sustain either side need a hold of at least %.2f s",
+                snprintf(err, err_len, "Legato: a %d ms arrival plus %.0f ms of sustain either side needs a second note of at least %.2f s",
                          arrivals[i], cfg->legato_margin_seconds * 1000.0f, (double)needed);
                 return false;
             }
@@ -920,7 +920,7 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
             }
         }
         if (transition_total == 0) {
-            fr_strcpy(err, err_len, "Legato: no move fits inside the note range; widen it or use narrower intervals");
+            fr_strcpy(err, err_len, "Legato: no transition fits in the note range. Widen the range or use smaller intervals");
             return false;
         }
     }
@@ -930,7 +930,7 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     int segment_total = sustain_total + transition_total;
     if (segment_total > RESAMPLE_MAX_SEGMENTS) {
         snprintf(err, err_len,
-                 "%d samples is more than the %d one run can hold; narrow the range, the velocities, the layers or the legato intervals",
+                 "%d samples exceed the maximum of %d per run. Reduce the note range, velocities, layers or legato intervals",
                  segment_total, RESAMPLE_MAX_SEGMENTS);
         return false;
     }
@@ -938,7 +938,7 @@ bool resample_build(ResampleScript* script, const ResampleConfig* cfg, double sa
     int zone_total = sustain_total * (cfg->dynamic_layers ? 2 : 1) + transition_total;
     if (zone_total > zone_capacity) {
         snprintf(err, err_len,
-                 "%d zones is more than the %d an instrument can hold; narrow the range, the velocities, the layers or the legato intervals",
+                 "%d zones exceed the maximum of %d per instrument. Reduce the note range, velocities, layers or legato intervals",
                  zone_total, zone_capacity);
         return false;
     }

@@ -540,7 +540,7 @@ bool host_plugin_set_state(HostPlugin* p, const void* data, size_t size, char* e
     const uint8_t* bytes = NULL;
     size_t bytes_size = 0;
     if (!state_find_part(data, size, STATE_PART_VST3_COMPONENT, &bytes, &bytes_size)) {
-        fr_strcpy(err, err_len, "The saved plugin state holds no processor state.");
+        fr_strcpy(err, err_len, "The saved plugin state has no processor state.");
         return false;
     }
 
@@ -584,7 +584,7 @@ bool host_plugin_set_state(HostPlugin* p, const void* data, size_t size, char* e
         return false;
     }
     if (!ok) {
-        fr_strcpy(err, err_len, "The plugin did not take its saved state.");
+        fr_strcpy(err, err_len, "The plugin rejected its saved state.");
         return false;
     }
     fr_log("host: '%s' took %d bytes of state, %d output channels over %d busses",

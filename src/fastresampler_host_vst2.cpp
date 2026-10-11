@@ -251,7 +251,7 @@ Vst2Plugin* vst2_plugin_load(const char* path, double sample_rate, int block_siz
     Vst2Effect* e = p->effect;
     intptr_t category = vst2_dispatch(p, VST2_EFF_GET_PLUG_CATEGORY);
     if (category == VST2_CATEGORY_SHELL) {
-        vst2_fail(err, err_len, "A shell plugin holds several plugins and is not supported");
+        vst2_fail(err, err_len, "Shell plugins that contain several plugins are not supported");
         vst2_plugin_unload(p);
         return nullptr;
     }
@@ -437,7 +437,7 @@ bool vst2_plugin_set_state(Vst2Plugin* p, const void* data, size_t size, HostPlu
         }
     }
     if (!restored) {
-        fr_strcpy(err, err_len, "The saved plugin state holds nothing this plugin can take.");
+        fr_strcpy(err, err_len, "The saved plugin state does not match this plugin.");
     }
 
     p->io_changed = false;

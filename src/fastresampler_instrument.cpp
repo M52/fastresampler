@@ -1132,7 +1132,7 @@ static bool instrument_build_one(InstrumentJob* job) {
     int collection_count = 0;
     if (ok && planned > INSTRUMENT_MAX_COLLECTIONS) {
         snprintf(job->result, sizeof(job->result),
-                 "%d collections is more than the %d an instrument can hold; use fewer layers or legato intervals",
+                 "%d collections exceed the maximum of %d per instrument. Use fewer layers or legato intervals",
                  planned, INSTRUMENT_MAX_COLLECTIONS);
         ok = false;
     }
@@ -1144,9 +1144,9 @@ static bool instrument_build_one(InstrumentJob* job) {
         }
         job->progress_total.store(instrument_progress_units(script, zone_count) * job->target_count);
         ok = zone_count > 0;
-        if (!ok) fr_strcpy(job->result, sizeof(job->result), "The run holds no samples to map");
+        if (!ok) fr_strcpy(job->result, sizeof(job->result), "No samples to map");
         if (ok && zone_count > fsi_zone_capacity) {
-            snprintf(job->result, sizeof(job->result), "%d zones is more than the %d an instrument can hold", zone_count, fsi_zone_capacity);
+            snprintf(job->result, sizeof(job->result), "%d zones exceed the maximum of %d per instrument", zone_count, fsi_zone_capacity);
             ok = false;
         }
     }
@@ -1187,7 +1187,7 @@ static bool instrument_build_one(InstrumentJob* job) {
         if (rzc_here > 0) {
             snprintf(rzc_note, sizeof(rzc_note), " Plus %d .rzc file%s.", rzc_here, rzc_here == 1 ? "" : "s");
         } else if (job->cfg.export_rzc) {
-            fr_strcpy(rzc_note, sizeof(rzc_note), " No .rzc: they name the split samples, which this run did not write.");
+            fr_strcpy(rzc_note, sizeof(rzc_note), " No .rzc files written because split samples were not generated.");
         }
         char link[64];
         link[0] = '\0';
@@ -1202,7 +1202,7 @@ static bool instrument_build_one(InstrumentJob* job) {
         char legato_note[96];
         legato_note[0] = '\0';
         if (script->legato) {
-            snprintf(legato_note, sizeof(legato_note), " Legato over %d interval%s, the notes linked to the moves between them.",
+            snprintf(legato_note, sizeof(legato_note), " Legato transitions for %d interval%s.",
                      script->interval_count, script->interval_count == 1 ? "" : "s");
         }
         char morph_note[80];
@@ -1210,7 +1210,7 @@ static bool instrument_build_one(InstrumentJob* job) {
         if (instrument_morphs(script) && fingerprints > 0) {
             snprintf(morph_note, sizeof(morph_note), " The layers morph through %d fingerprints.", fingerprints);
         } else if (instrument_morphs(script)) {
-            fr_strcpy(morph_note, sizeof(morph_note), " No fingerprints, so the layers crossfade on gain alone.");
+            fr_strcpy(morph_note, sizeof(morph_note), " No fingerprints; the layers crossfade by gain only.");
         }
         snprintf(job->result, sizeof(job->result), "Wrote %s and %s: %d zones in %d collection%s%s, %d-bit, preload %s.%s%s%s%s",
                  plat_path_basename(job->fsi_path), plat_path_basename(job->fsb_path), zone_count,
