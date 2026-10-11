@@ -20,6 +20,7 @@ struct HostPluginInfo {
     char vendor[64];
     char version[64];
     char category[128];
+    char id[128];
     int  output_channels;
     int  total_output_channels;
     int  output_bus_count;

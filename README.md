@@ -419,3 +419,17 @@ How to build:
 1. Clone ImGui once: `git clone https://github.com/ocornut/imgui.git 3rdparty/imgui`
 2. Run `cmd.exe /c build.bat`. Pass `debug` for an unoptimised build with symbols.
    Each run increments `build_number.txt`; the exe lands in `build\fastresampler.exe`.
+
+## FSB provenance
+
+New FSB v3 banks contain encrypted provenance: the OS account name and available
+display name, creation time, application version and source information.
+FastResampler also records the source plugin's format, ID, name, vendor and
+version and the accepted disclaimer revision. No network transmission occurs.
+The bank carries this information when shared; the developer can decrypt it to
+help investigate unauthorized redistribution. Original encrypted records survive
+loading, unlocking and re-exporting in FastSampler. Older v1/v2 banks still load.
+
+The public format uses X25519 and XChaCha20-Poly1305 with Monocypher 4.0.2.
+No private key ships with either application. Provenance is self-reported and
+can be removed or spoofed; it does not establish who uploaded a file.

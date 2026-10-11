@@ -83,6 +83,8 @@
 #include "fastsampler.pb.h"
 #include "fastsampler.pb.c"
 #include "fastsampler_fsb.h"
+#include "fastsampler_provenance.cpp"
+#include "platform/provenance_platform.h"
 #include "fastsampler_pb.h"
 #include "fastsampler_formats.h"
 #include "fastsampler_smfp.h"

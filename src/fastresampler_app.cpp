@@ -62,6 +62,7 @@ void app_set_status(App* app, bool is_error, const char* fmt, ...) {
 
 void app_disclaimer_accept(App* app, bool hide) {
     app->settings.disclaimer_accepted = true;
+    fr_strcpy(app->settings.disclaimer_revision, sizeof(app->settings.disclaimer_revision), FR_DISCLAIMER_REVISION);
     app->settings.disclaimer_hidden = hide;
     settings_save(&app->settings, app->settings_path);
     if (!app->started) app->start_request = true;
@@ -523,6 +524,16 @@ static void app_resample_start(App* app) {
         app_resume_plugin(app);
         return;
     }
+    const HostPluginInfo* info = host_plugin_info(app->plugin);
+    char version[64]; snprintf(version, sizeof(version), "build %d", FASTRESAMPLER_BUILD_NUMBER);
+    provenance_new(&app->render_provenance, "fastresampler", version, "plugin");
+    fsb_provenance_text(app->render_provenance.source_format, sizeof(app->render_provenance.source_format), host_format_name(info->format));
+    fsb_provenance_text(app->render_provenance.source_id, sizeof(app->render_provenance.source_id), info->id);
+    fsb_provenance_text(app->render_provenance.source_name, sizeof(app->render_provenance.source_name), info->name);
+    fsb_provenance_text(app->render_provenance.source_vendor, sizeof(app->render_provenance.source_vendor), info->vendor);
+    fsb_provenance_text(app->render_provenance.source_version, sizeof(app->render_provenance.source_version), info->version);
+    if (app->settings.disclaimer_accepted)
+        fsb_provenance_text(app->render_provenance.disclaimer_revision, sizeof(app->render_provenance.disclaimer_revision), FR_DISCLAIMER_REVISION);
     app->resample_fsi_ready = false;
     app->resample_full_wav_removed = false;
     app_set_status(app, false, "Rendering...");
@@ -577,7 +588,7 @@ static void app_instrument_start(App* app) {
         fr_strcpy(targets[b].full_wav_path, sizeof(targets[b].full_wav_path), app->resample_job.full_path[b]);
         fr_strcpy(targets[b].bus_name, sizeof(targets[b].bus_name), cfg->busses[b].name);
     }
-    if (!instrument_start(&app->instrument_job, &app->resample_script, cfg, targets, cfg->bus_count)) {
+    if (!instrument_start(&app->instrument_job, &app->resample_script, cfg, targets, cfg->bus_count, &app->render_provenance)) {
         app_set_status(app, true, "The instrument build could not start.");
         return;
     }

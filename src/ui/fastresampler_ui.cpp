@@ -1558,7 +1558,13 @@ static const UiDisclaimerSection g_ui_disclaimer[] = {
       "and against any and all claims, damages, losses, liabilities, costs and expenses, including reasonable legal "
       "fees, arising from your use of the software, your breach of any license agreement or of this notice, or your "
       "infringement of any right of a third party." },
-    { "5. General",
+    { "5. Provenance in sample banks",
+      "Each new FSB bank includes encrypted provenance: your OS account name and available display name, "
+      "creation time, FastResampler version, the source plugin's name, vendor, version and identifier, and "
+      "the revision of this notice you accepted. The developer can decrypt this information to help investigate "
+      "unauthorized redistribution. No information is sent over the network. The provenance travels with the "
+      "bank when you share it. It is an additional measure and does not prove who uploaded a file." },
+    { "6. General",
       "This notice applies in addition to the license under which FastResampler is distributed. If any part of it is "
       "held to be unenforceable, the remaining parts stay in full effect. Nothing in it limits or excludes any "
       "liability that cannot be limited or excluded under applicable law." },
@@ -1591,6 +1597,11 @@ static bool ui_draw_disclaimer(App* app, float width, float height, float scale)
         if (i > 0) ImGui::Spacing();
         ImGui::TextColored(CODE_COLOR_SECTION_VEC4, "%s", g_ui_disclaimer[i].title);
         ImGui::TextWrapped("%s", g_ui_disclaimer[i].body);
+    }
+    FSBProvenanceFields account = {};
+    if (provenance_account(&account)) {
+        ImGui::Spacing(); ImGui::TextWrapped("OS account included: %s", account.account_name);
+        if (account.display_name[0]) ImGui::TextWrapped("Display name included: %s", account.display_name);
     }
     ImGui::EndChild();
     ImGui::Spacing();

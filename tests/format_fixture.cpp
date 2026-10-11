@@ -1,4 +1,5 @@
 #include "../src/fastresampler_win32.cpp"
+#include "fastsampler_fsb.cpp"
 #pragma warning(push, 0)
 #include "pb_decode.h"
 #include "pb_decode.c"
@@ -39,6 +40,16 @@ static bool write_layered_input(const ResampleScript* script, const char* path) 
 int main() {
     const char* folder = "build/format-fixtures";
     CreateDirectoryA(folder, nullptr);
+    auto settings = std::make_unique<Settings>(); settings_defaults(settings.get());
+    settings->disclaimer_accepted = settings->disclaimer_hidden = true;
+    REQUIRE(settings_save(settings.get(), "build/format-fixtures/old-settings.txt"));
+    REQUIRE(settings_load(settings.get(), "build/format-fixtures/old-settings.txt"));
+    REQUIRE(!settings->disclaimer_accepted && !settings->disclaimer_hidden);
+    strcpy(settings->disclaimer_revision, FR_DISCLAIMER_REVISION);
+    settings->disclaimer_accepted = settings->disclaimer_hidden = true;
+    REQUIRE(settings_save(settings.get(), "build/format-fixtures/new-settings.txt"));
+    REQUIRE(settings_load(settings.get(), "build/format-fixtures/new-settings.txt"));
+    REQUIRE(settings->disclaimer_accepted && settings->disclaimer_hidden);
     auto cfg = std::make_unique<ResampleConfig>();
     resample_config_defaults(cfg.get());
     strcpy(cfg->instrument, "Synthetic"); strcpy(cfg->articulation, "Test"); cfg->bus_count = 1; strcpy(cfg->busses[0].name, "Main");
@@ -71,6 +82,16 @@ int main() {
         snprintf(job->fsb_path, sizeof(job->fsb_path), "%s/%s.fsb", folder, job->prefix);
         REQUIRE(instrument_build_one(job.get()));
         REQUIRE(job->zones_written == script->segment_count);
+        FILE* bank_file = fopen(job->fsb_path, "rb"); REQUIRE(bank_file);
+        REQUIRE(fseek(bank_file, 0, SEEK_END) == 0); long bank_size = ftell(bank_file); REQUIRE(bank_size > 0);
+        std::vector<uint8_t> bank((size_t)bank_size); REQUIRE(fseek(bank_file, 0, SEEK_SET) == 0);
+        REQUIRE(fread(bank.data(), 1, bank.size(), bank_file) == bank.size()); fclose(bank_file);
+        FSBHeader header = {}; FSBProvenanceView origins = {};
+        std::vector<FSBZoneEntry> rows((size_t)job->zones_written);
+        REQUIRE(fsb_load_headers(bank.data(), bank.size(), &header, rows.data(), (uint32_t)rows.size(), (uint32_t)rows.size()));
+        REQUIRE(fsb_read_provenance(bank.data(), bank.size(), &origins) && origins.count == 1);
+        REQUIRE(strcmp(origins.records[0].key_id, "fsb-provenance-2026-01") == 0 && header.version == 3);
+
         puts(job->result);
     }
 

@@ -100,6 +100,7 @@ struct App {
     ResampleJob    resample_job;
     bool           resample_start_request;
 
+    FSBProvenanceFields render_provenance{};
     InstrumentJob  instrument_job;
     bool           instrument_start_request;
     bool           resample_fsi_ready;

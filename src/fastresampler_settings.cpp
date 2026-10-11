@@ -269,6 +269,8 @@ bool settings_load(Settings* s, const char* path) {
             s->show_tips = atoi(value) != 0;
         } else if (strcmp(key, "show_experimental") == 0) {
             s->show_experimental = atoi(value) != 0;
+        } else if (strcmp(key, "disclaimer_revision") == 0) {
+            fr_strcpy(s->disclaimer_revision, sizeof(s->disclaimer_revision), value);
         } else if (strcmp(key, "disclaimer_accepted") == 0) {
             s->disclaimer_accepted = atoi(value) != 0;
         } else if (strcmp(key, "disclaimer_hidden") == 0) {
@@ -329,6 +331,9 @@ bool settings_load(Settings* s, const char* path) {
         if (c->node_count < 2) resample_cc_set_constant(c, 1.0f);
     }
 
+    if (strcmp(s->disclaimer_revision, FR_DISCLAIMER_REVISION) != 0) {
+        s->disclaimer_accepted = false; s->disclaimer_hidden = false;
+    }
     free(text);
     return true;
 }
@@ -391,6 +396,7 @@ bool settings_save(const Settings* s, const char* path) {
     fprintf(f, "project_name \"%s\"\n", s->project_name);
     fprintf(f, "show_tips %d\n", s->show_tips ? 1 : 0);
     fprintf(f, "show_experimental %d\n", s->show_experimental ? 1 : 0);
+    fprintf(f, "disclaimer_revision %s\n", s->disclaimer_revision);
     fprintf(f, "disclaimer_accepted %d\n", s->disclaimer_accepted ? 1 : 0);
     fprintf(f, "disclaimer_hidden %d\n", s->disclaimer_hidden ? 1 : 0);
     fprintf(f, "log_expanded %d\n", s->log_expanded ? 1 : 0);

@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <atomic>
+#include "fastsampler_provenance.h"
 #include "fastresampler_constants.h"
 #include "fastresampler_resample.h"
 
@@ -24,6 +25,7 @@ struct InstrumentJob {
 
     const ResampleScript* script;
     ResampleConfig cfg;
+    FSBProvenanceFields provenance{};
     InstrumentTarget targets[FR_MAX_OUTPUT_BUSSES];
     int  target_count;
 
@@ -46,7 +48,7 @@ struct InstrumentJob {
 };
 
 bool instrument_start(InstrumentJob* job, const ResampleScript* script, const ResampleConfig* cfg,
-                      const InstrumentTarget* targets, int target_count);
+                      const InstrumentTarget* targets, int target_count, const FSBProvenanceFields* provenance = nullptr);
 void instrument_cancel(InstrumentJob* job);
 
 bool instrument_collect(InstrumentJob* job);

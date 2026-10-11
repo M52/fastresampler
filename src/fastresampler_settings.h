@@ -23,6 +23,7 @@ struct Settings {
     bool show_tips;
     bool show_experimental;
     bool disclaimer_accepted;
+    char disclaimer_revision[64];
     bool disclaimer_hidden;
     bool log_expanded;
     int  log_height;

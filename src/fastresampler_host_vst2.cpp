@@ -273,6 +273,7 @@ Vst2Plugin* vst2_plugin_load(const char* path, double sample_rate, int block_siz
 
     memset(info, 0, sizeof(*info));
     info->format = HOST_FORMAT_VST2;
+    snprintf(info->id, sizeof(info->id), "%08x", (unsigned)(uint32_t)e->unique_id);
     vst2_read_name(p, info->name, sizeof(info->name));
     vst2_read_string(p, VST2_EFF_GET_VENDOR_STRING, info->vendor, sizeof(info->vendor));
     intptr_t vendor_version = vst2_dispatch(p, VST2_EFF_GET_VENDOR_VERSION);

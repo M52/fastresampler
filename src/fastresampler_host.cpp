@@ -332,6 +332,8 @@ HostPlugin* host_plugin_load(HostContext* ctx, const char* path, double sample_r
         }
     }
     p->info.format = HOST_FORMAT_VST3;
+    for (size_t i = 0; i < sizeof(p->class_uid); ++i)
+        snprintf(p->info.id + i * 2, sizeof(p->info.id) - i * 2, "%02x", (unsigned)(uint8_t)p->class_uid[i]);
     p->info.has_controller = p->controller != nullptr;
     if (p->controller) {
         p->controller->setComponentHandler(&p->callbacks);

@@ -94,6 +94,9 @@ ASIO is a trademark and software of Steinberg Media Technologies GmbH.
 FastResampler declares the VST 2 plugin interface and the ASIO driver interface itself. It does not include the VST 2 SDK or the ASIO SDK.)LICENSE";
 
 static const ThirdPartyLicense g_third_party_licenses[] = {
+    { "Monocypher 4.0.2", "Encrypting FSB provenance", "CC0-1.0 (also available under BSD-2-Clause)",
+      "Copyright (c) 2017-2023 Loup Vaillant; 2017-2019 Michael Savage; 2017-2023 Fabio Scotoni",
+      "Distributed under CC0-1.0. See Monocypher-LICENSE.txt next to this application for the full licence." },
     { "Dear ImGui", "The user interface", "MIT License",
       "Copyright (c) 2014-2026 Omar Cornut", g_license_mit_text },
     { "stb libraries", "stb_truetype, stb_rect_pack and stb_textedit, part of Dear ImGui; also public domain",

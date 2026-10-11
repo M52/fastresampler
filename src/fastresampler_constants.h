@@ -1,4 +1,5 @@
 #pragma once
+#define FR_DISCLAIMER_REVISION "2026-10-11-provenance-1"
 
 #define FR_APP_NAME             "FastResampler"
 #define FR_SETTINGS_FILE        "fastresampler_settings.txt"

@@ -58,7 +58,7 @@ set LIBS=user32.lib gdi32.lib d3d11.lib dxgi.lib d3dcompiler.lib ole32.lib oleau
 if "%FORMAT_TEST%"=="1" goto format_tests
 
 echo Compiling fastresampler.exe (build %BUILD_NUM%)...
-cl.exe %WARN_FLAGS% %OPT_FLAGS% /MT /EHsc /std:c++17 %DEFINES% %INCLUDES% src\fastresampler_win32.cpp /Fe"build\fastresampler.exe" /Fo"build/" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS%
+cl.exe %WARN_FLAGS% %OPT_FLAGS% /MT /EHsc /std:c++17 %DEFINES% %INCLUDES% src\fastresampler_win32.cpp src\provenance_crypto.c /Fe"build\fastresampler.exe" /Fo"build/" /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO %LIBS%
 
 if %ERRORLEVEL% neq 0 (
     echo Error: Compilation failed.
@@ -67,6 +67,7 @@ if %ERRORLEVEL% neq 0 (
 
 copy /y "%WAVPACK_BUILD%\wavpackdll.dll" build\ >nul
 copy /y "3rdparty\lucide\lucide.ttf" build\ >nul
+copy /y "3rdparty\fastsampler-shared\3rdparty\monocypher\LICENCE.md" build\Monocypher-LICENSE.txt >nul
 
 echo fastresampler.exe compiled successfully.
 
@@ -74,7 +75,7 @@ exit /b 0
 
 :format_tests
 if not exist build\format-test mkdir build\format-test
-cl.exe %WARN_FLAGS% %OPT_FLAGS% /MT /EHsc /std:c++17 %DEFINES% %INCLUDES% tests\format_fixture.cpp /Fe"build\format-test\format_fixture.exe" /Fo"build\format-test/" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO %LIBS%
+cl.exe %WARN_FLAGS% %OPT_FLAGS% /MT /EHsc /std:c++17 %DEFINES% %INCLUDES% tests\format_fixture.cpp src\provenance_crypto.c /Fe"build\format-test\format_fixture.exe" /Fo"build\format-test/" /link /SUBSYSTEM:CONSOLE /INCREMENTAL:NO %LIBS%
 if errorlevel 1 exit /b 1
 copy /y "%WAVPACK_BUILD%\wavpackdll.dll" build\format-test\ >nul
 if errorlevel 1 exit /b 1

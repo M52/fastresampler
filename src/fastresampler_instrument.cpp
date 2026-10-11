@@ -610,6 +610,16 @@ static bool instrument_compress(const float* pcm, int frames, int channels, int 
 
 static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const InstrumentZoneMap* map, int zone_count,
                                  FSBZoneEntry* rows, const char (*names)[MAX_NAME_LENGTH]) {
+    FSBProvenanceFields fields = job->provenance;
+    char version[64]; snprintf(version, sizeof(version), "build %d", FASTRESAMPLER_BUILD_NUMBER);
+    if (!fields.version && !provenance_new(&fields, "fastresampler", version, "samples")) {
+        snprintf(job->result, sizeof(job->result), "Could not read the OS account for provenance."); return false;
+    }
+    FSBProvenanceRecord record = {};
+    if (!fsb_provenance_encrypt(fields, provenance_random, nullptr, &record)) {
+        snprintf(job->result, sizeof(job->result), "Could not encrypt bank provenance."); return false;
+    }
+    const FSBProvenanceHeader provenance_header = fsb_provenance_header(1);
     FILE* f = fopen(job->fsb_path, "wb");
     if (!f) {
         snprintf(job->result, sizeof(job->result), "Could not create %s", job->fsb_path);
@@ -627,9 +637,11 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
     header.preload_frames = ram_only ? FSB_PRELOAD_ALL_FRAMES : (uint32_t)job->cfg.preload_frames;
     header.zone_count = (uint32_t)zone_count;
     header.bps = (uint32_t)bits;
-    header.preload_offset = sizeof(FSBHeader) + sizeof(FSBZoneEntry) * (uint64_t)zone_count;
+    header.preload_offset = fsb_rows_offset(FSB_VERSION, 1) + sizeof(FSBZoneEntry) * (uint64_t)zone_count;
 
-    bool ok = fwrite(&header, sizeof(header), 1, f) == 1;
+    bool ok = fwrite(&header, sizeof(header), 1, f) == 1 &&
+              fwrite(&provenance_header, sizeof(provenance_header), 1, f) == 1 &&
+              fwrite(&record, sizeof(record), 1, f) == 1;
     ok = ok && fwrite(rows, sizeof(FSBZoneEntry), (size_t)zone_count, f) == (size_t)zone_count;
     if (!ok) snprintf(job->result, sizeof(job->result), "Could not write %s", job->fsb_path);
 
@@ -707,6 +719,8 @@ static bool instrument_write_fsb(InstrumentJob* job, WavReader* wav, const Instr
     if (ok && !job->cancel.load()) {
         ok = fseek(f, 0, SEEK_SET) == 0 &&
              fwrite(&header, sizeof(header), 1, f) == 1 &&
+             fwrite(&provenance_header, sizeof(provenance_header), 1, f) == 1 &&
+             fwrite(&record, sizeof(record), 1, f) == 1 &&
              fwrite(rows, sizeof(FSBZoneEntry), (size_t)zone_count, f) == (size_t)zone_count;
         if (!ok) snprintf(job->result, sizeof(job->result), "Could not finish %s", job->fsb_path);
     }
@@ -1259,12 +1273,17 @@ static void instrument_thread_main(void* user) {
 }
 
 bool instrument_start(InstrumentJob* job, const ResampleScript* script, const ResampleConfig* cfg,
-                      const InstrumentTarget* targets, int target_count) {
+                      const InstrumentTarget* targets, int target_count, const FSBProvenanceFields* provenance) {
     if (job->running.load()) return false;
     if (!script || !script->built || script->segment_count == 0) return false;
     if (!targets || target_count < 1 || target_count > FR_MAX_OUTPUT_BUSSES) return false;
     job->script = script;
     job->cfg = *cfg;
+    job->provenance = provenance ? *provenance : FSBProvenanceFields{};
+    if (provenance && !provenance_account(&job->provenance)) return false;
+    time_t now = time(nullptr);
+    if (now < 0) return false;
+    job->provenance.created_utc = (uint64_t)now;
     job->target_count = target_count;
     for (int t = 0; t < target_count; ++t) job->targets[t] = targets[t];
     job->target = 0;
